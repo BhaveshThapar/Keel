@@ -1,0 +1,38 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/BhaveshThapar/Keel"
+rust-version = "1.85"
+
+[workspace.dependencies]
+keel-api = { path = "crates/keel-api", version = "0.1.0" }
+keel-raft = { path = "crates/keel-raft", version = "0.1.0" }
+keel-log = { path = "crates/keel-log", version = "0.1.0" }
+keel-sm = { path = "crates/keel-sm", version = "0.1.0" }
+keel-net = { path = "crates/keel-net", version = "0.1.0" }
+keel-client = { path = "crates/keel-client", version = "0.1.0" }
+lsm_kv = { path = "crates/lsm-kv", version = "0.1.0" }
+
+bytes = { version = "1", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+thiserror = "2"
+anyhow = "1"
+crc32c = "0.6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+proptest = "1"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"

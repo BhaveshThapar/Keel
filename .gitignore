@@ -1,0 +1,5 @@
+target/
+tools/maelstrom/
+store/
+*.profraw
+.DS_Store

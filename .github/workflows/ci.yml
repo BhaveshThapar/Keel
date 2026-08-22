@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - name: The negative demonstrations must still demonstrate
+        run: cargo test -p keel-raft --features negative-demos
+
+  determinism:
+    name: the core replays identically
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Run the determinism suite twice and require identical output. A
+      # nondeterminism leak — an ambient clock, a hash-map iteration order —
+      # turns into a red build the day it is introduced, rather than being
+      # noticed months later when a simulator seed stops reproducing.
+      - run: cargo test -p keel-raft --test determinism -- --test-threads=1 > run1.txt
+      - run: cargo test -p keel-raft --test determinism -- --test-threads=1 > run2.txt
+      - run: diff run1.txt run2.txt
