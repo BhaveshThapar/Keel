@@ -136,25 +136,70 @@ the correct trade: the window exists to bound memory, not to be exact.
 
 ---
 
+## ADR-007 — The simulator aims its faults
+
+Fault injection is not uniformly random. The nemesis targets the current leader
+most of the time, and the `fig8-hunt` profile strikes a leader at the exact
+moment it commits an earlier term's entry.
+
+**Why.** Learned from [KEEL-4](BUGS.md). The states worth checking are narrow.
+The window the Figure 8 rule guards is one message round wide — a leader commits
+an old-term entry and then dies before its own term's entry commits — while a
+uniform nemesis fires every few hundred rounds. Measured, a five-node cluster
+under heavy random faults reached that window exactly **zero** times, so a build
+with the rule and a build without it were indistinguishable. Aiming the faults
+took it from zero to a violation in 5 of 40 seeds.
+
+The same reasoning made three-node clusters part of the standard sweep rather
+than an afterthought. Commit needs the k-th highest match index where k is the
+quorum size: at five nodes two followers must sit on an earlier term's entry at
+once, at three nodes only one must.
+
+**Cost.** An aimed schedule is not a fair sample of what a real cluster
+experiences, so it cannot support a claim like "this survives realistic faults".
+It is evidence about a specific hazard. The unaimed profiles are what the broad
+sweeps run, and both are reported separately.
+
+---
+
+## ADR-008 — Every node keeps a running hash of its log prefix
+
+Each simulated node maintains a cumulative digest per log index, chained so that
+the digest at index N depends on every entry at or below N.
+
+**Why.** It collapses the safety properties into single comparisons. "Do these
+two nodes agree about everything below index N" becomes one equality test rather
+than a walk, so all five properties can be checked after *every* event instead of
+periodically. Periodic checking is how a violation gets attributed to the wrong
+event, and the whole value of a deterministic simulator is that the failing event
+is identifiable.
+
+**Cost.** The digest has to be maintained incrementally through truncation, which
+is the fiddliest code in the simulator. It walks back from the end of the log and
+re-chains only what changed, so a rewrite costs what it rewrote — but getting
+that wrong would make the checker quietly lie, which is worse than not having it.
+
+---
+
 ## Planned
 
 These are decided but not yet built. They are recorded here so the shape is
 fixed before the code exists.
 
-- **ADR-007 — Durable log layout.** One logical stream of segments, records of
+- **ADR-009 — Durable log layout.** One logical stream of segments, records of
   `[len][crc32c][type][postcard]`, hard state sharing the group-commit fsync
   path, logical truncation with later-record-wins on recovery, and a torn tail
   discarded rather than repaired.
-- **ADR-008 — `applied_index` in the same write batch as the data.** Apply must
+- **ADR-010 — `applied_index` in the same write batch as the data.** Apply must
   be idempotent across a crash mid-apply, which means the index and the data it
   describes have to become durable together or not at all.
-- **ADR-009 — Snapshots are storage-engine checkpoints.** Flush the memtable,
+- **ADR-011 — Snapshots are storage-engine checkpoints.** Flush the memtable,
   hard-link the immutable SSTables, write a fresh manifest. The consensus layer
   sees only a handshake; the bytes move over the transport with resumable chunks.
-- **ADR-010 — Exactly-once sessions.** `(client_id, seq)` dedup with a cached
+- **ADR-012 — Exactly-once sessions.** `(client_id, seq)` dedup with a cached
   response, held in the state machine so it survives failover and appears in
   snapshots, expired deterministically by leader-stamped time in the log rather
   than by any node's local clock.
-- **ADR-011 — fsync portability.** `fdatasync` on Linux, `F_FULLFSYNC` on macOS.
+- **ADR-013 — fsync portability.** `fdatasync` on Linux, `F_FULLFSYNC` on macOS.
   These are not the same operation and the difference is large enough that a
   benchmark which does not say which one it used is uninterpretable.
