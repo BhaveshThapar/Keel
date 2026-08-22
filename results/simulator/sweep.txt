@@ -1,6 +1,6 @@
 === keel-sim validation sweep ===
 host: Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2
-commit: 28b43d2
+commit: 596a7c7 (the code that ran; the sweep was started before it was committed)
 date: 2026-08-22T19:48:47Z
 
 Safety only. No timing claim is made here: the simulator runs on a virtual
