@@ -140,3 +140,41 @@ The simulator now also reports coverage — partitions, crashes, leadership
 changes, entries overwritten, and how often a leader's commit index rested on an
 earlier term's entry — and a test fails if a heavy-fault run does not reach those
 states. A pass is only worth as much as the states the run actually visited.
+
+---
+
+## KEEL-5 — the simulated disk made writes durable that no fsync had covered
+
+**Found by** reviewing the disk model after KEEL-3 and KEEL-4, on the principle
+that a harness which had been wrong twice deserved a third look.
+
+**Symptom.** No test failure — which is the problem. The model was more
+permissive than a real disk, so its effect was to make runs pass that should not
+have.
+
+**Root cause.** `SimDisk` folded every staged write into a single mutable image
+and `sync()` made that whole image durable. But a host issues a write at one
+moment and its fsync completes later, and fsync latencies vary, so several
+`Ready`s are in flight at once. A write issued *after* an fsync started would be
+made durable by that fsync, having never had one of its own.
+
+The direction of the error is what matters. It shrank the window between written
+and durable, and that window is precisely what the persist-before-send contract
+is tested against. A crash that should have lost a node's recent tail sometimes
+lost nothing, so the schedules most likely to expose an ordering bug were the
+ones the model quietly defused.
+
+**Fix.** Writes are an ordered list of pending batches, each with a token.
+`stage` returns the token, the fsync event carries it, and `sync(token)` makes
+durable only the batches at or below it. Later writes stay at risk however long
+their own fsync takes; a crash drops every batch that has not been covered.
+
+The negative demonstration still finds the Figure 8 violation under the stricter
+model, and the control still passes — which is the check that says the model got
+harsher without becoming unsurvivable.
+
+**Worth noting.** Three of the five bugs so far are in the harness, not in the
+implementation it tests. That ratio is not a surprise and it is not a
+digression: an unverified checker is just an opinion, and the only reason these
+were findable is that the negative demonstration gives a known-wrong build to
+compare against.

@@ -7,3 +7,5 @@ Safety only. No timing claim is made here: the simulator runs on a virtual
 clock, so wall-clock speed says nothing about the system under test.
 
 --- profile=default nodes=3
+500 seeds x 60000 steps, 3 nodes, default profile: 500 passed, 0 failed (mean 5418 entries committed per run)
+--- profile=default nodes=5
