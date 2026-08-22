@@ -1,0 +1,28 @@
+# Vendored from BhaveshThapar/LSM-Tree-Key-Value-Storage-Engine. See VENDORED.md
+# for the upstream commit and what was changed.
+[package]
+name = "lsm_kv"
+description = "A log-structured merge-tree key/value storage engine"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "lsm"
+path = "src/bin/lsm.rs"
+
+[dependencies]
+thiserror = { workspace = true }
+crc32fast = "1"
+lz4_flex = "0.11"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+parking_lot = "0.12"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+proptest = { workspace = true }
+
+[features]
+# Re-exports internal decoders for fuzz targets.
+fuzzing = []
