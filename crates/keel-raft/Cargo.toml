@@ -1,0 +1,28 @@
+[package]
+name = "keel-raft"
+description = "Sans-IO Raft consensus core: no I/O, no threads, no clock. Drive it with events, act on its Ready output."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+categories = ["algorithms", "data-structures"]
+keywords = ["raft", "consensus", "distributed", "sans-io", "replication"]
+
+[dependencies]
+bytes = { workspace = true }
+serde = { workspace = true, optional = true }
+thiserror = { workspace = true }
+
+[features]
+default = ["serde"]
+serde = ["dep:serde", "bytes/serde"]
+# Disables safety rules so the simulator can demonstrate it catches the resulting
+# violations (TR-8). Never enable outside negative-demo scripts.
+negative-demos = []
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true
