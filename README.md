@@ -39,9 +39,18 @@ check is one comparison, because every node keeps a running hash of its log
 prefix — which is what makes per-event checking affordable at this scale.
 
 ```
-$ keel-sim run --count 500 --steps 60000 --profile chaos
-500 seeds x 60000 steps, 5 nodes, chaos profile: 500 passed, 0 failed
+$ scripts/sweep.sh
+500 seeds x 60000 steps, 3 nodes, default   profile: 500 passed, 0 failed
+500 seeds x 60000 steps, 5 nodes, default   profile: 500 passed, 0 failed
+500 seeds x 60000 steps, 3 nodes, chaos     profile: 500 passed, 0 failed
+500 seeds x 60000 steps, 5 nodes, chaos     profile: 500 passed, 0 failed
+500 seeds x 80000 steps, 3 nodes, fig8-hunt profile: 500 passed, 0 failed
+100 seeds replayed identically
 ```
+
+> Safety only. The simulator runs on a virtual clock, so nothing here is a
+> statement about speed. Full output, with the host it ran on, is in
+> [`results/simulator/sweep.txt`](results/simulator/sweep.txt).
 
 The paper's own scenarios are encoded directly as tests:
 
@@ -69,11 +78,13 @@ The control run is the half that makes the experiment mean anything: without it,
 a failure would only prove the fault schedule was too harsh. Output is committed
 under [`results/negative-demos/`](results/negative-demos/).
 
-Getting there took two rounds of the harness being wrong — a check that fired on
-correct code *and* missed the real bug, and a fault schedule that never once
-reached the state it was written to test. Both are written up in
-[BUGS.md](BUGS.md), because they are the reason to distrust a clean run that has
-no negative demonstration behind it.
+Getting there took three rounds of the harness being wrong — a check that fired on
+correct code *and* missed the real bug, a fault schedule that never once reached
+the state it was written to test, and a simulated disk that made writes durable
+no fsync had covered. All three are in [BUGS.md](BUGS.md), because they are the
+reason to distrust a clean run with no negative demonstration behind it. Three
+of the five bugs found so far are in the harness rather than in the code it
+tests, which is roughly what should be expected.
 
 The simulator now reports its own coverage — partitions, crashes, leadership
 changes, entries overwritten, and how often a leader's commit index rested on an
@@ -85,7 +96,7 @@ and lists what is not enforced yet.
 
 ```
 cargo test --workspace
-cargo run --release -p keel-sim -- run --count 500 --profile chaos
+scripts/sweep.sh
 scripts/negative-demos/figure-8.sh
 ```
 
