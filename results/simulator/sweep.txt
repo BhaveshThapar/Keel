@@ -1,12 +1,9 @@
 === keel-sim validation sweep ===
-host: Apple M2 Pro, 10 cores, macOS 26.2
-commit: cf5961d
-date: 2026-08-22T19:33:13Z
+host: Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2
+commit: 28b43d2
+date: 2026-08-22T19:48:47Z
+
+Safety only. No timing claim is made here: the simulator runs on a virtual
+clock, so wall-clock speed says nothing about the system under test.
 
 --- profile=default nodes=3
-500 seeds x 60000 steps, 3 nodes, default profile: 500 passed, 0 failed (mean 5418 entries committed per run)
---- profile=default nodes=5
-500 seeds x 60000 steps, 5 nodes, default profile: 500 passed, 0 failed (mean 3327 entries committed per run)
---- profile=chaos nodes=3
-500 seeds x 60000 steps, 3 nodes, chaos profile: 500 passed, 0 failed (mean 195 entries committed per run)
---- profile=chaos nodes=5

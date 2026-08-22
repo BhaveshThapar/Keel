@@ -153,16 +153,25 @@ enum Event {
     /// enforced by the simulation itself rather than trusted.
     Fsync {
         node: NodeId,
-        epoch: u64,
-        ready_number: u64,
-        persisted: Option<(Index, Term)>,
-        snapshot: Option<SnapshotMeta>,
-        messages: Vec<Message>,
-        committed: Vec<Entry>,
+        batch: Box<FsyncBatch>,
     },
     Client(usize),
     Nemesis,
     Restart(NodeId),
+}
+
+/// One `Ready`'s output, held until its fsync completes.
+#[derive(Debug, Clone)]
+struct FsyncBatch {
+    /// The node's crash generation. A batch from before a crash is discarded.
+    epoch: u64,
+    ready_number: u64,
+    /// Which write this fsync covers. Later writes stay at risk.
+    write_token: u64,
+    persisted: Option<(Index, Term)>,
+    snapshot: Option<SnapshotMeta>,
+    messages: Vec<Message>,
+    committed: Vec<Entry>,
 }
 
 #[derive(Debug)]
@@ -371,23 +380,7 @@ impl World {
         match next.event {
             Event::Tick(id) => self.on_tick(id),
             Event::Deliver(msg) => self.on_deliver(msg),
-            Event::Fsync {
-                node,
-                epoch,
-                ready_number,
-                persisted,
-                snapshot,
-                messages,
-                committed,
-            } => self.on_fsync(
-                node,
-                epoch,
-                ready_number,
-                persisted,
-                snapshot,
-                messages,
-                committed,
-            ),
+            Event::Fsync { node, batch } => self.on_fsync(node, *batch),
             Event::Client(c) => self.on_client(c),
             Event::Nemesis => self.on_nemesis(),
             Event::Restart(id) => self.on_restart(id),
@@ -441,21 +434,11 @@ impl World {
         self.check(to);
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn on_fsync(
-        &mut self,
-        id: NodeId,
-        epoch: u64,
-        ready_number: u64,
-        persisted: Option<(Index, Term)>,
-        snapshot: Option<SnapshotMeta>,
-        messages: Vec<Message>,
-        committed: Vec<Entry>,
-    ) {
+    fn on_fsync(&mut self, id: NodeId, batch: FsyncBatch) {
         let stale = self
             .nodes
             .get(&id)
-            .is_none_or(|n| !n.alive || n.epoch != epoch);
+            .is_none_or(|n| !n.alive || n.epoch != batch.epoch);
         if stale {
             // The node crashed after this write was issued. Its messages never
             // go out and its entries never became durable, which is the whole
@@ -465,27 +448,27 @@ impl World {
 
         // 1. The write is now durable.
         if let Some(node) = self.nodes.get_mut(&id) {
-            node.disk.sync();
+            node.disk.sync(batch.write_token);
             node.core.advance(Advance {
-                ready_number,
-                persisted,
+                ready_number: batch.ready_number,
+                persisted: batch.persisted,
                 applied: None,
-                snapshot_installed: snapshot,
+                snapshot_installed: batch.snapshot,
             });
         }
 
         // 2. Only now may the messages go out.
-        for msg in messages {
+        for msg in batch.messages {
             self.send(msg);
         }
 
         // 3. Apply, then report how far.
         if let Some(node) = self.nodes.get_mut(&id) {
-            let applied = committed.last().map(|e| e.index);
-            node.applied_count += committed.len();
+            let applied = batch.committed.last().map(|e| e.index);
+            node.applied_count += batch.committed.len();
             if applied.is_some() {
                 node.core.advance(Advance {
-                    ready_number,
+                    ready_number: batch.ready_number,
                     persisted: None,
                     applied,
                     snapshot_installed: None,
@@ -665,10 +648,9 @@ impl World {
             }
             let rd: Ready = node.core.ready();
 
-            node.disk.stage(&rd.entries, rd.hard_state);
-            if let Some(meta) = &rd.snapshot_to_install {
-                node.disk.stage_snapshot(meta.clone());
-            }
+            let write_token =
+                node.disk
+                    .stage(&rd.entries, rd.hard_state, rd.snapshot_to_install.clone());
             let persisted = rd.entries.last().map(|e| (e.index, e.term));
             let needs_sync = !rd.entries.is_empty()
                 || rd.hard_state.is_some()
@@ -685,12 +667,15 @@ impl World {
                 delay,
                 Event::Fsync {
                     node: id,
-                    epoch,
-                    ready_number: rd.number,
-                    persisted,
-                    snapshot: rd.snapshot_to_install,
-                    messages: rd.messages,
-                    committed: rd.committed_entries,
+                    batch: Box::new(FsyncBatch {
+                        epoch,
+                        ready_number: rd.number,
+                        write_token,
+                        persisted,
+                        snapshot: rd.snapshot_to_install,
+                        messages: rd.messages,
+                        committed: rd.committed_entries,
+                    }),
                 },
             );
         }
