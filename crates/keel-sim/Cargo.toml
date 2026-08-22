@@ -1,0 +1,27 @@
+[package]
+name = "keel-sim"
+description = "Deterministic discrete-event simulator for sans-IO consensus cores: seeded partitions, crashes, and clock skew, with Raft safety invariants checked after every event."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+categories = ["development-tools::testing", "simulation"]
+keywords = ["raft", "simulation", "deterministic", "testing", "distributed"]
+
+[dependencies]
+keel-raft = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true }
+
+[features]
+# Forwarded to keel-raft so the negative demonstrations can disable a safety
+# rule and show the simulator catching the resulting violation (TR-8).
+negative-demos = ["keel-raft/negative-demos"]
+
+[[bin]]
+name = "keel-sim"
+path = "src/main.rs"
+
+[lints]
+workspace = true

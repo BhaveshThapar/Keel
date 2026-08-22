@@ -3,21 +3,28 @@
 A Raft-replicated key-value store in Rust, built on an LSM storage engine, and
 verified by a deterministic simulator that replays any failure from a seed.
 
-> **Status: in development (M0).** The consensus core is built and tested; the
-> durable log, storage adapter, and networking are not. No performance number is
-> claimed yet, because none has been measured. See [Not claimed](#not-claimed).
+> **Status: in development (M0).** The consensus core and the simulator are
+> built and tested. The durable log, storage adapter, and networking are not. No
+> performance number is claimed, because none has been measured. See
+> [Not claimed](#not-claimed).
 
 ## What is here today
 
-The [`keel-raft`](crates/keel-raft/) consensus core: a Raft implementation that
-does no I/O, owns no threads, and reads no clock. You feed it events and it hands
-back a `Ready` describing what to persist, what to send, and what to apply.
+Two crates.
 
-That constraint is the whole design. Because the core is a pure function of its
-inputs, the same event sequence always produces the same output — so a simulator
-can drive thousands of seeded clusters through partitions and crashes and replay
-any failure exactly, and the identical code runs under a real network, under
-Maelstrom, and inside that simulator with no conditional compilation anywhere.
+**[`keel-raft`](crates/keel-raft/)** — a Raft consensus core that does no I/O,
+owns no threads, and reads no clock. You feed it events and it hands back a
+`Ready` describing what to persist, what to send, and what to apply.
+
+**[`keel-sim`](crates/keel-sim/)** — a deterministic simulator that drives seeded
+clusters through partitions, crashes, message loss, and clock skew, checking
+every Raft safety property after every event.
+
+The first exists to make the second possible. Because the core is a pure function
+of its inputs, a run is a pure function of `(seed, config)`: any failure is
+reproduced by rerunning its seed, and the same code will run under a real
+network, under Maelstrom, and inside the simulator with no conditional
+compilation anywhere.
 
 Implemented and tested: leader election with **pre-vote** and **check-quorum**,
 log replication with pipelining and conflict-term backtracking, the Figure 8
@@ -26,7 +33,17 @@ commit rule, **ReadIndex** and **lease** reads with follower forwarding,
 
 ## Correctness
 
-45 tests, including the Raft paper's own scenarios encoded directly:
+All five Raft safety properties, plus "no committed entry lost", are checked
+after **every** simulated event against a global oracle no node can see. Each
+check is one comparison, because every node keeps a running hash of its log
+prefix — which is what makes per-event checking affordable at this scale.
+
+```
+$ keel-sim run --count 500 --steps 60000 --profile chaos
+500 seeds x 60000 steps, 5 nodes, chaos profile: 500 passed, 0 failed
+```
+
+The paper's own scenarios are encoded directly as tests:
 
 | Scenario | Test |
 |---|---|
@@ -36,18 +53,40 @@ commit rule, **ReadIndex** and **lease** reads with follower forwarding,
 | Pre-vote stops a rejoining node from deposing a healthy leader | `pre_vote_stops_a_rejoining_node_from_deposing_the_leader` |
 | A fresh leader parks reads until its no-op commits | `a_fresh_leader_parks_reads_until_its_no_op_commits` |
 
-Two of those tests run the same scenario twice, once with the safety rule
-disabled, to show the harness actually catches the violation rather than merely
-passing. The Figure 8 guard can be compiled out with `--features negative-demos`,
-and the old-term entry then commits, which is the bug the rule exists to prevent.
+### Does the checker actually catch anything?
 
-[CORRECTNESS.md](CORRECTNESS.md) maps every claimed property to the test that
-enforces it, and lists the ones that are not enforced yet.
-[BUGS.md](BUGS.md) records what the harness has caught so far.
+A harness that has only ever reported success has not been shown to work. So one
+safety rule gets compiled out, and the simulator has to find the violation:
+
+```
+$ scripts/negative-demos/figure-8.sh
+--- CONTROL: the rule in place.      40 of 40 seeds pass
+--- EXPERIMENT: the rule removed.    5 of 40 seeds fail, all Leader Completeness
+PASS: the schedule is survivable with the rule and not without it.
+```
+
+The control run is the half that makes the experiment mean anything: without it,
+a failure would only prove the fault schedule was too harsh. Output is committed
+under [`results/negative-demos/`](results/negative-demos/).
+
+Getting there took two rounds of the harness being wrong — a check that fired on
+correct code *and* missed the real bug, and a fault schedule that never once
+reached the state it was written to test. Both are written up in
+[BUGS.md](BUGS.md), because they are the reason to distrust a clean run that has
+no negative demonstration behind it.
+
+The simulator now reports its own coverage — partitions, crashes, leadership
+changes, entries overwritten, and how often a leader's commit index rested on an
+earlier term's entry — and a test fails if a heavy-fault run does not reach those
+states.
+
+[CORRECTNESS.md](CORRECTNESS.md) maps every claimed property to what enforces it,
+and lists what is not enforced yet.
 
 ```
 cargo test --workspace
-cargo test -p keel-raft --features negative-demos
+cargo run --release -p keel-sim -- run --count 500 --profile chaos
+scripts/negative-demos/figure-8.sh
 ```
 
 ## Not claimed
@@ -58,14 +97,14 @@ cargo test -p keel-raft --features negative-demos
 - **Not Jepsen-tested.** The plan is Jepsen-*style* checking via Maelstrom and
   Porcupine. A real Jepsen run is a different artifact, and the distinction
   matters.
-- **No durability yet.** The core is exercised against an in-memory harness where
-  an append is durable immediately. The real disk path, and everything that can
-  go wrong in it, is M1 work.
+- **No durability yet.** The simulator models a disk at record granularity: a
+  crash loses whatever was not fsynced. Whether a half-written record is
+  discarded correctly is a question about a parser that does not exist yet (M1).
+- **No linearizability checking yet.** The simulator checks Raft's internal
+  safety properties. It does not yet check that clients observe a linearizable
+  history; that needs the state machine and a history export (M1/M2).
 - **Single Raft group.** No sharding, no cross-shard transactions, no
   geo-replication, no Byzantine fault tolerance, no TLS or authentication.
-- **The simulator does not exist yet.** Everything above was found by
-  hand-written tests. The seeded, fault-injecting simulator that this design
-  exists to enable is the next milestone.
 
 ## Design
 

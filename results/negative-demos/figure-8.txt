@@ -1,0 +1,382 @@
+==============================================================
+Figure 8: is the current-term commit rule load-bearing?
+  profile fig8-hunt, 3 nodes, 40 seeds x 80000 steps
+==============================================================
+
+--- CONTROL: the rule in place. Expect every seed to pass.
+
+40 seeds x 80000 steps, 3 nodes, fig8-hunt profile: 40 passed, 0 failed (mean 179 entries committed per run)
+
+--- EXPERIMENT: the rule compiled out. Expect seeds to fail.
+
+seed 4 failed after 31276 events
+  violation: Leader Completeness: node 3 became leader in term 22 with a different prefix at committed index 12 (term 16)
+  reproduce with: keel-sim repro --seed 4 --nodes 3
+  recent events:
+    [  5325000000ns] crashed node 2
+    [  5365000000ns] node 2 restarted
+    [  5375000000ns] one-way cut 1 -> 3
+    [  5404467885ns] struck leader 3 inside the Figure 8 window
+    [  5425000000ns] one-way cut 3 -> 1
+    [  5444467885ns] node 3 restarted
+    [  5450000000ns] partition [1, 2] | [3]
+    [  5475000000ns] partition [1, 2] | [3]
+    [  5500000000ns] isolated node 2
+    [  5525000000ns] partition [1, 2] | [3]
+    [  5550000000ns] partition [1] | [2, 3]
+    [  5575000000ns] one-way cut 2 -> 3
+    [  5600000000ns] partition [1, 2] | [3]
+    [  5625000000ns] partition [1, 2] | [3]
+    [  5650000000ns] partition [1] | [2, 3]
+    [  5675000000ns] network healed
+    [  5700000000ns] network healed
+    [  5750000000ns] partition [1, 2] | [3]
+    [  5775000000ns] partition [1, 2] | [3]
+    [  5800000000ns] partition [1] | [2, 3]
+    [  5825000000ns] partition [1] | [2, 3]
+    [  5875000000ns] network healed
+    [  5925000000ns] crashed node 3
+    [  5950000000ns] network healed
+    [  5965000000ns] node 3 restarted
+    [  5975000000ns] isolated node 3
+    [  6000000000ns] network healed
+    [  6025000000ns] partition [1, 2] | [3]
+    [  6026023124ns] struck leader 1 inside the Figure 8 window
+    [  6050000000ns] partition [1, 2] | [3]
+    [  6066023124ns] node 1 restarted
+    [  6075000000ns] one-way cut 3 -> 1
+    [  6100000000ns] isolated node 3
+    [  6125000000ns] crashed node 3
+    [  6150000000ns] partition [1, 2] | [3]
+    [  6165000000ns] node 3 restarted
+    [  6175000000ns] one-way cut 2 -> 1
+    [  6200000000ns] partition [1] | [2, 3]
+    [  6225000000ns] crashed node 2
+    [  6250000000ns] network healed
+    [  6265000000ns] node 2 restarted
+    [  6275000000ns] partition [1] | [2, 3]
+    [  6325000000ns] network healed
+    [  6350000000ns] partition [1, 2] | [3]
+    [  6354271904ns] struck leader 1 inside the Figure 8 window
+    [  6375000000ns] partition [1] | [2, 3]
+    [  6394271904ns] node 1 restarted
+    [  6400000000ns] network healed
+    [  6425000000ns] partition [1] | [2, 3]
+    [  6450000000ns] network healed
+    [  6500000000ns] partition [1, 2] | [3]
+    [  6525000000ns] network healed
+    [  6536824695ns] struck leader 1 inside the Figure 8 window
+    [  6550000000ns] node 1 restarted
+    [  6575000000ns] partition [1] | [2, 3]
+    [  6600000000ns] network healed
+    [  6625000000ns] partition [1, 2] | [3]
+    [  6650000000ns] crashed node 1
+    [  6675000000ns] partition [1, 2] | [3]
+    [  6690000000ns] node 1 restarted
+    [  6700000000ns] partition [1, 2] | [3]
+    [  6725000000ns] partition [1] | [2, 3]
+    [  6750000000ns] network healed
+    [  6791987703ns] node 3 role=Leader term=22 last=568 commit=4 applied=4
+  node state:
+    node 1 alive=true role=Follower term=22 last=315 commit=4 applied=4
+    node 2 alive=true role=Follower term=22 last=12 commit=4 applied=4
+    node 3 alive=true role=Leader term=22 last=568 commit=4 applied=4
+
+seed 5 failed after 68767 events
+  violation: Leader Completeness: node 3 became leader in term 27 with a different prefix at committed index 83 (term 23)
+  reproduce with: keel-sim repro --seed 5 --nodes 3
+  recent events:
+    [ 11425000000ns] partition [1, 2] | [3]
+    [ 11450000000ns] partition [1] | [2, 3]
+    [ 11475000000ns] crashed node 1
+    [ 11515000000ns] node 1 restarted
+    [ 11525000000ns] crashed node 2
+    [ 11550000000ns] network healed
+    [ 11565000000ns] node 2 restarted
+    [ 11575000000ns] partition [1, 2] | [3]
+    [ 11600000000ns] partition [1, 2] | [3]
+    [ 11625000000ns] isolated node 1
+    [ 11725000000ns] partition [1] | [2, 3]
+    [ 11750000000ns] network healed
+    [ 11775000000ns] network healed
+    [ 11800000000ns] isolated node 3
+    [ 11825000000ns] partition [1] | [2, 3]
+    [ 11850000000ns] crashed node 3
+    [ 11875000000ns] partition [1, 2] | [3]
+    [ 11890000000ns] node 3 restarted
+    [ 11900000000ns] partition [1] | [2, 3]
+    [ 11975000000ns] partition [1] | [2, 3]
+    [ 12000000000ns] network healed
+    [ 12025000000ns] network healed
+    [ 12050000000ns] partition [1, 2] | [3]
+    [ 12075000000ns] partition [1] | [2, 3]
+    [ 12100000000ns] one-way cut 2 -> 1
+    [ 12125000000ns] one-way cut 2 -> 3
+    [ 12150000000ns] partition [1] | [2, 3]
+    [ 12200000000ns] network healed
+    [ 12225000000ns] partition [1, 2] | [3]
+    [ 12250000000ns] partition [1] | [2, 3]
+    [ 12275000000ns] network healed
+    [ 12325000000ns] network healed
+    [ 12350000000ns] network healed
+    [ 12375000000ns] network healed
+    [ 12400000000ns] isolated node 1
+    [ 12450000000ns] one-way cut 2 -> 3
+    [ 12475000000ns] crashed node 1
+    [ 12500000000ns] network healed
+    [ 12515000000ns] node 1 restarted
+    [ 12525000000ns] crashed node 3
+    [ 12550000000ns] one-way cut 1 -> 2
+    [ 12565000000ns] node 3 restarted
+    [ 12575000000ns] partition [1] | [2, 3]
+    [ 12600000000ns] network healed
+    [ 12625000000ns] crashed node 3
+    [ 12650000000ns] partition [1, 2] | [3]
+    [ 12665000000ns] node 3 restarted
+    [ 12675000000ns] partition [1, 2] | [3]
+    [ 12700000000ns] network healed
+    [ 12725000000ns] crashed node 3
+    [ 12750000000ns] isolated node 3
+    [ 12765000000ns] node 3 restarted
+    [ 12775000000ns] one-way cut 2 -> 3
+    [ 12800000000ns] partition [1, 2] | [3]
+    [ 12875000000ns] partition [1, 2] | [3]
+    [ 12900000000ns] network healed
+    [ 12905606975ns] struck leader 1 inside the Figure 8 window
+    [ 12925000000ns] node 1 restarted
+    [ 12950000000ns] one-way cut 3 -> 1
+    [ 13000000000ns] network healed
+    [ 13025000000ns] isolated node 3
+    [ 13050000000ns] one-way cut 3 -> 1
+    [ 13075000000ns] network healed
+    [ 13090466597ns] node 3 role=Leader term=27 last=397 commit=81 applied=81
+  node state:
+    node 1 alive=true role=Follower term=27 last=722 commit=81 applied=81
+    node 2 alive=true role=Follower term=27 last=83 commit=81 applied=81
+    node 3 alive=true role=Leader term=27 last=397 commit=81 applied=81
+
+seed 15 failed after 36252 events
+  violation: Leader Completeness: node 3 became leader in term 23 with a different prefix at committed index 23 (term 11)
+  reproduce with: keel-sim repro --seed 15 --nodes 3
+  recent events:
+    [  5775000000ns] partition [1] | [2, 3]
+    [  5800000000ns] partition [1] | [2, 3]
+    [  5825000000ns] network healed
+    [  5850000000ns] isolated node 1
+    [  5875000000ns] network healed
+    [  5900000000ns] crashed node 2
+    [  5919511994ns] struck leader 3 inside the Figure 8 window
+    [  5925000000ns] network healed
+    [  5940000000ns] node 2 restarted
+    [  5950000000ns] one-way cut 1 -> 2
+    [  5959511994ns] node 3 restarted
+    [  5975000000ns] partition [1, 2] | [3]
+    [  6050000000ns] isolated node 2
+    [  6075000000ns] network healed
+    [  6100000000ns] crashed node 1
+    [  6125000000ns] one-way cut 2 -> 3
+    [  6140000000ns] node 1 restarted
+    [  6150000000ns] partition [1] | [2, 3]
+    [  6200000000ns] network healed
+    [  6250000000ns] partition [1, 2] | [3]
+    [  6288618617ns] struck leader 2 inside the Figure 8 window
+    [  6300000000ns] partition [1] | [2, 3]
+    [  6325000000ns] network healed
+    [  6328618617ns] node 2 restarted
+    [  6350000000ns] network healed
+    [  6375000000ns] partition [1, 2] | [3]
+    [  6425000000ns] network healed
+    [  6450000000ns] partition [1, 2] | [3]
+    [  6475000000ns] network healed
+    [  6500000000ns] partition [1] | [2, 3]
+    [  6550000000ns] isolated node 3
+    [  6575000000ns] network healed
+    [  6600000000ns] isolated node 3
+    [  6636142150ns] struck leader 2 inside the Figure 8 window
+    [  6650000000ns] partition [1] | [2, 3]
+    [  6675000000ns] node 2 restarted
+    [  6700000000ns] network healed
+    [  6750000000ns] one-way cut 2 -> 3
+    [  6800000000ns] partition [1, 2] | [3]
+    [  6825000000ns] crashed node 1
+    [  6850000000ns] network healed
+    [  6865000000ns] node 1 restarted
+    [  6875000000ns] crashed node 2
+    [  6900000000ns] network healed
+    [  6915000000ns] node 2 restarted
+    [  6950000000ns] isolated node 3
+    [  7000000000ns] isolated node 1
+    [  7025000000ns] partition [1, 2] | [3]
+    [  7050000000ns] one-way cut 2 -> 3
+    [  7100000000ns] network healed
+    [  7112420402ns] struck leader 2 inside the Figure 8 window
+    [  7125000000ns] network healed
+    [  7152420402ns] node 2 restarted
+    [  7175000000ns] crashed node 2
+    [  7200000000ns] network healed
+    [  7215000000ns] node 2 restarted
+    [  7225000000ns] network healed
+    [  7250000000ns] network healed
+    [  7300000000ns] network healed
+    [  7325000000ns] network healed
+    [  7350000000ns] isolated node 1
+    [  7375000000ns] network healed
+    [  7425000000ns] network healed
+    [  7429042842ns] node 3 role=Leader term=23 last=63 commit=18 applied=18
+  node state:
+    node 1 alive=true role=Follower term=23 last=23 commit=18 applied=18
+    node 2 alive=true role=Follower term=23 last=1585 commit=18 applied=18
+    node 3 alive=true role=Leader term=23 last=63 commit=18 applied=18
+
+seed 21 failed after 21547 events
+  violation: Leader Completeness: node 2 became leader in term 11 with a different prefix at committed index 27 (term 6)
+  reproduce with: keel-sim repro --seed 21 --nodes 3
+  recent events:
+    [  2750000000ns] network healed
+    [  2775000000ns] partition [1, 2] | [3]
+    [  2800000000ns] one-way cut 3 -> 1
+    [  2825000000ns] partition [1, 2] | [3]
+    [  2850000000ns] isolated node 2
+    [  2875000000ns] network healed
+    [  2900000000ns] partition [1, 2] | [3]
+    [  2950000000ns] crashed node 1
+    [  2990000000ns] node 1 restarted
+    [  3000000000ns] isolated node 2
+    [  3025000000ns] partition [1, 2] | [3]
+    [  3050000000ns] partition [1] | [2, 3]
+    [  3075000000ns] isolated node 3
+    [  3100000000ns] crashed node 3
+    [  3140000000ns] node 3 restarted
+    [  3150000000ns] network healed
+    [  3175000000ns] partition [1] | [2, 3]
+    [  3225000000ns] isolated node 1
+    [  3250000000ns] partition [1] | [2, 3]
+    [  3275000000ns] partition [1] | [2, 3]
+    [  3325000000ns] crashed node 2
+    [  3350000000ns] isolated node 3
+    [  3365000000ns] node 2 restarted
+    [  3375000000ns] one-way cut 1 -> 2
+    [  3400000000ns] crashed node 3
+    [  3425000000ns] network healed
+    [  3440000000ns] node 3 restarted
+    [  3475000000ns] one-way cut 1 -> 2
+    [  3519888842ns] struck leader 2 inside the Figure 8 window
+    [  3525000000ns] one-way cut 2 -> 3
+    [  3550000000ns] network healed
+    [  3559888842ns] node 2 restarted
+    [  3575000000ns] crashed node 1
+    [  3600000000ns] partition [1] | [2, 3]
+    [  3615000000ns] node 1 restarted
+    [  3625000000ns] partition [1, 2] | [3]
+    [  3650000000ns] crashed node 2
+    [  3675000000ns] partition [1] | [2, 3]
+    [  3690000000ns] node 2 restarted
+    [  3700000000ns] one-way cut 2 -> 3
+    [  3725000000ns] network healed
+    [  3750000000ns] crashed node 1
+    [  3775000000ns] partition [1, 2] | [3]
+    [  3790000000ns] node 1 restarted
+    [  3825000000ns] crashed node 2
+    [  3850000000ns] node 2 restarted
+    [  3875000000ns] partition [1, 2] | [3]
+    [  3900000000ns] network healed
+    [  3924962560ns] struck leader 1 inside the Figure 8 window
+    [  3925000000ns] partition [1, 2] | [3]
+    [  3950000000ns] network healed
+    [  3964962560ns] node 1 restarted
+    [  3975000000ns] network healed
+    [  4000000000ns] network healed
+    [  4025000000ns] crashed node 1
+    [  4065000000ns] node 1 restarted
+    [  4125000000ns] one-way cut 3 -> 2
+    [  4150000000ns] partition [1] | [2, 3]
+    [  4175000000ns] partition [1] | [2, 3]
+    [  4200000000ns] crashed node 3
+    [  4225000000ns] network healed
+    [  4240000000ns] node 3 restarted
+    [  4250000000ns] isolated node 1
+    [  4281466458ns] node 2 role=Leader term=11 last=89 commit=24 applied=24
+  node state:
+    node 1 alive=true role=PreCandidate term=10 last=468 commit=24 applied=24
+    node 2 alive=true role=Leader term=11 last=89 commit=24 applied=24
+    node 3 alive=true role=Follower term=11 last=27 commit=24 applied=24
+
+seed 26 failed after 72385 events
+  violation: Leader Completeness: node 1 became leader in term 40 with a different prefix at committed index 81 (term 33)
+  reproduce with: keel-sim repro --seed 26 --nodes 3
+  recent events:
+    [ 13050000000ns] crashed node 3
+    [ 13075000000ns] partition [1] | [2, 3]
+    [ 13090000000ns] node 3 restarted
+    [ 13100000000ns] network healed
+    [ 13125000000ns] one-way cut 3 -> 1
+    [ 13150000000ns] one-way cut 1 -> 3
+    [ 13167522304ns] struck leader 1 inside the Figure 8 window
+    [ 13175000000ns] partition [1, 2] | [3]
+    [ 13200000000ns] partition [1] | [2, 3]
+    [ 13207522304ns] node 1 restarted
+    [ 13250000000ns] crashed node 1
+    [ 13275000000ns] isolated node 3
+    [ 13290000000ns] node 1 restarted
+    [ 13300000000ns] partition [1] | [2, 3]
+    [ 13325000000ns] isolated node 2
+    [ 13350000000ns] one-way cut 3 -> 1
+    [ 13375000000ns] network healed
+    [ 13400000000ns] partition [1, 2] | [3]
+    [ 13425000000ns] network healed
+    [ 13450000000ns] network healed
+    [ 13475000000ns] partition [1] | [2, 3]
+    [ 13500000000ns] partition [1, 2] | [3]
+    [ 13525000000ns] isolated node 3
+    [ 13600000000ns] partition [1, 2] | [3]
+    [ 13625000000ns] partition [1] | [2, 3]
+    [ 13650000000ns] network healed
+    [ 13675000000ns] network healed
+    [ 13681905469ns] struck leader 3 inside the Figure 8 window
+    [ 13721905469ns] node 3 restarted
+    [ 13725000000ns] crashed node 3
+    [ 13765000000ns] node 3 restarted
+    [ 13775000000ns] partition [1] | [2, 3]
+    [ 13800000000ns] partition [1] | [2, 3]
+    [ 13825000000ns] network healed
+    [ 13850000000ns] isolated node 1
+    [ 13900000000ns] partition [1] | [2, 3]
+    [ 13925000000ns] crashed node 1
+    [ 13965000000ns] node 1 restarted
+    [ 13975000000ns] partition [1] | [2, 3]
+    [ 14025000000ns] network healed
+    [ 14050000000ns] partition [1, 2] | [3]
+    [ 14075000000ns] partition [1] | [2, 3]
+    [ 14100000000ns] network healed
+    [ 14125000000ns] isolated node 1
+    [ 14150000000ns] partition [1] | [2, 3]
+    [ 14175000000ns] partition [1, 2] | [3]
+    [ 14200000000ns] isolated node 1
+    [ 14225000000ns] isolated node 3
+    [ 14250000000ns] crashed node 3
+    [ 14275000000ns] partition [1, 2] | [3]
+    [ 14290000000ns] node 3 restarted
+    [ 14300000000ns] one-way cut 2 -> 1
+    [ 14325000000ns] partition [1] | [2, 3]
+    [ 14375000000ns] network healed
+    [ 14425000000ns] partition [1] | [2, 3]
+    [ 14450000000ns] one-way cut 3 -> 1
+    [ 14474278902ns] struck leader 3 inside the Figure 8 window
+    [ 14475000000ns] partition [1] | [2, 3]
+    [ 14500000000ns] network healed
+    [ 14514278902ns] node 3 restarted
+    [ 14525000000ns] partition [1, 2] | [3]
+    [ 14575000000ns] partition [1, 2] | [3]
+    [ 14600000000ns] network healed
+    [ 14644992915ns] node 1 role=Leader term=40 last=386 commit=79 applied=79
+  node state:
+    node 1 alive=true role=Leader term=40 last=386 commit=79 applied=79
+    node 2 alive=true role=Follower term=40 last=81 commit=79 applied=79
+    node 3 alive=true role=Follower term=39 last=1193 commit=79 applied=79
+
+40 seeds x 80000 steps, 3 nodes, fig8-hunt profile: 35 passed, 5 failed (mean 95 entries committed per run)
+failing seeds: [4, 5, 15, 21, 26]
+
+==============================================================
+PASS: the schedule is survivable with the rule and not without it.
+      The simulator detects the violation the rule prevents.

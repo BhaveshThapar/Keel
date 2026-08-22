@@ -139,6 +139,11 @@ pub struct Status {
     pub last_index: Index,
     pub conf: ConfState,
     pub progress: Vec<(NodeId, Index, ProgressState)>,
+    /// How many times this node committed an entry from an earlier term purely
+    /// on replica count. Always zero in a correct build: the Figure 8 rule
+    /// forbids it. Non-zero means the guard was compiled out, which the
+    /// negative demonstrations do deliberately.
+    pub fig8_bypasses: u64,
 }
 
 pub struct RaftCore {
@@ -165,6 +170,7 @@ pub struct RaftCore {
     /// No new configuration change may be proposed until this index is applied.
     pending_conf_index: Index,
     uncommitted_bytes: usize,
+    fig8_bypasses: u64,
 
     // Staged for the next Ready.
     msgs: Vec<Message>,
@@ -240,6 +246,7 @@ impl RaftCore {
             lead_transferee: None,
             pending_conf_index: 0,
             uncommitted_bytes: 0,
+            fig8_bypasses: 0,
             msgs: Vec::new(),
             read_states: Vec::new(),
             dropped: Vec::new(),
@@ -321,6 +328,7 @@ impl RaftCore {
                 .iter()
                 .map(|(id, pr)| (*id, pr.matched, pr.state))
                 .collect(),
+            fig8_bypasses: self.fig8_bypasses,
         }
     }
 
@@ -1059,6 +1067,9 @@ impl RaftCore {
         let current_term = current_term || self.cfg.unsafe_disable_fig8_guard;
         if !current_term {
             return false;
+        }
+        if self.log.term(mci) != Some(self.term) {
+            self.fig8_bypasses += 1;
         }
         if self.log.commit_to(mci) {
             self.hard_state_dirty = true;

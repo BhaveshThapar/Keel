@@ -39,3 +39,32 @@ jobs:
       - run: cargo test -p keel-raft --test determinism -- --test-threads=1 > run1.txt
       - run: cargo test -p keel-raft --test determinism -- --test-threads=1 > run2.txt
       - run: diff run1.txt run2.txt
+
+  simulator:
+    name: seeded fault injection
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+        profile: [default, chaos]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 250 seeds x 50k steps
+        run: |
+          cargo run --release -p keel-sim -- run \
+            --from $(( ${{ matrix.shard }} * 250 )) --count 250 \
+            --steps 50000 --profile ${{ matrix.profile }}
+
+  negative-demo:
+    name: the checker must have teeth
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Removing a safety rule must make the simulator fail. A clean run is only
+      # evidence if a broken build would have produced a dirty one.
+      - run: scripts/negative-demos/figure-8.sh 40 80000

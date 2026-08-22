@@ -1,0 +1,6 @@
+=== keel-sim validation sweep ===
+host: Apple M2 Pro, 10 cores, macOS 26.2
+commit: cf5961d
+date: 2026-08-22T19:33:13Z
+
+--- profile=default nodes=3

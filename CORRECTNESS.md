@@ -10,11 +10,12 @@ Status legend: **enforced** — a test or checker fails when the property breaks
 
 | Property | Enforced by | Status |
 |---|---|---|
-| **Election Safety** — at most one leader per term | Simulator invariant, checked after every event | planned (M0) |
-| **Leader Append-Only** — a leader never overwrites its own log | Simulator invariant; `RaftLog::truncate_suffix` asserts it never cuts committed history | planned (M0) |
-| **Log Matching** — same index and term implies identical prefixes | Simulator invariant (incremental digest per `(index, term)`) | planned (M0) |
-| **Leader Completeness** — a new leader holds every committed entry | `paper_scenarios::vote_is_granted_only_to_an_up_to_date_candidate`; simulator invariant on every leadership assertion | partial |
-| **State Machine Safety** — no two nodes apply different entries at the same index | `Cluster::assert_applied_prefixes_agree` in every cluster test; simulator invariant | partial |
+| **Election Safety** — at most one leader per term | `Oracle::observe_leader`, after every simulated event | enforced |
+| **Leader Append-Only** — a leader never overwrites its own log | `Oracle::observe_leader_log`; `RaftLog::truncate_suffix` also asserts it never cuts committed history | enforced |
+| **Log Matching** — same index and term implies identical prefixes | `Oracle::observe_entries`, comparing cumulative prefix digests | enforced |
+| **Leader Completeness** — a new leader holds every committed entry | `Oracle::check_leader_completeness` on every leadership assertion, plus `paper_scenarios::vote_is_granted_only_to_an_up_to_date_candidate` | enforced |
+| **State Machine Safety** — no two nodes apply different entries at the same index | `Oracle::observe_applied`; `Cluster::assert_applied_prefixes_agree` in the unit tests | enforced |
+| **No committed entry lost** — a committed entry is never discarded | `Oracle::check_rewrite`, at the moment a node discards log entries | enforced |
 
 ## Rules the implementation has to get right
 
@@ -39,6 +40,49 @@ Status legend: **enforced** — a test or checker fails when the property breaks
 | Membership changes do not stall writes | `cluster_behaviour::writes_keep_flowing_during_a_membership_change` | enforced |
 | A far-behind follower catches up from the log, not a snapshot | `cluster_behaviour::a_follower_that_missed_thousands_of_entries_catches_up_without_a_snapshot` | enforced |
 
+## The simulator
+
+The properties above are checked after **every event** in every simulated run,
+against a global oracle no individual node can see. Each check is a single digest
+comparison, which is what makes per-event checking affordable.
+
+| Property | Enforced by | Status |
+|---|---|---|
+| A seed replays byte-for-byte | `simulation::a_seed_replays_exactly`; `keel-sim determinism` in CI | enforced |
+| Different seeds explore different schedules | `simulation::different_seeds_produce_different_runs` | enforced |
+| The cluster actually makes progress | `simulation::the_cluster_makes_progress` | enforced |
+| A leader never commits an earlier term's entry by counting | `simulation::no_leader_ever_commits_an_old_term_entry_by_counting` (must be exactly zero) | enforced |
+
+### Coverage
+
+A clean run over a fault schedule that never partitioned anything would prove
+nothing, so the simulator reports which states it reached and a test fails if a
+heavy-fault run does not reach them: partitions, crashes, dropped messages,
+leadership changes, followers having a divergent tail overwritten, and leaders
+holding an earlier term's entry at their commit index.
+
+`simulation::heavy_faults_actually_reach_the_interesting_states` enforces this.
+It exists because of [KEEL-4](BUGS.md): the original five-node schedule reached
+the Figure 8 window exactly zero times, so a correct build and a deliberately
+broken one were indistinguishable.
+
+### Does the checker catch anything?
+
+`scripts/negative-demos/figure-8.sh` removes the Figure 8 current-term commit
+rule and requires the simulator to find the resulting violation, with a control
+run proving the same fault schedule is survivable when the rule is present.
+
+Recorded run (`results/negative-demos/figure-8.txt`), fig8-hunt profile, 3 nodes,
+80,000 steps:
+
+| Build | Result |
+|---|---|
+| Rule present (control) | 40 of 40 seeds pass |
+| Rule compiled out | 5 of 40 seeds fail, all Leader Completeness |
+
+The control is the half that makes the experiment mean anything. A failure
+without it would only show the schedule was too harsh.
+
 ## Determinism
 
 | Property | Enforced by | Status |
@@ -52,7 +96,11 @@ Status legend: **enforced** — a test or checker fails when the property breaks
 
 Named here so the gaps are visible rather than discovered:
 
-- Durable log recovery, torn-tail discard, and group commit — `keel-log` does not exist yet (M1).
+- **Byte-level** torn writes. The simulator models durability at record
+  granularity: a crash loses everything not yet fsynced. Whether a half-written
+  record is discarded correctly is a question about a parser, and belongs to
+  `keel-log`'s own tests (M1).
+- Durable log recovery and group commit — `keel-log` does not exist yet (M1).
 - Crash consistency under `SIGKILL`, and atomic `applied_index` with state machine data (M1).
 - Exactly-once client sessions across a failover (M1).
 - Snapshots, streaming `InstallSnapshot`, and log compaction (M2).

@@ -66,3 +66,77 @@ the host has not been handed. `append`, `try_append`, and `truncate_suffix` all
 pull it back to the lowest index they touched, and `mark_handed_off` pushes it
 forward only after a `Ready` carries those entries out. The core no longer tracks
 persistence position at all.
+
+---
+
+## KEEL-3 — the simulator's committed-entry check was both wrong and blind
+
+**Found by** running the simulator against a deliberately broken build.
+
+**Symptom.** Two failures in opposite directions from the same check, which is
+why this is one entry and not two.
+
+First, with every safety rule intact, 37 of 300 chaos seeds reported "a committed
+entry was lost". Second, with the Figure 8 commit rule *compiled out* — a build
+that is definitely wrong — 100 seeds reported nothing at all. A checker that
+fails on correct code and passes on broken code is worse than no checker,
+because it launders both results into noise.
+
+**Root cause.** Two separate mistakes.
+
+The false positives came from checking the wrong thing. The check fired whenever
+a node discarded log entries at or above any index that had ever been committed,
+without asking whether the *discarded content* was the committed content. But a
+leader overwriting a follower's divergent tail is not a bug — it is the entire
+mechanism by which Raft converges. The check was flagging Raft working.
+
+The blindness came from checking in the wrong place. The original comparison ran
+against the highest recorded committed index at or below a node's own commit
+index. A node that overwrote a low index and then committed a high one was
+compared only at the high index, where nothing disagreed, and the loss at the low
+index was never looked at.
+
+**Fix.** `LogDigest::sync` now returns every `(index, digest)` pair it discards,
+and the loss is checked at the moment of the discard: a violation is reported
+only when the discarded digest *equals* what was recorded as committed at that
+index. Discarding divergent content is silent; discarding committed content is
+not.
+
+**What made it visible.** Only the negative demonstration. Both halves of the
+check looked reasonable, and 500 clean seeds looked like evidence. It took
+running the checker against a build known to be broken to learn that the clean
+runs meant nothing. That is the argument for TR-8 in one paragraph.
+
+---
+
+## KEEL-4 — the fault schedule could not reach the state it was meant to test
+
+**Found by** instrumenting the simulator after KEEL-3, once it was clear a clean
+run needed independent evidence.
+
+**Symptom.** With the Figure 8 rule compiled out, a five-node cluster under heavy
+faults recorded **zero** occurrences of the bug the rule prevents, across every
+seed. The broken build and the correct build behaved identically, so no checker
+of any quality could have told them apart.
+
+**Root cause.** Two compounding coverage gaps.
+
+*Cluster size.* Commit needs the k-th highest match index, where k is the quorum
+size. At five nodes that is the third highest, so two followers must sit on an
+earlier term's entry simultaneously. At three nodes it is the second highest, so
+one follower suffices. Moving to three nodes took the count from 0 to 36 per
+seed.
+
+*Fault timing.* Reaching the window is not enough; the leader has to *die* inside
+it, and the window is one message round wide while the nemesis fired every few
+hundred rounds. Random faults hit it essentially never.
+
+**Fix.** A `fig8-hunt` profile that aims rather than sprays: it strikes the
+leader the moment it commits an earlier term's entry. With it, the correct build
+survives 150 seeds and the broken one fails 5 of 40 with Leader Completeness
+violations.
+
+The simulator now also reports coverage — partitions, crashes, leadership
+changes, entries overwritten, and how often a leader's commit index rested on an
+earlier term's entry — and a test fails if a heavy-fault run does not reach those
+states. A pass is only worth as much as the states the run actually visited.
