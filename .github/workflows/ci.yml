@@ -74,10 +74,20 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: 250 seeds x 50k steps
+      # 600 seeds, not 250, and the difference is a measurement rather than a
+      # feeling. results/simulator/disk-throughput.txt times the slowest cell of
+      # this matrix at 600,150 steps/s on an M2 Pro. Divided by 6 for a runner
+      # nobody has measured yet, that is 100,025 steps/s; five minutes of it is
+      # 30,007,500 steps; at 50k steps a seed-run, 600 seeds. Five of the job's
+      # 25 available sweep-minutes, so the runner factor can be wrong by five
+      # times before this goes red.
+      #
+      # The shards are disjoint ranges, so the two of them cover seeds 0..1199
+      # and no seed is swept twice.
+      - name: 600 seeds x 50k steps
         run: |
           cargo run --release -p keel-sim -- run \
-            --from $(( ${{ matrix.shard }} * 250 )) --count 250 \
+            --from $(( ${{ matrix.shard }} * 600 )) --count 600 \
             --steps 50000 --nodes ${{ matrix.nodes }} \
             --profile ${{ matrix.profile }}
 
@@ -103,10 +113,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: 120 seeds x 40k steps over the real log
+      # 200 seeds, derived the same way as the job above and from the same file.
+      # disk-chaos at 3 nodes is the slowest cell in the workspace at 186,887
+      # steps/s; 186,887 / 6 x 300 / 40,000 = 233, floored to 200.
+      #
+      # That it is only 200 against the other job's 600 is the finding, not a
+      # concession: a seed-run here costs roughly three times as much, because
+      # every record is really encoded, checksummed, written and parsed and every
+      # restart re-scans every segment.
+      - name: 200 seeds x 40k steps over the real log
         run: |
           cargo run --release -p keel-sim -- run \
-            --from 0 --count 120 --steps 40000 \
+            --from 0 --count 200 --steps 40000 \
             --nodes ${{ matrix.nodes }} \
             --profile ${{ matrix.profile }}
 

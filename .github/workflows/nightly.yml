@@ -59,6 +59,25 @@ jobs:
             --from 100000 --count 25 --steps 200000 \
             --nodes ${{ matrix.nodes }} --profile ${{ matrix.profile }}
 
+  # The per-PR seed counts are derived from a throughput measurement taken on a
+  # developer laptop, divided by an assumed factor of 6 for a runner nobody had
+  # measured. This job is how that assumption stops being one: it runs the same
+  # script on the runner itself, so the factor can be replaced by a number and
+  # the sizing comments in ci.yml can cite a runner-measured file.
+  throughput:
+    name: what a seed-run costs on the runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: scripts/throughput.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: disk-throughput
+          path: results/simulator/disk-throughput.txt
+
   determinism-at-length:
     name: a long run still replays identically
     runs-on: ubuntu-latest
