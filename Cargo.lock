@@ -309,6 +309,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "clap",
+ "keel-log",
  "keel-raft",
 ]
 

@@ -28,11 +28,13 @@
 
 mod digest;
 mod disk;
+mod faultfs;
 mod invariants;
 mod network;
 mod rng;
 mod world;
 
+pub use faultfs::{FaultFile, FaultFs};
 pub use invariants::Violation;
 pub use network::NetConfig;
 pub use rng::Rng;

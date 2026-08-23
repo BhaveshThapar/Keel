@@ -11,8 +11,16 @@ keywords = ["raft", "simulation", "deterministic", "testing", "distributed"]
 
 [dependencies]
 keel-raft = { workspace = true }
+keel-log = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true }
+
+[dev-dependencies]
+# The simulator's filesystem is held to the same assertions as the real one, so
+# the suite has to be reachable from here. This edge is why `keel-sim` may
+# depend on `keel-log` at all: without it the seam has two implementations and
+# nothing that says they agree.
+keel-log = { workspace = true, features = ["conformance"] }
 
 [features]
 # Forwarded to keel-raft so the negative demonstrations can disable a safety
