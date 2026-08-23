@@ -80,6 +80,7 @@ comparison, which is what makes per-event checking affordable.
 | Property | Enforced by | Status |
 |---|---|---|
 | A seed replays byte-for-byte | `simulation::a_seed_replays_exactly`; `keel-sim determinism` in CI | enforced |
+| …and across builds, not just within one | `simulation::the_committed_profiles_still_replay_to_their_pinned_fingerprints`, every profile pinned | enforced |
 | Different seeds explore different schedules | `simulation::different_seeds_produce_different_runs` | enforced |
 | The cluster actually makes progress | `simulation::the_cluster_makes_progress` | enforced |
 | A leader never commits an earlier term's entry by counting | `simulation::no_leader_ever_commits_an_old_term_entry_by_counting` (must be exactly zero) | enforced |

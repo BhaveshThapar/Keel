@@ -215,3 +215,71 @@ fn the_profile_list_and_the_named_constructor_cannot_drift() {
     }
     assert!(SimConfig::named("no-such-profile", 3).is_none());
 }
+
+/// The fingerprints the committed profiles produce today, pinned.
+///
+/// `a_seed_replays_exactly` says a run is reproducible within one build. This
+/// says it is reproducible *across* builds, which is the stronger and more
+/// useful claim: it is what makes a seed in BUGS.md a reproduction six months
+/// later, and it is what turns "the simulator grew a feature" into a red build
+/// the moment that feature shifts a draw some existing consumer sees.
+///
+/// A change here is not automatically a bug. Two phases ahead are expected to
+/// move every one of these numbers, and both must regenerate every committed
+/// artifact in the same commit:
+///
+///   * P8, when the simulator drives the real state machine as well as the real
+///     log, so every node does strictly more work per event;
+///   * P16, when a profile first takes a snapshot.
+///
+/// Outside those, a diff in this table means a draw moved. The rule ADR-007
+/// records is that a new consumer takes a *new* split rather than sharing an
+/// existing stream, precisely so that adding one cannot do this.
+const PINNED: &[(&str, u64, u64)] = &[
+    ("default", 0, 0x96ad_2d7f_5030_10b0),
+    ("default", 7, 0xb84d_4b55_95ad_3735),
+    ("default", 42, 0x584f_2ce8_38a0_c2d3),
+    ("chaos", 0, 0xac99_bd0f_6037_3d6c),
+    ("chaos", 7, 0xc567_f9cb_6c01_c885),
+    ("chaos", 42, 0xd55b_688a_cbd3_8f29),
+    ("fig8-hunt", 0, 0x29cd_3289_bfcd_7f1d),
+    ("fig8-hunt", 7, 0x8b3d_d0cc_7739_cfc2),
+    ("fig8-hunt", 42, 0x1bac_c384_9327_dd5f),
+    ("disk-chaos", 0, 0xd049_0e8c_5f6a_b459),
+    ("disk-chaos", 7, 0xee96_157d_f836_3ca5),
+    ("disk-chaos", 42, 0xabee_a44f_9933_fbc6),
+    ("disk-hunt", 0, 0xdb74_b18f_d036_2b7d),
+    ("disk-hunt", 7, 0xe198_335e_d092_cf59),
+    ("disk-hunt", 42, 0xa503_3ad6_6fca_b70f),
+];
+
+#[test]
+fn the_committed_profiles_still_replay_to_their_pinned_fingerprints() {
+    // Every profile is covered, so a change that shifts only the disk stream —
+    // which the network profiles never draw from — cannot hide here.
+    let covered: std::collections::BTreeSet<_> = PINNED.iter().map(|(p, _, _)| *p).collect();
+    assert_eq!(
+        covered.len(),
+        SimConfig::PROFILES.len(),
+        "a profile was added without pinning it: {:?} against {:?}",
+        covered,
+        SimConfig::PROFILES
+    );
+
+    let mut moved = Vec::new();
+    for (profile, seed, expected) in PINNED {
+        let cfg = SimConfig::named(profile, 3).expect("pinned profile exists");
+        let mut world = World::new(*seed, cfg);
+        world.run(20_000);
+        let got = world.fingerprint();
+        if got != *expected {
+            moved.push(format!("    (\"{profile}\", {seed}, {got:#018x}),"));
+        }
+    }
+    assert!(
+        moved.is_empty(),
+        "the fingerprints moved. If this is P8 or P16, regenerate every artifact \
+         in the same commit and paste these in:\n{}",
+        moved.join("\n")
+    );
+}
