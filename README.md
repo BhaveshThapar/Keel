@@ -137,10 +137,15 @@ and lists what is not enforced yet.
 ```
 cargo test --workspace
 scripts/sweep.sh
-scripts/negative-demos/figure-8.sh
-scripts/negative-demos/torn-record.sh
-scripts/negative-demos/tearing-is-load-bearing.sh
+scripts/record-demos.sh          # runs all three demonstrations and records them
+scripts/check-docs.sh            # every test a document names still exists
+scripts/check-artifacts.sh       # every committed result says where it came from
 ```
+
+The last two are how the table above stays honest without anyone remembering to
+check it. A row naming a test that has been renamed reads as enforcement and
+enforces nothing, and a result file with no provenance is a number with no
+hardware and no commit behind it. Both run in CI.
 
 ## Not claimed
 

@@ -102,6 +102,48 @@ passes (the harness cannot detect this class of bug at all).
 
 Committed output is in `results/negative-demos/`.
 
+```
+scripts/record-demos.sh [seeds] [steps]
+```
+
+Runs every demonstration and writes each one's output to
+`results/negative-demos/`, provenance header and all. Recording by hand is what
+left the first of those files with no header at all, so there is one way to do
+it rather than a convention to remember. Exits non-zero if any demonstration
+stopped demonstrating — the artifact still records what happened, because an
+artifact that only exists when the news is good is not evidence.
+
+## Keeping the documents honest
+
+```
+scripts/check-docs.sh
+scripts/check-artifacts.sh
+```
+
+The first resolves every test CORRECTNESS.md names against the workspace test
+list, every ADR number against DESIGN.md, every bug number against BUGS.md, and
+every relative link against the tree. The second requires each committed result
+to carry host, commit and date, to name a commit that is an ancestor of HEAD,
+and to have been recorded from a clean tree.
+
+Both run in CI, alongside `shellcheck` over every script — including these two,
+since a checker with an unquoted expansion is how a check comes to pass having
+examined nothing.
+
+## How big the CI sweep is, and why that number
+
+```
+scripts/throughput.sh [seeds] [steps] [repetitions]
+```
+
+Times every profile at both cluster sizes, keeps the slowest repetition, and
+derives what fits inside a job. `results/simulator/disk-throughput.txt` is the
+committed answer and the sizing comments in `.github/workflows/ci.yml` cite it.
+The one figure in there that is not measured is how much slower a GitHub runner
+is than a laptop; it is assumed to be six times, labelled as an assumption, and
+the nightly `throughput` job runs the same script on a runner so it can be
+replaced by a measurement.
+
 ## Running the tests
 
 ```

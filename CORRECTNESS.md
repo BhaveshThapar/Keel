@@ -6,6 +6,11 @@ row has no enforcement, the property is not claimed.
 Status legend: **enforced** — a test or checker fails when the property breaks.
 **planned** — the mechanism is designed but not yet built.
 
+The rows themselves are checked. `scripts/check-docs.sh` fails the build if a
+test named in this file does not exist in the workspace, because a row naming a
+renamed test reads as enforcement and enforces nothing — which is worse than a
+row that was never written.
+
 ## Raft safety properties
 
 | Property | Enforced by | Status |
