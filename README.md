@@ -3,14 +3,14 @@
 A Raft-replicated key-value store in Rust, built on an LSM storage engine, and
 verified by a deterministic simulator that replays any failure from a seed.
 
-> **Status: in development (M0).** The consensus core and the simulator are
-> built and tested. The durable log, storage adapter, and networking are not. No
-> performance number is claimed, because none has been measured. See
+> **Status: in development (M1).** The consensus core, the simulator, and the
+> durable log are built and tested. The storage adapter and networking are not.
+> No performance number is claimed, because none has been measured. See
 > [Not claimed](#not-claimed).
 
 ## What is here today
 
-Two crates.
+Three crates.
 
 **[`keel-raft`](crates/keel-raft/)** — a Raft consensus core that does no I/O,
 owns no threads, and reads no clock. You feed it events and it hands back a
@@ -19,6 +19,13 @@ owns no threads, and reads no clock. You feed it events and it hands back a
 **[`keel-sim`](crates/keel-sim/)** — a deterministic simulator that drives seeded
 clusters through partitions, crashes, message loss, and clock skew, checking
 every Raft safety property after every event.
+
+**[`keel-log`](crates/keel-log/)** — the durable log: segmented, checksummed
+records with the hard state on the same fsync as the entries beside it, and a
+torn tail discarded rather than repaired. It reaches the filesystem through a
+seam so the simulator can run this exact code — the real framing, the real
+checksums, the real recovery parser — over an injectable disk, instead of a
+model of it.
 
 The first exists to make the second possible. Because the core is a pure function
 of its inputs, a run is a pure function of `(seed, config)`: any failure is
@@ -108,9 +115,11 @@ scripts/negative-demos/figure-8.sh
 - **Not Jepsen-tested.** The plan is Jepsen-*style* checking via Maelstrom and
   Porcupine. A real Jepsen run is a different artifact, and the distinction
   matters.
-- **No durability yet.** The simulator models a disk at record granularity: a
-  crash loses whatever was not fsynced. Whether a half-written record is
-  discarded correctly is a question about a parser that does not exist yet (M1).
+- **Durability is not proven end to end.** The log's recovery parser has direct
+  tests that corrupt real files, but they are hand-written cases, and the
+  simulator still models a disk at record granularity — so a byte-level tear has
+  never met a partition. Nothing has yet been killed under load and checked for
+  what it lost (M1).
 - **No linearizability checking yet.** The simulator checks Raft's internal
   safety properties. It does not yet check that clients observe a linearizable
   history; that needs the state machine and a history export (M1/M2).
