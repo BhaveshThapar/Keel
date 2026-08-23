@@ -19,17 +19,23 @@
 # Usage: scripts/negative-demos/figure-8.sh [seeds] [steps]
 
 set -uo pipefail
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../.." || exit 1
 
 SEEDS="${1:-40}"
 STEPS="${2:-80000}"
 NODES=3
 PROFILE=fig8-hunt
 
+# shellcheck source=scripts/lib/provenance.sh
+source "$(dirname "$0")/../lib/provenance.sh"
+OUT="results/negative-demos/$(basename "$0" .sh).txt"
+provenance_of "$OUT"
+
 echo "=============================================================="
 echo "Figure 8: is the current-term commit rule load-bearing?"
 echo "  profile $PROFILE, $NODES nodes, $SEEDS seeds x $STEPS steps"
 echo "=============================================================="
+provenance_header
 echo
 
 echo "--- CONTROL: the rule in place. Expect every seed to pass."

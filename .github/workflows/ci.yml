@@ -31,6 +31,30 @@ jobs:
       - name: The simulator's feature forward must still compile
         run: cargo check -p keel-sim --features negative-demos --all-targets
 
+  # A row in CORRECTNESS.md naming a test that no longer exists reads as
+  # enforcement and enforces nothing, which is worse than a row that was never
+  # written. Same for an ADR citation, a bug number, or a committed result whose
+  # provenance says it came from a commit this branch does not contain.
+  docs:
+    name: the documents still name real things
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        # check-artifacts.sh asks whether each artifact's commit is an ancestor
+        # of HEAD, which a shallow clone cannot answer.
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The checkers are themselves shell, and so is every script that records
+      # an artifact. An unquoted expansion in one of those is how a check comes
+      # to pass by examining nothing.
+      - name: the scripts lint
+        run: shellcheck -x scripts/*.sh scripts/lib/*.sh scripts/negative-demos/*.sh
+      - run: scripts/check-docs.sh
+      - run: scripts/check-artifacts.sh
+
   determinism:
     name: the core replays identically
     runs-on: ubuntu-latest

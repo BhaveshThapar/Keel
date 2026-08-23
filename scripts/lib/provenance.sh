@@ -38,12 +38,19 @@ host_line() {
 # when the tree is clean. The provenance line is the whole point of these files,
 # so it may not be measuring its own side effect.
 #
+# An untracked file is a modification too. `git diff` cannot see one, so a brand
+# new script — exactly what a brand new artifact is usually produced by — would
+# otherwise record itself as having run against a clean tree.
+#
 # Call as: provenance_of results/simulator/sweep.txt
 provenance_of() {
     HEAD_SHA="$(git rev-parse --short HEAD)"
     DIRTY=""
     git diff --quiet -- . ":(exclude)$1" || DIRTY=" (working tree modified)"
     git diff --quiet --cached || DIRTY=" (working tree modified)"
+    if git ls-files --others --exclude-standard -- . | grep -qvF "$1"; then
+        DIRTY=" (working tree modified)"
+    fi
 }
 
 # Call inside the block that writes the artifact, after provenance_of.

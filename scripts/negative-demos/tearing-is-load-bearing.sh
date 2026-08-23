@@ -25,17 +25,23 @@
 # Usage: scripts/negative-demos/tearing-is-load-bearing.sh [seeds] [steps]
 
 set -uo pipefail
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../.." || exit 1
 
 SEEDS="${1:-25}"
 STEPS="${2:-40000}"
 NODES=3
+
+# shellcheck source=scripts/lib/provenance.sh
+source "$(dirname "$0")/../lib/provenance.sh"
+OUT="results/negative-demos/$(basename "$0" .sh).txt"
+provenance_of "$OUT"
 
 echo "=============================================================="
 echo "Tearing: does the fault model earn its cost?"
 echo "  one broken build, two fault models"
 echo "  $NODES nodes, $SEEDS seeds x $STEPS steps"
 echo "=============================================================="
+provenance_header
 echo
 
 echo "--- WITH TEARS (disk-hunt): the broken build. Expect seeds to fail."

@@ -27,17 +27,23 @@
 # Usage: scripts/negative-demos/torn-record.sh [seeds] [steps]
 
 set -uo pipefail
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../.." || exit 1
 
 SEEDS="${1:-25}"
 STEPS="${2:-40000}"
 NODES=3
 PROFILE=disk-hunt
 
+# shellcheck source=scripts/lib/provenance.sh
+source "$(dirname "$0")/../lib/provenance.sh"
+OUT="results/negative-demos/$(basename "$0" .sh).txt"
+provenance_of "$OUT"
+
 echo "=============================================================="
 echo "Torn records: is the checksum load-bearing?"
 echo "  profile $PROFILE, $NODES nodes, $SEEDS seeds x $STEPS steps"
 echo "=============================================================="
+provenance_header
 echo
 
 echo "--- CONTROL: the rule in place. Expect every seed to pass."
