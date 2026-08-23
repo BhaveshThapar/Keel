@@ -13,6 +13,19 @@ What it decided is in [DESIGN.md](DESIGN.md) (ADR-014 through ADR-016), what it
 closed and opened is in [CORRECTNESS.md](CORRECTNESS.md), and the defect it
 found on the way is [KEEL-7](BUGS.md).
 
+Its two admitted debts are paid. The CI sweep is now sized from
+`results/simulator/disk-throughput.txt` rather than by eye — the guesses were
+low by about three times — and `scripts/check-docs.sh` and
+`scripts/check-artifacts.sh` hold every test name, ADR number, bug number, link
+and committed result to what the tree actually contains. The second found three
+artifacts with no provenance header on the day it was written.
+
+**P2 is done.** `keel-rand`, `keel-api` and `keel-net` are in, `keel-raft` has
+`Input::StepDown`, `RaftCore::restore(cfg, Restored { .. })` and lease reads
+resolved inside the core, and the decisions are ADR-017 through ADR-019. The
+exit criterion holds: a `Message` round-trips identically through `TcpTransport`
+and `LoopbackPair`, and the dependency allowlist still passes with three names.
+
 ---
 
 ## The road to v1.0.0
@@ -40,7 +53,7 @@ indistinguishable from a schedule change:
 
 | # | Phase | Exit criterion |
 |---|---|---|
-| P2 | `keel-rand`, `keel-api`, `keel-net` | A `Message` round-trips identically through `TcpTransport` and `LoopbackPair`; `keel-raft`'s dependency allowlist still passes with three names |
+| ~~P2~~ | ~~`keel-rand`, `keel-api`, `keel-net`~~ | **Done.** Both transports deliver identical bytes for every message shape; the allowlist still names `bytes`, `serde`, `thiserror` |
 | P3 | `lsm-kv`: write batch, WAL header, sync modes, range scans | Both upstream PRs merged; the vendored copy is a clean diff; a batch costs one fsync and not one per key |
 | P4 | `keel-sm`: store seam, atomic `applied_index`, sessions | Both stores pass one conformance suite; a retried `(client, seq)` returns the cached response with zero writes |
 | P5 | Kill a node mid-apply | 1,000 `SIGKILL`s, zero double-applies, zero `applied_index` regressions; the split-batch build is caught inside 100 kills |
