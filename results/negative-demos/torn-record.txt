@@ -2,6 +2,9 @@
 Torn records: is the checksum load-bearing?
   profile disk-hunt, 3 nodes, 25 seeds x 40000 steps
 ==============================================================
+host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
+commit: c79a337
+date:   2026-08-23T17:12:16Z
 
 --- CONTROL: the rule in place. Expect every seed to pass.
 

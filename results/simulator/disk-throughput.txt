@@ -1,0 +1,56 @@
+=== keel-sim throughput ===
+host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
+commit: c7641aa
+date:   2026-08-23T17:09:29Z
+
+What a seed-run costs, so a CI seed count can be derived instead of
+guessed. Nothing here is a statement about the system under test: the
+simulator runs on a virtual clock, and this measures only the harness.
+
+Each cell was timed 3 times and the slowest repetition is the one
+reported, because a budget has to survive the unlucky run.
+
+profile      nodes   seeds    steps   seconds      steps/s    seed-runs/s
+default          3      60    40000      3.39       708592          17.71
+default          5      60    40000      2.78       863620          21.59
+chaos            3      60    40000      2.56       935673          23.39
+chaos            5      60    40000      3.30       727273          18.18
+fig8-hunt        3      60    40000      2.19      1094891          27.37
+fig8-hunt        5      60    40000      2.18      1101928          27.55
+disk-chaos       3      60    40000      7.78       308682           7.72
+disk-chaos       5      60    40000      8.32       288288           7.21
+disk-hunt        3      60    40000      5.23       458628          11.47
+disk-hunt        5      60    40000      6.27       382714           9.57
+
+--- what this buys a CI job
+
+A GitHub-hosted ubuntu-latest runner is slower than this host, by an
+amount nobody here has measured: the repository has no remote yet, so
+no workflow has ever run and there is no observed job duration to
+divide by. The budgets below divide the slowest measured rate by a
+factor of 6 and spend at most 25 of each job's 45 minutes on
+sweeping. That factor is an assumption, and is labelled as one.
+
+It is an assumption with a mechanism to replace it: the throughput job
+in .github/workflows/nightly.yml runs this same script on the runner
+and uploads the result. The first time it runs, the factor becomes a
+measurement and this paragraph goes away.
+
+simulator job    slowest cell default at 3 nodes          708592 steps/s
+                 at 50000 steps:  3500 seeds is the 25-minute ceiling
+                                   700 seeds per shard is what CI asks for
+disk-simulator   slowest cell disk-chaos at 5 nodes       288288 steps/s
+                 at 40000 steps:  1800 seeds is the 25-minute ceiling
+                                   350 seeds is what CI asks for
+
+CI asks for the 5-minute figure, not the ceiling. The five-fold gap is
+margin against the runner factor being wrong, and it is deliberate: a
+budget spent to its limit fails the day the runners get slower, and a
+red build nobody can attribute to a code change is worse than a sweep
+that is narrower than it could be.
+
+The measurement's finding is that the counts these replace — 250 per
+shard and 120 on the disk job — were low by roughly a factor of three,
+not high. Sizing by eye was conservative rather than reckless, but it
+was still unsupported, and P19's distinct-seed target spends against
+this same file rather than against another guess.
