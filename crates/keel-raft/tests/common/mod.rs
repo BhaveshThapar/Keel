@@ -12,8 +12,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use bytes::Bytes;
 use keel_raft::{
-    Advance, ConfState, Config, Entry, EntryPayload, Index, Input, Message, NodeId, RaftCore, Role,
-    Term,
+    Advance, ConfState, Config, Entry, EntryPayload, Index, Input, Message, NodeId, RaftCore,
+    Restored, Role, Term,
 };
 
 pub struct Node {
@@ -81,7 +81,15 @@ impl Cluster {
                     voted_for: None,
                     commit: 0,
                 };
-                let core = RaftCore::restore(Config::new(*id), conf.clone(), hs, None, entries);
+                let core = RaftCore::restore(
+                    Config::new(*id),
+                    Restored {
+                        conf: conf.clone(),
+                        hard_state: hs,
+                        entries,
+                        ..Restored::default()
+                    },
+                );
                 (
                     *id,
                     Node {

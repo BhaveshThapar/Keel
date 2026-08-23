@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use bytes::Bytes;
 use keel_log::{Log, LogOptions, SyncMode};
 use keel_raft::{
-    Advance, ConfState, Config, Entry, Index, Input, Message, NodeId, RaftCore, Ready, Role,
-    SnapshotMeta, Term,
+    Advance, ConfState, Config, Entry, Index, Input, Message, NodeId, RaftCore, Ready, Restored,
+    Role, SnapshotMeta, Term,
 };
 
 use crate::digest::LogDigest;
@@ -778,10 +778,16 @@ impl World {
         };
         node.core = RaftCore::restore(
             cfg,
-            conf,
-            recovered.hard_state,
-            recovered.snapshot,
-            recovered.entries,
+            Restored {
+                conf,
+                hard_state: recovered.hard_state,
+                snapshot: recovered.snapshot,
+                entries: recovered.entries,
+                // Zero because there is no state machine here yet, so nothing
+                // has applied anything the log does not already know about.
+                // P8 replaces this with what the real state machine reports.
+                applied: 0,
+            },
         );
         node.log = Some(log);
         node.digest = LogDigest::new();

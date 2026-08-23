@@ -194,6 +194,146 @@ fn lease_reads_are_only_valid_while_the_lease_holds() {
     );
 }
 
+/// A lease read is answered by the leader alone, with no heartbeat round.
+///
+/// The check that it took no round trip is that the answer is in the *same*
+/// `Ready` as the request: a ReadIndex read cannot be, because it has to wait
+/// for a quorum of followers to acknowledge a heartbeat first.
+#[test]
+fn a_lease_read_is_answered_without_a_round_trip() {
+    let mut c = Cluster::with_config(&[1, 2, 3], |cfg| Config {
+        read_only: ReadOnlyOption::LeaseBased {
+            drift_bound_pct: 10,
+        },
+        ..cfg
+    });
+    let leader = c.elect_leader();
+    c.run(2);
+    assert!(
+        c.node(leader).lease_valid(),
+        "the leader should hold a lease"
+    );
+
+    let before = c.nodes[&leader].reads.len();
+    let _ = c.node_mut(leader).step(Input::ReadIndex { ctx: 55 });
+    c.pump(leader);
+    assert_eq!(
+        c.nodes[&leader].reads.len(),
+        before + 1,
+        "a lease read must be answered in the Ready that follows the request, \
+         with no messages exchanged in between"
+    );
+    let (_, index) = c.nodes[&leader].reads[before];
+    assert_eq!(
+        index,
+        c.node(leader).status().commit,
+        "a lease read must be stamped at the leader's commit index"
+    );
+}
+
+/// Turning leases on must not move the no-op guard.
+///
+/// The guard sits upstream of the lease branch in `request_read_index`, so a
+/// read is parked before anything asks whether a lease is held. What this test
+/// reaches is the case where the leader has no quorum: no lease, no no-op, no
+/// answer.
+///
+/// The narrower window — leader, lease genuinely held, own-term no-op still
+/// uncommitted — is not reachable from this harness, because acquiring a lease
+/// takes a round of heartbeat acknowledgements and this harness delivers in
+/// order, so the no-op is acknowledged first. It is guarded by construction
+/// rather than by a test: there is exactly one no-op check and the lease branch
+/// is below it. P9's recency oracle is what will exercise it under reordering.
+#[test]
+fn lease_configuration_does_not_bypass_the_no_op_park() {
+    let mut c = Cluster::with_config(&[1, 2, 3], |cfg| Config {
+        read_only: ReadOnlyOption::LeaseBased {
+            drift_bound_pct: 10,
+        },
+        ..cfg
+    });
+    let leader = c.elect_leader();
+
+    let followers: Vec<u64> = [1, 2, 3].into_iter().filter(|id| *id != leader).collect();
+    c.partition(&[leader], &followers);
+    let _ = c.node_mut(leader).step(Input::Campaign);
+    c.pump(leader);
+    let _ = c.node_mut(leader).step(Input::ReadIndex { ctx: 77 });
+    c.pump(leader);
+    c.run(3);
+
+    assert!(
+        !c.nodes[&leader].reads.iter().any(|(ctx, _)| *ctx == 77),
+        "with leases enabled, a leader that cannot commit its no-op answered a read"
+    );
+}
+
+/// Stepping down is not stepping aside for anyone. Leadership ends, the term
+/// stays put, and no successor is nominated.
+#[test]
+fn a_leader_told_to_step_down_stops_leading_without_moving_the_term() {
+    let mut c = Cluster::new(&[1, 2, 3]);
+    let leader = c.elect_leader();
+    c.run(2);
+    let term_before = c.node(leader).status().term;
+
+    let _ = c.node_mut(leader).step(Input::StepDown);
+    c.pump(leader);
+
+    let status = c.node(leader).status();
+    assert_eq!(
+        status.role,
+        Role::Follower,
+        "a step-down must end leadership"
+    );
+    assert_eq!(
+        status.term, term_before,
+        "stepping down must not move the term: the cluster is about to hold an \
+         election anyway, and a term bump makes every follower jump for a reason \
+         none of them can see"
+    );
+    assert_eq!(
+        status.leader, None,
+        "a node that stepped down must not point clients back at itself"
+    );
+}
+
+/// A node that is not the leader has nothing to give up.
+#[test]
+fn stepping_down_a_follower_does_nothing() {
+    let mut c = Cluster::new(&[1, 2, 3]);
+    let leader = c.elect_leader();
+    c.run(2);
+    let follower = [1, 2, 3].into_iter().find(|n| *n != leader).unwrap();
+    let before = c.node(follower).status();
+
+    let _ = c.node_mut(follower).step(Input::StepDown);
+    c.pump(follower);
+
+    let after = c.node(follower).status();
+    assert_eq!(after.role, before.role);
+    assert_eq!(after.term, before.term);
+    assert_eq!(after.leader, before.leader);
+}
+
+/// Reads in flight when a leader steps down are failed, not left to time out.
+#[test]
+fn a_step_down_fails_the_reads_it_can_no_longer_confirm() {
+    let mut c = Cluster::new(&[1, 2, 3]);
+    let leader = c.elect_leader();
+    c.run(2);
+
+    let _ = c.node_mut(leader).step(Input::ReadIndex { ctx: 1234 });
+    let _ = c.node_mut(leader).step(Input::StepDown);
+    c.pump(leader);
+    c.run(3);
+
+    assert!(
+        !c.nodes[&leader].reads.iter().any(|(ctx, _)| *ctx == 1234),
+        "a read was confirmed by a node that had already stepped down"
+    );
+}
+
 // -------------------------------------------------------------- membership
 
 #[test]

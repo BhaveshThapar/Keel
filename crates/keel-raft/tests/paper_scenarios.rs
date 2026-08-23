@@ -8,7 +8,8 @@ mod common;
 
 use common::Cluster;
 use keel_raft::{
-    ConfState, Config, Entry, EntryPayload, HardState, Input, Message, MessageBody, RaftCore, Role,
+    ConfState, Config, Entry, EntryPayload, HardState, Input, Message, MessageBody, RaftCore,
+    Restored, Role,
 };
 
 /// Figure 7: six followers whose logs diverge from the leader's in every way the
@@ -152,7 +153,15 @@ fn leader_holding_old_term_entry_with(f: impl Fn(Config) -> Config) -> RaftCore 
         pre_vote: false,
         ..Config::new(1)
     });
-    let mut s1 = RaftCore::restore(cfg, conf, hs, None, entries);
+    let mut s1 = RaftCore::restore(
+        cfg,
+        Restored {
+            conf,
+            hard_state: hs,
+            entries,
+            ..Restored::default()
+        },
+    );
 
     let _ = s1.step(Input::Campaign);
     let term = s1.term();
@@ -247,7 +256,15 @@ fn voter_with_log_1_1_2() -> RaftCore {
         voted_for: None,
         commit: 0,
     };
-    let mut core = RaftCore::restore(Config::new(1), conf, hs, None, entries);
+    let mut core = RaftCore::restore(
+        Config::new(1),
+        Restored {
+            conf,
+            hard_state: hs,
+            entries,
+            ..Restored::default()
+        },
+    );
     drain(&mut core);
     core
 }
@@ -295,4 +312,93 @@ fn send_vote_req(
         snapshot_installed: None,
     });
     granted
+}
+
+/// A restart hands the state machine what it has *not* applied, not everything
+/// above the snapshot floor.
+///
+/// The log knows only where it was compacted to. The state machine knows exactly
+/// what it applied, because it wrote that index in the same atomic batch as the
+/// data (ADR-010). Taking the log's guess re-hands entries the state machine has
+/// already seen — harmless while apply is idempotent, and not harmless once a
+/// session table is deduplicating against sequence numbers those entries carry.
+#[test]
+fn a_restart_does_not_re_apply_what_the_state_machine_already_applied() {
+    let entries: Vec<Entry> = (1..=6)
+        .map(|i| Entry::new(1, i, EntryPayload::Normal(vec![i as u8].into())))
+        .collect();
+    let hs = HardState {
+        term: 1,
+        voted_for: None,
+        commit: 6,
+    };
+    let conf = ConfState::single([1]);
+
+    let restored = |applied| {
+        let mut core = RaftCore::restore(
+            Config::new(1),
+            Restored {
+                conf: conf.clone(),
+                hard_state: hs,
+                entries: entries.clone(),
+                applied,
+                ..Restored::default()
+            },
+        );
+        // The host reports what it persisted before anything can be applied.
+        core.step(Input::Tick).unwrap();
+        let rd = core.ready();
+        rd.committed_entries
+            .iter()
+            .map(|e| e.index)
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        restored(0),
+        vec![1, 2, 3, 4, 5, 6],
+        "a state machine that applied nothing must be handed the whole committed prefix"
+    );
+    assert_eq!(
+        restored(4),
+        vec![5, 6],
+        "a state machine that applied through index 4 was handed entries it had already applied"
+    );
+    assert_eq!(
+        restored(6),
+        Vec::<u64>::new(),
+        "a state machine that is fully caught up was handed entries anyway"
+    );
+}
+
+/// An `applied` above the commit index is not evidence, it is a disagreement:
+/// either the state machine's index is corrupt or the log lost its tail. The
+/// core clamps rather than believing it, because re-applying a few entries is
+/// the recoverable half of the two.
+#[test]
+fn an_applied_index_above_the_commit_index_is_clamped() {
+    let entries: Vec<Entry> = (1..=3)
+        .map(|i| Entry::new(1, i, EntryPayload::Normal(vec![i as u8].into())))
+        .collect();
+    let mut core = RaftCore::restore(
+        Config::new(1),
+        Restored {
+            conf: ConfState::single([1]),
+            hard_state: HardState {
+                term: 1,
+                voted_for: None,
+                commit: 2,
+            },
+            entries,
+            applied: 99,
+            ..Restored::default()
+        },
+    );
+    assert_eq!(core.status().applied, 2, "applied outran the commit index");
+    core.step(Input::Tick).unwrap();
+    let rd = core.ready();
+    assert!(
+        rd.committed_entries.is_empty(),
+        "a clamped applied index still handed entries out below itself"
+    );
 }

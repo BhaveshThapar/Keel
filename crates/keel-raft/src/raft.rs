@@ -71,13 +71,43 @@ impl Config {
 pub enum Input {
     Tick,
     Message(Message),
-    Propose { ctx: u64, data: Bytes },
-    ProposeConfChange { ctx: u64, cc: ConfChangeV2 },
-    ReadIndex { ctx: u64 },
-    TransferLeader { to: NodeId },
-    ReportUnreachable { peer: NodeId },
-    ReportSnapshotStatus { peer: NodeId, ok: bool },
+    Propose {
+        ctx: u64,
+        data: Bytes,
+    },
+    ProposeConfChange {
+        ctx: u64,
+        cc: ConfChangeV2,
+    },
+    ReadIndex {
+        ctx: u64,
+    },
+    TransferLeader {
+        to: NodeId,
+    },
+    ReportUnreachable {
+        peer: NodeId,
+    },
+    ReportSnapshotStatus {
+        peer: NodeId,
+        ok: bool,
+    },
     Campaign,
+    /// Give up leadership without nominating a successor.
+    ///
+    /// Distinct from [`Input::TransferLeader`], which hands leadership to a
+    /// named node and keeps the cluster serving through the change. This one is
+    /// for the cases where there is nobody to hand it to and staying leader is
+    /// the wrong thing: a node whose storage has latched a fatal error and can
+    /// no longer make an entry durable, an operator draining a machine, a
+    /// process that is about to exit. It is a no-op on a node that is not the
+    /// leader.
+    ///
+    /// The term does not move. Stepping down is not a failure of the term, and
+    /// bumping it would force an election on a cluster that is about to hold one
+    /// anyway — while also making every follower's term jump for a reason none
+    /// of them can see.
+    StepDown,
 }
 
 /// Everything the host must act on, in this order:
@@ -115,6 +145,28 @@ impl Ready {
             && self.read_states.is_empty()
             && self.proposals_dropped.is_empty()
     }
+}
+
+/// What a restart recovered from disk.
+///
+/// A struct rather than five positional arguments: four of the five are
+/// `Option`s, `Vec`s and structs a caller could transpose without the compiler
+/// objecting, and getting `applied` and `commit` the wrong way round is exactly
+/// the kind of mistake that produces a cluster which is subtly wrong rather than
+/// obviously broken.
+#[derive(Debug, Clone, Default)]
+pub struct Restored {
+    /// The configuration as of the last snapshot, or the bootstrap one.
+    pub conf: ConfState,
+    /// Term, vote and commit index, as they were fsynced.
+    pub hard_state: HardState,
+    /// The snapshot the log was compacted to, if any.
+    pub snapshot: Option<SnapshotMeta>,
+    /// Every entry above the snapshot that survived recovery.
+    pub entries: Vec<Entry>,
+    /// What the state machine says it has applied — read from the same atomic
+    /// batch as the data it describes, never inferred from the log.
+    pub applied: Index,
 }
 
 /// What the host got done. Watermarks, not deltas, so a host that batches or
@@ -191,16 +243,34 @@ impl RaftCore {
     }
 
     /// Rebuild after a restart from what the host recovered off disk.
-    pub fn restore(
-        cfg: Config,
-        conf: ConfState,
-        hs: HardState,
-        snapshot: Option<SnapshotMeta>,
-        entries: Vec<Entry>,
-    ) -> Self {
-        Self::build(cfg, conf, hs, snapshot, entries)
+    ///
+    /// One struct rather than five positional arguments, because four of the
+    /// five are `Option`s, `Vec`s and structs that a caller can transpose
+    /// without the compiler noticing.
+    pub fn restore(cfg: Config, restored: Restored) -> Self {
+        let Restored {
+            conf,
+            hard_state,
+            snapshot,
+            entries,
+            applied,
+        } = restored;
+        let mut core = Self::build(cfg, conf, hard_state, snapshot, entries);
+        // What the state machine says it applied, not what the log infers. The
+        // two differ after a restart: the log knows only its snapshot floor,
+        // while the state machine wrote its `applied_index` in the same atomic
+        // batch as the data (ADR-010) and therefore knows exactly. Taking the
+        // log's guess would re-hand every entry between the two to the state
+        // machine — harmless while apply is idempotent, and not harmless at all
+        // once a session table is deduplicating against sequence numbers those
+        // entries carry.
+        if applied > 0 {
+            core.set_applied_floor(applied);
+        }
+        core
     }
 
+    /// Everything a restart recovers, in one place.
     fn build(
         cfg: Config,
         conf: ConfState,
@@ -258,6 +328,21 @@ impl RaftCore {
         };
         core.replay_conf_changes();
         core
+    }
+
+    /// Tell the core the state machine is already past `applied`.
+    ///
+    /// Clamped to `commit`, because an `applied` above the commit index means
+    /// the state machine has applied something this node cannot prove was
+    /// committed — which is either a corrupt `applied_index` or a log that lost
+    /// its tail. Trusting it would be trusting the one number that is now known
+    /// to disagree with the log; re-applying a few entries is the recoverable
+    /// half of the two.
+    fn set_applied_floor(&mut self, applied: Index) {
+        let floor = applied.min(self.log.committed());
+        self.log.set_applied(floor);
+        self.emitted_applied = self.emitted_applied.max(floor);
+        self.replay_conf_changes();
     }
 
     /// Re-derive the configuration from conf-change entries already applied at
@@ -427,6 +512,14 @@ impl RaftCore {
             }
             Input::Campaign => {
                 self.campaign(false);
+                Ok(())
+            }
+            Input::StepDown => {
+                if self.role == Role::Leader {
+                    // No leader hint: this node is not nominating anyone, and a
+                    // hint pointing at itself would send clients straight back.
+                    self.become_follower(self.term, None);
+                }
                 Ok(())
             }
         }
@@ -1034,19 +1127,7 @@ impl RaftCore {
         let joint = self.tracker.joint().clone();
         if let Some((index, reqs)) = self.read_only.ack(id, from, &joint) {
             for req in reqs {
-                match req.from {
-                    Some(node) => self.send(
-                        node,
-                        MessageBody::ReadIndexResp {
-                            ctx: req.ctx,
-                            index,
-                        },
-                    ),
-                    None => self.read_states.push(ReadState {
-                        ctx: req.ctx,
-                        index,
-                    }),
-                }
+                self.resolve_read(req.ctx, req.from, index);
             }
         }
     }
@@ -1098,12 +1179,38 @@ impl RaftCore {
             return;
         }
         let req = ReadRequest { ctx, from };
-        // Until the term's no-op commits, this leader cannot know its commit
-        // index reflects everything a previous leader committed.
-        if self.log.term(self.log.committed()) == Some(self.term) {
-            self.read_only.enqueue(req);
-        } else {
+        // Until this term's no-op commits, the leader cannot know its commit
+        // index reflects everything a previous leader committed. This guard is
+        // *upstream* of the lease decision below on purpose: holding a lease
+        // proves nobody else is leader, which is a different claim, and a lease
+        // path with its own copy of this check is a lease path that can lose it.
+        if self.log.term(self.log.committed()) != Some(self.term) {
             self.read_only.park(req);
+            return;
+        }
+        // The read is eligible. Under a lease the leader may answer it itself,
+        // with no round trip and no batch — which is the whole reason a lease
+        // read is cheaper, and the whole reason it is only correct inside a
+        // clock assumption (ADR-005).
+        //
+        // This lives here rather than in the host. Before, a host asked
+        // `lease_valid()` and decided for itself, which put the one read path
+        // whose correctness depends on a clock assumption outside the component
+        // that owns the assumption, and left every host free to check it
+        // differently or to skip the guard above.
+        if self.lease_valid() {
+            self.resolve_read(ctx, from, self.log.committed());
+            return;
+        }
+        self.read_only.enqueue(req);
+    }
+
+    /// Hand one read its index — to the client here, or back to the follower
+    /// that forwarded it.
+    fn resolve_read(&mut self, ctx: u64, from: Option<NodeId>, index: Index) {
+        match from {
+            Some(peer) => self.send(peer, MessageBody::ReadIndexResp { ctx, index }),
+            None => self.read_states.push(ReadState { ctx, index }),
         }
     }
 

@@ -39,13 +39,31 @@ row that was never written.
 | Check-quorum makes a leader without a majority step down | `election::leader_without_a_quorum_steps_down` | enforced |
 | Leader transfer completes inside one election timeout | `election::leader_transfer_moves_leadership_within_one_election_timeout` | enforced |
 | A fresh leader will not serve a read before its no-op commits | `cluster_behaviour::a_fresh_leader_parks_reads_until_its_no_op_commits` | enforced |
+| …and turning leases on does not move that guard | `cluster_behaviour::lease_configuration_does_not_bypass_the_no_op_park` | enforced |
 | A lease lapses when the leader loses contact | `cluster_behaviour::lease_reads_are_only_valid_while_the_lease_holds` | enforced |
+| A lease read costs no round trip | `cluster_behaviour::a_lease_read_is_answered_without_a_round_trip` | enforced |
+| A step-down ends leadership without moving the term | `cluster_behaviour::a_leader_told_to_step_down_stops_leading_without_moving_the_term`; `cluster_behaviour::stepping_down_a_follower_does_nothing` | enforced |
+| A step-down fails the reads it can no longer confirm | `cluster_behaviour::a_step_down_fails_the_reads_it_can_no_longer_confirm` | enforced |
+| A restart applies from what the state machine reports, not what the log infers | `paper_scenarios::a_restart_does_not_re_apply_what_the_state_machine_already_applied`; `paper_scenarios::an_applied_index_above_the_commit_index_is_clamped` | enforced |
 | Joint consensus quorums always intersect | `quorum::tests::quorums_of_both_halves_always_intersect` (exhaustive over subsets) | enforced |
 | Voter changes pass through `C_old,new` and leave it automatically | `cluster_behaviour::adding_voters_goes_through_a_joint_configuration_and_leaves_it_automatically` | enforced |
 | Only one configuration change in flight | `cluster_behaviour::a_second_configuration_change_is_refused_while_one_is_in_flight` | enforced |
 | A leader removed from the configuration steps down | `cluster_behaviour::a_leader_that_removes_itself_steps_down` | enforced |
 | Membership changes do not stall writes | `cluster_behaviour::writes_keep_flowing_during_a_membership_change` | enforced |
 | A far-behind follower catches up from the log, not a snapshot | `cluster_behaviour::a_follower_that_missed_thousands_of_entries_catches_up_without_a_snapshot` | enforced |
+
+## The wire
+
+| Property | Enforced by | Status |
+|---|---|---|
+| Every request, response and peer message round-trips | `tests::every_request_round_trips`, `tests::every_response_round_trips`, `tests::every_peer_message_round_trips` | enforced |
+| A payload with bytes appended is refused, not accepted | `tests::a_payload_with_bytes_appended_is_refused` | enforced |
+| A prefix of a message is never decoded as the message | `tests::a_truncated_payload_is_refused_rather_than_guessed` | enforced |
+| Arbitrary bytes do not panic the decoder | `tests::arbitrary_bytes_do_not_panic_the_decoder` (generalised by a fuzz target at M3) | enforced |
+| A length is checked against the limit before anything is reserved | `frame::tests::an_oversized_length_is_refused_before_anything_is_reserved` | enforced |
+| A frame arriving one byte at a time is still one frame | `frame::tests::a_frame_split_across_arbitrary_reads_is_still_one_frame` (exhaustive over every chunk size) | enforced |
+| Both transports behave identically | `keel_net::conformance::check`, run against `LoopbackPair` and against `TcpTransport` | enforced |
+| A `Message` survives either transport unchanged | `transport_conformance::a_message_round_trips_identically_through_both_transports` | enforced |
 
 ## The durable log
 
@@ -187,6 +205,12 @@ Named here so the gaps are visible rather than discovered:
   and there is no server to halt yet (M1 Phase 5).
 - **fsync loss.** A `Durable` sync that reports success and does not stick.
   Modelled by nothing, and the other half of TR-5.
+- **A lease read served by a leader whose own no-op has not committed.** The
+  guard exists and sits upstream of the lease branch in `request_read_index`, so
+  there is one check rather than two. The window itself is not reachable from the
+  in-process cluster: acquiring a lease takes a round of heartbeat
+  acknowledgements, and that harness delivers in order, so the no-op is
+  acknowledged first. Closed by P9's recency oracle, which reorders.
 - Group commit across concurrent proposals. `keel-log` gives one fsync per
   `sync()` call; batching several proposals into one belongs to the writer that
   drives it, which does not exist yet (M1 Phase 5).

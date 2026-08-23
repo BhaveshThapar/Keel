@@ -39,7 +39,7 @@ pub use confchange::ConfChangeError;
 pub use log::{AppendOutcome, RaftLog};
 pub use message::{Message, MessageBody};
 pub use quorum::{JointConfig, MajorityConfig, VoteResult};
-pub use raft::{Advance, Config, Input, RaftCore, Ready, Status, StepError};
+pub use raft::{Advance, Config, Input, RaftCore, Ready, Restored, Status, StepError};
 pub use read_only::ReadRequest;
 pub use tracker::{Progress, ProgressState, ProgressTracker};
 pub use types::{
