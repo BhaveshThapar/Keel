@@ -23,8 +23,11 @@ for demo in scripts/negative-demos/*.sh; do
     name="$(basename "$demo" .sh)"
     out="results/negative-demos/$name.txt"
     echo "=== $name"
-    # shellcheck disable=SC2086 # word splitting of "$@" is what is wanted here
-    "$demo" "$@" | tee "$out"
+    # stderr is where the simulator prints the failure report — which node
+    # diverged, at which index, under which schedule. An artifact that recorded
+    # only stdout would say a count was non-zero without saying what was found,
+    # and the evidence is the report, not the count.
+    "$demo" "$@" 2>&1 | tee "$out"
     status="${PIPESTATUS[0]}"
     if [[ "$status" -ne 0 ]]; then
         echo "$name failed; its artifact records the failure" >&2
