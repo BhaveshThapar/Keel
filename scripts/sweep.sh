@@ -48,10 +48,20 @@ host_line() {
     esac
 }
 
+# Read the tree's state *before* the pipeline starts. `tee` truncates $OUT the
+# moment it opens, and $OUT is tracked, so a check made inside the block always
+# reports a modified tree — including when the tree is clean. The provenance
+# line is the whole point of this artifact, so it may not be measuring its own
+# side effect.
+HEAD_SHA="$(git rev-parse --short HEAD)"
+DIRTY=""
+git diff --quiet -- . ":(exclude)$OUT" || DIRTY=" (working tree modified)"
+git diff --quiet --cached || DIRTY=" (working tree modified)"
+
 {
     echo "=== keel-sim validation sweep ==="
     echo "host:   $(host_line)"
-    echo "commit: $(git rev-parse --short HEAD)$(git diff --quiet || echo ' (working tree modified)')"
+    echo "commit: ${HEAD_SHA}${DIRTY}"
     echo "date:   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo
     echo "Safety only. No timing claim is made here: the simulator runs on a"
