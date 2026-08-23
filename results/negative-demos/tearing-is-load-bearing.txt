@@ -1,0 +1,408 @@
+==============================================================
+Tearing: does the fault model earn its cost?
+  one broken build, two fault models
+  3 nodes, 25 seeds x 40000 steps
+==============================================================
+
+--- WITH TEARS (disk-hunt): the broken build. Expect seeds to fail.
+
+seed 0 failed after 11040 events
+  violation: Log Matching: node 3 has a different prefix at index 36 term 1 than another node did (digest 19ecaace6d665b2 vs 48f118044b203ec4)
+  reproduce with: keel-sim repro --seed 0 --nodes 3
+  recent events:
+    [   240000000ns] isolated node 3
+    [   360000000ns] network healed
+    [   420000000ns] isolated node 2
+    [   540000000ns] network healed
+    [   600000000ns] crashed node 2
+    [   640000000ns] node 2 restarted
+    [   720000000ns] one-way cut 2 -> 1
+    [   780000000ns] one-way cut 3 -> 2
+    [   900000000ns] crashed node 3
+    [   940000000ns] node 3 restarted
+    [   960000000ns] network healed
+    [  1020000000ns] network healed
+    [  1140000000ns] partition [1] | [2, 3]
+    [  1200000000ns] crashed node 3
+    [  1240000000ns] node 3 restarted
+    [  1260000000ns] partition [1] | [2, 3]
+    [  1380000000ns] partition [1] | [2, 3]
+    [  1500000000ns] partition [1, 2] | [3]
+    [  1560000000ns] network healed
+    [  1620000000ns] crashed node 2
+    [  1660000000ns] node 2 restarted
+    [  1680000000ns] one-way cut 3 -> 2
+    [  1740000000ns] partition [1] | [2, 3]
+    [  1800000000ns] network healed
+    [  1860000000ns] partition [1, 2] | [3]
+    [  1920000000ns] network healed
+    [  1980000000ns] partition [1] | [2, 3]
+    [  2040000000ns] network healed
+    [  2160000000ns] crashed node 3
+    [  2200000000ns] node 3 restarted
+    [  2220000000ns] crashed node 3
+    [  2260000000ns] node 3 restarted
+    [  2260000000ns] node 3 role=Follower term=3 last=36 commit=6 applied=0
+  node state:
+    node 1 alive=true role=Follower term=3 last=16 commit=6 applied=6
+    node 2 alive=true role=Leader term=3 last=3249 commit=6 applied=6
+    node 3 alive=true role=Follower term=3 last=36 commit=6 applied=0
+
+seed 2 failed after 28777 events
+  violation: Log Matching: node 3 has a different prefix at index 103 term 2 than another node did (digest 1105fa72f0cdbac5 vs 7dee23425b5c5c8b)
+  reproduce with: keel-sim repro --seed 2 --nodes 3
+  recent events:
+    [  1260000000ns] network healed
+    [  1320000000ns] network healed
+    [  1380000000ns] network healed
+    [  1440000000ns] partition [1] | [2, 3]
+    [  1500000000ns] one-way cut 2 -> 1
+    [  1620000000ns] network healed
+    [  1680000000ns] partition [1] | [2, 3]
+    [  1740000000ns] isolated node 3
+    [  1860000000ns] partition [1] | [2, 3]
+    [  1920000000ns] partition [1, 2] | [3]
+    [  1980000000ns] one-way cut 2 -> 3
+    [  2040000000ns] one-way cut 3 -> 2
+    [  2100000000ns] partition [1] | [2, 3]
+    [  2160000000ns] network healed
+    [  2220000000ns] partition [1] | [2, 3]
+    [  2280000000ns] partition [1] | [2, 3]
+    [  2340000000ns] partition [1] | [2, 3]
+    [  2400000000ns] network healed
+    [  2460000000ns] partition [1, 2] | [3]
+    [  2520000000ns] network healed
+    [  2640000000ns] one-way cut 3 -> 2
+    [  2760000000ns] partition [1] | [2, 3]
+    [  2880000000ns] one-way cut 1 -> 3
+    [  2940000000ns] crashed node 2
+    [  2980000000ns] node 2 restarted
+    [  3000000000ns] network healed
+    [  3120000000ns] partition [1] | [2, 3]
+    [  3180000000ns] network healed
+    [  3240000000ns] partition [1, 2] | [3]
+    [  3360000000ns] partition [1] | [2, 3]
+    [  3420000000ns] network healed
+    [  3480000000ns] one-way cut 2 -> 3
+    [  3540000000ns] crashed node 1
+    [  3580000000ns] node 1 restarted
+    [  3600000000ns] partition [1] | [2, 3]
+    [  3720000000ns] partition [1] | [2, 3]
+    [  3780000000ns] partition [1] | [2, 3]
+    [  3840000000ns] partition [1, 2] | [3]
+    [  3900000000ns] network healed
+    [  3960000000ns] partition [1, 2] | [3]
+    [  4020000000ns] network healed
+    [  4200000000ns] one-way cut 2 -> 1
+    [  4260000000ns] network healed
+    [  4320000000ns] partition [1] | [2, 3]
+    [  4380000000ns] isolated node 2
+    [  4500000000ns] isolated node 2
+    [  4680000000ns] network healed
+    [  4740000000ns] network healed
+    [  4800000000ns] partition [1] | [2, 3]
+    [  4920000000ns] partition [1, 2] | [3]
+    [  4980000000ns] one-way cut 3 -> 2
+    [  5040000000ns] one-way cut 3 -> 2
+    [  5100000000ns] one-way cut 3 -> 1
+    [  5160000000ns] network healed
+    [  5340000000ns] one-way cut 3 -> 1
+    [  5400000000ns] network healed
+    [  5460000000ns] partition [1] | [2, 3]
+    [  5520000000ns] one-way cut 1 -> 3
+    [  5580000000ns] partition [1] | [2, 3]
+    [  5640000000ns] network healed
+    [  5700000000ns] partition [1] | [2, 3]
+    [  5760000000ns] crashed node 3
+    [  5800000000ns] node 3 restarted
+    [  5800000000ns] node 3 role=Follower term=6 last=103 commit=47 applied=0
+  node state:
+    node 1 alive=true role=Follower term=6 last=70 commit=47 applied=47
+    node 2 alive=true role=Leader term=6 last=7140 commit=47 applied=47
+    node 3 alive=true role=Follower term=6 last=103 commit=47 applied=0
+
+seed 7 failed after 31628 events
+  violation: Log Matching: node 1 has a different prefix at index 80 term 3 than another node did (digest 4362075e6ae4ca51 vs d33b0b53b1dfc7f)
+  reproduce with: keel-sim repro --seed 7 --nodes 3
+  recent events:
+    [  3480000000ns] partition [1] | [2, 3]
+    [  3540000000ns] crashed node 2
+    [  3580000000ns] node 2 restarted
+    [  3600000000ns] one-way cut 1 -> 2
+    [  3660000000ns] isolated node 2
+    [  3720000000ns] network healed
+    [  3780000000ns] crashed node 2
+    [  3820000000ns] node 2 restarted
+    [  3840000000ns] crashed node 3
+    [  3880000000ns] node 3 restarted
+    [  3900000000ns] partition [1] | [2, 3]
+    [  3960000000ns] network healed
+    [  4020000000ns] partition [1, 2] | [3]
+    [  4140000000ns] crashed node 1
+    [  4180000000ns] node 1 restarted
+    [  4200000000ns] isolated node 2
+    [  4260000000ns] network healed
+    [  4380000000ns] one-way cut 1 -> 2
+    [  4440000000ns] crashed node 2
+    [  4480000000ns] node 2 restarted
+    [  4500000000ns] partition [1] | [2, 3]
+    [  4560000000ns] partition [1] | [2, 3]
+    [  4620000000ns] one-way cut 2 -> 1
+    [  4680000000ns] network healed
+    [  4740000000ns] one-way cut 2 -> 1
+    [  4800000000ns] one-way cut 1 -> 2
+    [  4860000000ns] partition [1, 2] | [3]
+    [  4980000000ns] one-way cut 3 -> 2
+    [  5040000000ns] crashed node 1
+    [  5080000000ns] node 1 restarted
+    [  5100000000ns] isolated node 1
+    [  5160000000ns] partition [1] | [2, 3]
+    [  5220000000ns] one-way cut 3 -> 2
+    [  5280000000ns] crashed node 3
+    [  5320000000ns] node 3 restarted
+    [  5340000000ns] network healed
+    [  5400000000ns] network healed
+    [  5460000000ns] network healed
+    [  5520000000ns] network healed
+    [  5580000000ns] partition [1, 2] | [3]
+    [  5640000000ns] crashed node 2
+    [  5680000000ns] node 2 restarted
+    [  5700000000ns] network healed
+    [  5760000000ns] partition [1, 2] | [3]
+    [  5820000000ns] isolated node 3
+    [  5880000000ns] partition [1, 2] | [3]
+    [  5940000000ns] crashed node 1
+    [  5980000000ns] node 1 restarted
+    [  6000000000ns] one-way cut 1 -> 3
+    [  6060000000ns] partition [1, 2] | [3]
+    [  6120000000ns] network healed
+    [  6180000000ns] network healed
+    [  6240000000ns] one-way cut 2 -> 3
+    [  6300000000ns] network healed
+    [  6420000000ns] network healed
+    [  6480000000ns] partition [1, 2] | [3]
+    [  6540000000ns] isolated node 1
+    [  6600000000ns] partition [1] | [2, 3]
+    [  6660000000ns] isolated node 2
+    [  6720000000ns] one-way cut 2 -> 3
+    [  6780000000ns] network healed
+    [  6840000000ns] crashed node 1
+    [  6880000000ns] node 1 restarted
+    [  6880000000ns] node 1 role=Follower term=7 last=80 commit=15 applied=0
+  node state:
+    node 1 alive=true role=Follower term=7 last=80 commit=15 applied=0
+    node 2 alive=true role=Leader term=7 last=7595 commit=15 applied=15
+    node 3 alive=true role=Follower term=7 last=56 commit=15 applied=15
+
+seed 8 failed after 7563 events
+  violation: Log Matching: node 1 has a different prefix at index 20 term 1 than another node did (digest 1e05ca51083c772a vs ec5f534cac8620d8)
+  reproduce with: keel-sim repro --seed 8 --nodes 3
+  recent events:
+    [    60000000ns] partition [1] | [2, 3]
+    [   240000000ns] isolated node 1
+    [   360000000ns] partition [1] | [2, 3]
+    [   420000000ns] partition [1] | [2, 3]
+    [   480000000ns] isolated node 2
+    [   540000000ns] crashed node 2
+    [   580000000ns] node 2 restarted
+    [   600000000ns] partition [1] | [2, 3]
+    [   660000000ns] partition [1] | [2, 3]
+    [   720000000ns] partition [1, 2] | [3]
+    [   780000000ns] network healed
+    [   840000000ns] isolated node 2
+    [   960000000ns] network healed
+    [  1020000000ns] isolated node 3
+    [  1080000000ns] crashed node 3
+    [  1120000000ns] node 3 restarted
+    [  1140000000ns] partition [1] | [2, 3]
+    [  1200000000ns] crashed node 1
+    [  1240000000ns] node 1 restarted
+    [  1260000000ns] network healed
+    [  1380000000ns] crashed node 1
+    [  1420000000ns] node 1 restarted
+    [  1440000000ns] network healed
+    [  1500000000ns] network healed
+    [  1560000000ns] crashed node 1
+    [  1600000000ns] node 1 restarted
+    [  1600000000ns] node 1 role=Follower term=2 last=20 commit=14 applied=0
+  node state:
+    node 1 alive=true role=Follower term=2 last=20 commit=14 applied=0
+    node 2 alive=true role=Follower term=2 last=10 commit=10 applied=9
+    node 3 alive=true role=Leader term=2 last=2204 commit=14 applied=14
+
+seed 11 failed after 4916 events
+  violation: Log Matching: node 1 has a different prefix at index 31 term 1 than another node did (digest 4e0ad0eddc2da27b vs c20c622bbe84327b)
+  reproduce with: keel-sim repro --seed 11 --nodes 3
+  recent events:
+    [    60000000ns] network healed
+    [   240000000ns] isolated node 1
+    [   360000000ns] network healed
+    [   420000000ns] isolated node 1
+    [   540000000ns] network healed
+    [   600000000ns] network healed
+    [   660000000ns] network healed
+    [   780000000ns] crashed node 1
+    [   820000000ns] node 1 restarted
+    [   820000000ns] node 1 role=Follower term=1 last=31 commit=30 applied=0
+  node state:
+    node 1 alive=true role=Follower term=1 last=31 commit=30 applied=0
+    node 2 alive=true role=Follower term=1 last=34 commit=34 applied=34
+    node 3 alive=true role=Leader term=1 last=1801 commit=34 applied=34
+
+seed 14 failed after 27542 events
+  violation: Log Matching: node 1 has a different prefix at index 99 term 7 than another node did (digest fca2a36f50a1f581 vs d89825b8ae7986af)
+  reproduce with: keel-sim repro --seed 14 --nodes 3
+  recent events:
+    [  1620000000ns] network healed
+    [  1680000000ns] crashed node 1
+    [  1720000000ns] node 1 restarted
+    [  1800000000ns] network healed
+    [  1860000000ns] network healed
+    [  1980000000ns] one-way cut 3 -> 1
+    [  2040000000ns] isolated node 3
+    [  2160000000ns] crashed node 3
+    [  2200000000ns] node 3 restarted
+    [  2220000000ns] isolated node 2
+    [  2280000000ns] partition [1, 2] | [3]
+    [  2340000000ns] crashed node 3
+    [  2380000000ns] node 3 restarted
+    [  2400000000ns] crashed node 1
+    [  2440000000ns] node 1 restarted
+    [  2460000000ns] partition [1] | [2, 3]
+    [  2520000000ns] network healed
+    [  2640000000ns] network healed
+    [  2700000000ns] partition [1] | [2, 3]
+    [  2760000000ns] partition [1] | [2, 3]
+    [  2820000000ns] crashed node 2
+    [  2860000000ns] node 2 restarted
+    [  2880000000ns] network healed
+    [  2940000000ns] partition [1, 2] | [3]
+    [  3000000000ns] one-way cut 3 -> 2
+    [  3060000000ns] partition [1] | [2, 3]
+    [  3120000000ns] network healed
+    [  3180000000ns] isolated node 2
+    [  3240000000ns] partition [1] | [2, 3]
+    [  3360000000ns] one-way cut 1 -> 3
+    [  3420000000ns] one-way cut 2 -> 3
+    [  3480000000ns] network healed
+    [  3540000000ns] network healed
+    [  3600000000ns] network healed
+    [  3720000000ns] network healed
+    [  3780000000ns] network healed
+    [  3840000000ns] network healed
+    [  3900000000ns] crashed node 3
+    [  3940000000ns] node 3 restarted
+    [  4020000000ns] partition [1, 2] | [3]
+    [  4200000000ns] one-way cut 1 -> 2
+    [  4320000000ns] crashed node 3
+    [  4360000000ns] node 3 restarted
+    [  4380000000ns] isolated node 3
+    [  4440000000ns] one-way cut 2 -> 3
+    [  4500000000ns] crashed node 3
+    [  4540000000ns] node 3 restarted
+    [  4560000000ns] crashed node 2
+    [  4600000000ns] node 2 restarted
+    [  4620000000ns] partition [1, 2] | [3]
+    [  4740000000ns] network healed
+    [  4800000000ns] network healed
+    [  4860000000ns] network healed
+    [  4920000000ns] network healed
+    [  4980000000ns] partition [1, 2] | [3]
+    [  5040000000ns] network healed
+    [  5100000000ns] partition [1, 2] | [3]
+    [  5220000000ns] partition [1, 2] | [3]
+    [  5280000000ns] network healed
+    [  5340000000ns] network healed
+    [  5400000000ns] partition [1, 2] | [3]
+    [  5460000000ns] crashed node 1
+    [  5500000000ns] node 1 restarted
+    [  5500000000ns] node 1 role=Follower term=7 last=99 commit=97 applied=0
+  node state:
+    node 1 alive=true role=Follower term=7 last=99 commit=97 applied=0
+    node 2 alive=true role=Leader term=7 last=2223 commit=98 applied=98
+    node 3 alive=true role=Follower term=7 last=87 commit=87 applied=87
+
+seed 15 failed after 21795 events
+  violation: Log Matching: node 1 has a different prefix at index 81 term 1 than another node did (digest b6ea5985d10b67f3 vs 8acda41f84f2a09d)
+  reproduce with: keel-sim repro --seed 15 --nodes 3
+  recent events:
+    [  1560000000ns] network healed
+    [  1620000000ns] one-way cut 2 -> 3
+    [  1680000000ns] one-way cut 1 -> 3
+    [  1740000000ns] one-way cut 2 -> 3
+    [  1800000000ns] crashed node 2
+    [  1840000000ns] node 2 restarted
+    [  1860000000ns] network healed
+    [  1920000000ns] network healed
+    [  1980000000ns] network healed
+    [  2040000000ns] crashed node 2
+    [  2080000000ns] node 2 restarted
+    [  2100000000ns] partition [1, 2] | [3]
+    [  2160000000ns] isolated node 3
+    [  2220000000ns] crashed node 2
+    [  2260000000ns] node 2 restarted
+    [  2280000000ns] partition [1] | [2, 3]
+    [  2400000000ns] network healed
+    [  2460000000ns] partition [1] | [2, 3]
+    [  2520000000ns] one-way cut 2 -> 1
+    [  2580000000ns] one-way cut 2 -> 3
+    [  2640000000ns] one-way cut 1 -> 2
+    [  2700000000ns] partition [1, 2] | [3]
+    [  2760000000ns] crashed node 3
+    [  2800000000ns] node 3 restarted
+    [  2820000000ns] partition [1] | [2, 3]
+    [  2880000000ns] isolated node 1
+    [  2940000000ns] one-way cut 1 -> 3
+    [  3000000000ns] network healed
+    [  3120000000ns] network healed
+    [  3180000000ns] network healed
+    [  3240000000ns] partition [1, 2] | [3]
+    [  3300000000ns] partition [1, 2] | [3]
+    [  3360000000ns] one-way cut 3 -> 2
+    [  3480000000ns] partition [1, 2] | [3]
+    [  3540000000ns] one-way cut 2 -> 1
+    [  3600000000ns] one-way cut 3 -> 1
+    [  3660000000ns] crashed node 2
+    [  3700000000ns] node 2 restarted
+    [  3720000000ns] partition [1, 2] | [3]
+    [  3780000000ns] network healed
+    [  3840000000ns] crashed node 1
+    [  3880000000ns] node 1 restarted
+    [  4020000000ns] crashed node 2
+    [  4060000000ns] node 2 restarted
+    [  4080000000ns] isolated node 3
+    [  4140000000ns] one-way cut 3 -> 2
+    [  4200000000ns] crashed node 2
+    [  4240000000ns] node 2 restarted
+    [  4260000000ns] network healed
+    [  4320000000ns] one-way cut 3 -> 1
+    [  4380000000ns] one-way cut 1 -> 2
+    [  4440000000ns] partition [1] | [2, 3]
+    [  4500000000ns] one-way cut 2 -> 3
+    [  4560000000ns] network healed
+    [  4620000000ns] partition [1, 2] | [3]
+    [  4680000000ns] partition [1, 2] | [3]
+    [  4740000000ns] one-way cut 2 -> 3
+    [  4800000000ns] partition [1, 2] | [3]
+    [  4860000000ns] partition [1, 2] | [3]
+    [  4920000000ns] crashed node 1
+    [  4960000000ns] node 1 restarted
+    [  4980000000ns] crashed node 1
+    [  5020000000ns] node 1 restarted
+    [  5020000000ns] node 1 role=Follower term=6 last=81 commit=18 applied=0
+  node state:
+    node 1 alive=true role=Follower term=6 last=81 commit=18 applied=0
+    node 2 alive=true role=Leader term=6 last=4565 commit=18 applied=18
+    node 3 alive=true role=PreCandidate term=5 last=35 commit=18 applied=18
+
+25 seeds x 40000 steps, 3 nodes, disk-hunt profile: 18 passed, 7 failed (mean 82 entries committed per run)
+failing seeds: [0, 2, 7, 8, 11, 14, 15]
+
+--- WITHOUT TEARS (chaos): the same broken build. Expect every seed to pass.
+
+25 seeds x 40000 steps, 3 nodes, chaos profile: 25 passed, 0 failed (mean 147 entries committed per run)
+
+==============================================================
+PASS: the same bug is caught when writes tear and invisible when they
+      are lost whole. Byte-granular tearing is what makes the checksum
+      checkable at all.

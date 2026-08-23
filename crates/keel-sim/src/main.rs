@@ -42,6 +42,14 @@ enum Command {
         /// negative-demos.
         #[arg(long)]
         disable_fig8_guard: bool,
+        /// Leave a torn tail on disk instead of zeroing it. Requires
+        /// --features negative-demos.
+        #[arg(long)]
+        skip_tail_erase: bool,
+        /// Accept a record whose checksum does not match. Requires
+        /// --features negative-demos.
+        #[arg(long)]
+        skip_record_crc: bool,
     },
     /// Replay one seed and print what it did.
     Repro {
@@ -55,6 +63,10 @@ enum Command {
         profile: String,
         #[arg(long)]
         disable_fig8_guard: bool,
+        #[arg(long)]
+        skip_tail_erase: bool,
+        #[arg(long)]
+        skip_record_crc: bool,
     },
     /// Run a seed twice and require identical results.
     Determinism {
@@ -74,15 +86,26 @@ enum Command {
     },
 }
 
-fn config_with_guard(profile: &str, nodes: usize, disable_fig8_guard: bool) -> Option<SimConfig> {
-    if disable_fig8_guard && !cfg!(feature = "negative-demos") {
+/// Which safety rules a run has had removed.
+#[derive(Clone, Copy, Default)]
+struct Removed {
+    fig8_guard: bool,
+    tail_erase: bool,
+    record_crc: bool,
+}
+
+fn config_with_guard(profile: &str, nodes: usize, removed: Removed) -> Option<SimConfig> {
+    let any = removed.fig8_guard || removed.tail_erase || removed.record_crc;
+    if any && !cfg!(feature = "negative-demos") {
         eprintln!(
-            "--disable-fig8-guard does nothing unless keel-sim is built with \
+            "a --skip/--disable flag does nothing unless keel-sim is built with \
              --features negative-demos"
         );
     }
     let mut cfg = SimConfig::named(profile, nodes)?;
-    cfg.disable_fig8_guard = disable_fig8_guard;
+    cfg.disable_fig8_guard = removed.fig8_guard;
+    cfg.skip_tail_erase = removed.tail_erase;
+    cfg.skip_record_crc = removed.record_crc;
     Some(cfg)
 }
 
@@ -96,8 +119,15 @@ fn main() -> ExitCode {
             profile,
             fail_fast,
             disable_fig8_guard,
+            skip_tail_erase,
+            skip_record_crc,
         } => {
-            let Some(cfg) = config_with_guard(&profile, nodes, disable_fig8_guard) else {
+            let removed = Removed {
+                fig8_guard: disable_fig8_guard,
+                tail_erase: skip_tail_erase,
+                record_crc: skip_record_crc,
+            };
+            let Some(cfg) = config_with_guard(&profile, nodes, removed) else {
                 eprintln!(
                     "unknown profile {profile:?}; expected one of {:?}",
                     SimConfig::PROFILES
@@ -142,8 +172,15 @@ fn main() -> ExitCode {
             nodes,
             profile,
             disable_fig8_guard,
+            skip_tail_erase,
+            skip_record_crc,
         } => {
-            let Some(cfg) = config_with_guard(&profile, nodes, disable_fig8_guard) else {
+            let removed = Removed {
+                fig8_guard: disable_fig8_guard,
+                tail_erase: skip_tail_erase,
+                record_crc: skip_record_crc,
+            };
+            let Some(cfg) = config_with_guard(&profile, nodes, removed) else {
                 eprintln!(
                     "unknown profile {profile:?}; expected one of {:?}",
                     SimConfig::PROFILES

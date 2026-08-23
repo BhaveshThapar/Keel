@@ -42,6 +42,13 @@ pub struct SimConfig {
     pub pre_vote: bool,
     pub check_quorum: bool,
     pub disable_fig8_guard: bool,
+    /// Leave a torn tail on disk instead of zeroing it. The rule [KEEL-7]
+    /// corrected; removing it is how the harness is shown to catch that class.
+    ///
+    /// [KEEL-7]: https://github.com/BhaveshThapar/Keel/blob/main/BUGS.md
+    pub skip_tail_erase: bool,
+    /// Accept a record whose checksum does not match.
+    pub skip_record_crc: bool,
     /// What a crash does to bytes no fsync covered.
     ///
     /// The default lands no sectors, so a crash takes every staged write back
@@ -100,6 +107,8 @@ impl Default for SimConfig {
             pre_vote: true,
             check_quorum: true,
             disable_fig8_guard: false,
+            skip_tail_erase: false,
+            skip_record_crc: false,
             tear: TearPolicy::default(),
             segment_bytes: 8 << 10,
             max_record_bytes: 4 << 10,
@@ -123,6 +132,8 @@ impl SimConfig {
             max_record_bytes: self.max_record_bytes,
             sync_mode: SyncMode::Durable,
             preallocate: true,
+            unsafe_skip_tail_erase: self.skip_tail_erase,
+            unsafe_skip_record_crc: self.skip_record_crc,
         }
     }
 

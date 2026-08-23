@@ -16,6 +16,9 @@ thiserror = { workspace = true }
 rustix = { workspace = true }
 
 [features]
+# Disables durability rules so the simulator can demonstrate it catches the
+# resulting violations (TR-8). Never enable outside negative-demo scripts.
+negative-demos = []
 # The shared Fs conformance suite, so the simulator's fault-injecting
 # filesystem can be held to the same assertions as the real one.
 conformance = []

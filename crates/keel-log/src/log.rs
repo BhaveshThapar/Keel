@@ -43,6 +43,21 @@ pub struct LogOptions {
     pub max_record_bytes: u32,
     pub sync_mode: SyncMode,
     pub preallocate: bool,
+    /// Leave a torn tail on disk instead of zeroing it.
+    ///
+    /// Honoured only under the `negative-demos` feature. The rule it removes is
+    /// the one [KEEL-7] corrected, and removing it is how the harness is shown
+    /// to catch that class rather than merely to have been patched for it.
+    ///
+    /// [KEEL-7]: https://github.com/BhaveshThapar/Keel/blob/main/BUGS.md
+    pub unsafe_skip_tail_erase: bool,
+    /// Accept a record whose checksum does not match, as long as its length is
+    /// plausible.
+    ///
+    /// Honoured only under the `negative-demos` feature. A torn `HardState`
+    /// whose tail reads as zeros then decodes into a *plausible but wrong*
+    /// hard state rather than being rejected — a node that forgets its vote.
+    pub unsafe_skip_record_crc: bool,
 }
 
 impl Default for LogOptions {
@@ -52,6 +67,25 @@ impl Default for LogOptions {
             max_record_bytes: 8 << 20,
             sync_mode: SyncMode::Durable,
             preallocate: true,
+            unsafe_skip_tail_erase: false,
+            unsafe_skip_record_crc: false,
+        }
+    }
+}
+
+impl LogOptions {
+    /// Whether a rule the `negative-demos` feature can remove is removed.
+    /// Always false in a normal build, so the branch it guards is unreachable
+    /// rather than merely unused.
+    fn removed(flag: bool) -> bool {
+        #[cfg(feature = "negative-demos")]
+        {
+            flag
+        }
+        #[cfg(not(feature = "negative-demos"))]
+        {
+            let _ = flag;
+            false
         }
     }
 }
@@ -157,8 +191,13 @@ impl<F: Fs> Log<F> {
         for (i, seg) in refs.iter().enumerate() {
             let bytes = Self::read_all(&fs, &seg.path)?;
             let start = Self::header_end(&bytes, &seg.path, opts.max_record_bytes)?;
-            let (end, stop) =
-                record::scan(&bytes, start, opts.max_record_bytes, |r| fold.apply(r))?;
+            let (end, stop) = record::scan(
+                &bytes,
+                start,
+                opts.max_record_bytes,
+                LogOptions::removed(opts.unsafe_skip_record_crc),
+                |r| fold.apply(r),
+            )?;
 
             if stop.is_torn() && i != last_seq {
                 // A torn tail is a crash artifact, and it belongs at the end of
@@ -193,7 +232,7 @@ impl<F: Fs> Log<F> {
         let fold = fold.finish()?;
 
         let mut current = fs.open(&refs[last_seq].path, OpenMode::Create)?;
-        if discarded > 0 {
+        if discarded > 0 && !LogOptions::removed(opts.unsafe_skip_tail_erase) {
             // The torn record left bytes after the cursor. A shorter record
             // written over it would leave the old one's tail sitting there,
             // decodable as a record on the *next* recovery — so it is erased
@@ -518,7 +557,9 @@ impl<F: Fs> Log<F> {
         for seg in &self.segments {
             let bytes = Self::read_all(&self.fs, &seg.path)?;
             let start = Self::header_end(&bytes, &seg.path, self.opts.max_record_bytes)?;
-            record::scan(&bytes, start, self.opts.max_record_bytes, |r| fold.apply(r))?;
+            record::scan(&bytes, start, self.opts.max_record_bytes, false, |r| {
+                fold.apply(r)
+            })?;
         }
         Ok(fold
             .entries

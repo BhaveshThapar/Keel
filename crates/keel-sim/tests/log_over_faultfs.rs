@@ -33,6 +33,7 @@ fn opts() -> LogOptions {
         max_record_bytes: 512,
         sync_mode: SyncMode::Durable,
         preallocate: true,
+        ..LogOptions::default()
     }
 }
 

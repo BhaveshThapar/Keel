@@ -76,11 +76,11 @@ seed 4 failed after 31276 events
     [  6700000000ns] partition [1, 2] | [3]
     [  6725000000ns] partition [1] | [2, 3]
     [  6750000000ns] network healed
-    [  6791987703ns] node 3 role=Leader term=22 last=563 commit=4 applied=4
+    [  6791987703ns] node 3 role=Leader term=22 last=568 commit=4 applied=4
   node state:
-    node 1 alive=true role=Follower term=22 last=302 commit=4 applied=4
+    node 1 alive=true role=Follower term=22 last=315 commit=4 applied=4
     node 2 alive=true role=Follower term=22 last=12 commit=4 applied=4
-    node 3 alive=true role=Leader term=22 last=563 commit=4 applied=4
+    node 3 alive=true role=Leader term=22 last=568 commit=4 applied=4
 
 seed 5 failed after 68767 events
   violation: Leader Completeness: node 3 became leader in term 27 with a different prefix at committed index 83 (term 23)
@@ -149,11 +149,11 @@ seed 5 failed after 68767 events
     [ 13025000000ns] isolated node 3
     [ 13050000000ns] one-way cut 3 -> 1
     [ 13075000000ns] network healed
-    [ 13090466597ns] node 3 role=Leader term=27 last=391 commit=81 applied=81
+    [ 13090466597ns] node 3 role=Leader term=27 last=397 commit=81 applied=81
   node state:
-    node 1 alive=true role=Follower term=27 last=719 commit=81 applied=81
+    node 1 alive=true role=Follower term=27 last=722 commit=81 applied=81
     node 2 alive=true role=Follower term=27 last=83 commit=81 applied=81
-    node 3 alive=true role=Leader term=27 last=391 commit=81 applied=81
+    node 3 alive=true role=Leader term=27 last=397 commit=81 applied=81
 
 seed 15 failed after 36252 events
   violation: Leader Completeness: node 3 became leader in term 23 with a different prefix at committed index 23 (term 11)
@@ -222,11 +222,11 @@ seed 15 failed after 36252 events
     [  7350000000ns] isolated node 1
     [  7375000000ns] network healed
     [  7425000000ns] network healed
-    [  7429042842ns] node 3 role=Leader term=23 last=58 commit=18 applied=18
+    [  7429042842ns] node 3 role=Leader term=23 last=63 commit=18 applied=18
   node state:
     node 1 alive=true role=Follower term=23 last=23 commit=18 applied=18
-    node 2 alive=true role=Follower term=23 last=1573 commit=18 applied=18
-    node 3 alive=true role=Leader term=23 last=58 commit=18 applied=18
+    node 2 alive=true role=Follower term=23 last=1585 commit=18 applied=18
+    node 3 alive=true role=Leader term=23 last=63 commit=18 applied=18
 
 seed 21 failed after 21547 events
   violation: Leader Completeness: node 2 became leader in term 11 with a different prefix at committed index 27 (term 6)
@@ -295,10 +295,10 @@ seed 21 failed after 21547 events
     [  4225000000ns] network healed
     [  4240000000ns] node 3 restarted
     [  4250000000ns] isolated node 1
-    [  4281466458ns] node 2 role=Leader term=11 last=82 commit=24 applied=24
+    [  4281466458ns] node 2 role=Leader term=11 last=89 commit=24 applied=24
   node state:
-    node 1 alive=true role=PreCandidate term=10 last=463 commit=24 applied=24
-    node 2 alive=true role=Leader term=11 last=82 commit=24 applied=24
+    node 1 alive=true role=PreCandidate term=10 last=468 commit=24 applied=24
+    node 2 alive=true role=Leader term=11 last=89 commit=24 applied=24
     node 3 alive=true role=Follower term=11 last=27 commit=24 applied=24
 
 seed 26 failed after 72385 events
@@ -368,13 +368,13 @@ seed 26 failed after 72385 events
     [ 14525000000ns] partition [1, 2] | [3]
     [ 14575000000ns] partition [1, 2] | [3]
     [ 14600000000ns] network healed
-    [ 14644992915ns] node 1 role=Leader term=40 last=385 commit=79 applied=79
+    [ 14644992915ns] node 1 role=Leader term=40 last=386 commit=79 applied=79
   node state:
-    node 1 alive=true role=Leader term=40 last=385 commit=79 applied=79
+    node 1 alive=true role=Leader term=40 last=386 commit=79 applied=79
     node 2 alive=true role=Follower term=40 last=81 commit=79 applied=79
-    node 3 alive=true role=Follower term=39 last=1182 commit=79 applied=79
+    node 3 alive=true role=Follower term=39 last=1193 commit=79 applied=79
 
-40 seeds x 80000 steps, 3 nodes, fig8-hunt profile: 35 passed, 5 failed (mean 96 entries committed per run)
+40 seeds x 80000 steps, 3 nodes, fig8-hunt profile: 35 passed, 5 failed (mean 95 entries committed per run)
 failing seeds: [4, 5, 15, 21, 26]
 
 ==============================================================

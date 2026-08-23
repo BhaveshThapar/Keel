@@ -178,6 +178,7 @@ pub(crate) fn scan(
     bytes: &[u8],
     mut pos: usize,
     max_record_bytes: u32,
+    skip_crc: bool,
     mut sink: impl FnMut(Record) -> Result<()>,
 ) -> Result<(usize, Stop)> {
     loop {
@@ -214,7 +215,7 @@ pub(crate) fn scan(
             return Ok((pos, Stop::ShortBody));
         };
         let body = &bytes[start..end];
-        if crc32c::crc32c(body) != crc {
+        if !skip_crc && crc32c::crc32c(body) != crc {
             return Ok((pos, Stop::BadChecksum));
         }
         sink(Record::decode(body[0], &body[1..])?)?;
@@ -233,7 +234,7 @@ mod tests {
 
     fn collect(bytes: &[u8], pos: usize) -> (Vec<Record>, usize, Stop) {
         let mut out = Vec::new();
-        let (end, stop) = scan(bytes, pos, 8 << 20, |r| {
+        let (end, stop) = scan(bytes, pos, 8 << 20, false, |r| {
             out.push(r);
             Ok(())
         })
@@ -381,7 +382,7 @@ mod tests {
         let crc = crc32c::crc32c(&frame[FRAME_HEADER..]);
         frame[4..8].copy_from_slice(&crc.to_le_bytes());
 
-        let err = scan(&frame, 0, 8 << 20, |_| Ok(())).unwrap_err();
+        let err = scan(&frame, 0, 8 << 20, false, |_| Ok(())).unwrap_err();
         assert!(matches!(err, Error::UnknownKind(99)), "got {err:?}");
     }
 }

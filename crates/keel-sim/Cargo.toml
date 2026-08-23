@@ -25,7 +25,7 @@ keel-log = { workspace = true, features = ["conformance"] }
 [features]
 # Forwarded to keel-raft so the negative demonstrations can disable a safety
 # rule and show the simulator catching the resulting violation (TR-8).
-negative-demos = ["keel-raft/negative-demos"]
+negative-demos = ["keel-raft/negative-demos", "keel-log/negative-demos"]
 
 [[bin]]
 name = "keel-sim"
