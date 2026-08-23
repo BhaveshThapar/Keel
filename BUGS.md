@@ -186,7 +186,7 @@ The negative demonstration still finds the Figure 8 violation under the stricter
 model, and the control still passes — which is the check that says the model got
 harsher without becoming unsurvivable.
 
-**Worth noting.** Three of the five bugs so far are in the harness, not in the
+**Worth noting.** Three of the seven bugs so far are in the harness, not in the
 implementation it tests. That ratio is not a surprise and it is not a
 digression: an unverified checker is just an opinion, and the only reason these
 were findable is that the negative demonstration gives a known-wrong build to
@@ -232,3 +232,61 @@ indistinguishable to it. This is the same shape of gap as KEEL-4: not a checker
 that was wrong, but a model that could not reach the state. It is the argument
 for M1's plan to run the real `keel-log` under the simulator rather than an
 abstract disk, and there is now a direct unit test in the meantime.
+
+---
+
+## KEEL-7 — a crash that left a hole was reported clean, and the record above it came back
+
+**Found by** tracing the erase condition while designing the simulator's tear
+model, then reproduced as a direct test against the real parser.
+
+**Symptom.** A log recovers, reports `discarded_tail_bytes == 0`, appends one
+record, and on the next recovery contains an entry that no incarnation of that
+node ever wrote in this generation. Where the indices do not line up instead,
+the log refuses to open at all with `Discontiguous`, which is a node that can
+never rejoin.
+
+**Root cause.** `Log::open` computed how much to erase inside `if
+stop.is_torn()`, so the erase ran only when the scan stopped for a *torn*
+reason. That covers a crash that takes the head of a write: the tail arrives
+over preallocated zeros, a valid length meets a zeroed body, and the checksum
+says so — `Stop::BadChecksum`, `is_torn()`.
+
+It does not cover a crash that takes the tail of one write and leaves a later
+one. That leaves a hole, and ADR-009's whole design is that `len == 0` ends the
+record stream, so a hole is byte-for-byte what preallocated space looks like.
+The scan returns `Stop::EndOfWrittenRegion`, `is_torn()` is false, `discarded`
+stays zero, and the surviving record above the hole is never erased.
+
+Concretely: records of one shape encode to one length, so a log that re-appends
+what it lost puts its cursor back on exactly the survivor's first byte. The next
+scan walks the replacement, arrives at the survivor, and finds a correct length
+over a correct checksum — because those bytes landed exactly as written. It is
+decoded and folded in. The regression test reproduces it as `[1, 2, 3]` where
+only `[1, 2]` was ever written after the crash.
+
+`Log::erase` has the same hole from the other side: it is a `write_at` loop
+followed by one sync, so a torn erase that zeroes its head and leaves the rest
+presents as `len == 0` at the cursor, and the garbage above it is then
+permanent.
+
+**Fix.** Ask the question the erase is actually about. What has to go is
+whatever is written above the recovery cursor, which is `written_end`, and that
+does not depend on how the scan stopped. Moving the computation out of the
+`is_torn` branch is strictly a widening — on a clean shutdown everything above
+the cursor is zeros, `written_end == end`, and the erase is skipped exactly as
+before. It also makes the erase a fixpoint: each open erases whatever non-zero
+bytes remain above the cursor, so a torn erase converges instead of persisting.
+`Recovered.discarded_tail_bytes` now means "bytes written above the recovery
+cursor, discarded", which is true in both landing shapes rather than in one.
+
+**Why the harness did not find it.** Neither disk model could produce a hole.
+`SimDisk` models durability at record granularity and says so at the top of the
+file — byte-level tears are explicitly out of its scope. `FaultFs` was closer,
+running the real parser over real bytes, but its crash dropped every staged
+write whole: `img.pending.clear()`, all-or-nothing per write, so the durable
+image could never have a gap in it with bytes on the far side. Both were
+structurally incapable of reaching the state, which is the same shape as KEEL-4
+and KEEL-6 — not a checker that was wrong, but a model that could not get there.
+This is the bug M1 Phase 2's tear model exists to make reachable, and it was
+found while building it rather than by it.

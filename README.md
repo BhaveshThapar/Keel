@@ -90,7 +90,7 @@ correct code *and* missed the real bug, a fault schedule that never once reached
 the state it was written to test, and a simulated disk that made writes durable
 no fsync had covered. All three are in [BUGS.md](BUGS.md), because they are the
 reason to distrust a clean run with no negative demonstration behind it. Three
-of the five bugs found so far are in the harness rather than in the code it
+of the seven bugs found so far are in the harness rather than in the code it
 tests, which is roughly what should be expected.
 
 The simulator now reports its own coverage — partitions, crashes, leadership

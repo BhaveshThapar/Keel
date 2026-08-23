@@ -222,6 +222,18 @@ and on the *next* recovery that tail is a plausible frame. Zeroing the region
 once, at open, kills the whole class. It is bounded by what was actually written
 rather than by the segment size, so a clean shutdown pays nothing.
 
+**Why the erase is keyed on position and not on the scan's verdict.** This rule
+had to be corrected once ([KEEL-7](BUGS.md)), and the correction is the price of
+the paragraph above it. Making `len == 0` the terminator means a hole a crash
+left is byte-for-byte identical to space nothing ever wrote — that is the whole
+point, and it is also the whole cost. Recovery originally erased only when the
+scan reported a *torn* stop, which covers a crash that takes the head of a write
+and leaves a valid length over a zeroed body. A crash that takes the tail of one
+write and leaves a later one produces no torn stop at all: the scan meets the
+hole, reads it as the clean end it is indistinguishable from, and the survivor
+above it stays on disk. So the question the erase asks is whether anything is
+written above the cursor — `written_end` — and never how the scan came to stop.
+
 **Cost.** A record is only written if it fits whole, so a segment can end with a
 few unusable bytes. Rollover pays a file create and two fsyncs, roughly once per
 65k entries at the default sizes; pre-creating the next segment in the

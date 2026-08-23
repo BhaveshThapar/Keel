@@ -188,6 +188,108 @@ fn a_torn_record_cannot_be_resurrected_by_a_shorter_one_written_over_it() {
     assert_eq!(rec.discarded_tail_bytes, 0, "nothing is left to trip over");
 }
 
+/// Append a prefix, then two more records, then lose the first of the two the
+/// way a crash loses a page that never reached the device. Returns the segment,
+/// the offset the hole starts at, and the offset the surviving record sits at.
+fn a_hole_with_a_record_above_it(dir: &Path) -> (PathBuf, u64, u64) {
+    let (mut log, _) = open(dir);
+    log.append(&[entry(1, 1)]).unwrap();
+    log.sync().unwrap();
+
+    let seg = segments(dir)[0].clone();
+    let hole = written_end(&seg);
+    log.append(&[entry(1, 2)]).unwrap();
+    let above = written_end(&seg);
+    log.append(&[entry(1, 3)]).unwrap();
+    log.sync().unwrap();
+    drop(log);
+
+    // The earlier write is gone and the later one survived. A device commits
+    // whole blocks and nothing orders those completions, so a hole is a state a
+    // real crash reaches — and the bytes it leaves behind are indistinguishable
+    // from the preallocated zeros the scan is meant to stop at.
+    scribble(&seg, hole, (above - hole) as usize, 0x00);
+    (seg, hole, above)
+}
+
+#[test]
+fn a_hole_a_crash_left_is_not_read_as_the_clean_end_it_looks_like() {
+    let dir = TempDir::new().unwrap();
+    let (seg, hole, _) = a_hole_with_a_record_above_it(dir.path());
+    assert!(
+        written_end(&seg) > hole,
+        "the fixture is wrong: nothing survived above the hole, so this test \
+         is not about the case it says it is"
+    );
+
+    let (log, rec) = open(dir.path());
+
+    assert_eq!(indices(&rec), vec![1], "the fold stops at the hole");
+    assert_eq!(log.last_index(), 1);
+    assert_eq!(
+        written_end(&seg),
+        hole,
+        "the survivor is still on disk after recovery, so the next record \
+         written at the cursor can be read straight past into it"
+    );
+    assert!(
+        rec.discarded_tail_bytes > 0,
+        "recovery called this crash clean. Whether bytes sit above the cursor \
+         does not depend on how the scan stopped, and reporting zero here is \
+         what lets them survive to be misread on a later open"
+    );
+}
+
+/// How many bytes one `append` of `e` writes, as the second record of a log.
+fn appended_len(e: Entry) -> u64 {
+    let dir = TempDir::new().unwrap();
+    let (mut log, _) = open(dir.path());
+    log.append(&[entry(1, 1)]).unwrap();
+    let seg = segments(dir.path())[0].clone();
+    let before = written_end(&seg);
+    log.append(&[e]).unwrap();
+    written_end(&seg) - before
+}
+
+/// The other half of [`a_torn_record_cannot_be_resurrected_by_a_shorter_one_written_over_it`],
+/// for the tear that takes the *head* of a write rather than its tail.
+#[test]
+fn a_record_above_a_hole_is_erased_rather_than_read_on_the_next_open() {
+    let dir = TempDir::new().unwrap();
+    let (_, hole, above) = a_hole_with_a_record_above_it(dir.path());
+
+    // A replacement of exactly the encoded length of the record that was lost.
+    // That is the common case rather than the corner: records of one shape are
+    // one length, so a log re-appending what it lost puts its cursor back on
+    // the survivor's first byte.
+    assert_eq!(
+        appended_len(entry(9, 2)),
+        above - hole,
+        "the fixture is wrong: the replacement is a different length from the \
+         record it replaces, so the cursor never reaches the survivor and \
+         nothing here is being tested"
+    );
+
+    let (mut log, _) = open(dir.path());
+    log.append(&[entry(9, 2)]).unwrap();
+    log.sync().unwrap();
+    drop(log);
+
+    let (log, rec) = open(dir.path());
+
+    assert_eq!(
+        indices(&rec),
+        vec![1, 2],
+        "an entry from before the crash was read back as though this \
+         incarnation had written it, which is a Raft log inventing an entry"
+    );
+    assert_eq!(
+        rec.entries[1].term, 9,
+        "and the replacement is what survived"
+    );
+    assert_eq!(log.last_index(), 2);
+}
+
 #[test]
 fn a_commit_index_the_tear_took_with_it_is_clamped_and_reported() {
     let dir = TempDir::new().unwrap();

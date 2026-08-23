@@ -62,8 +62,15 @@ pub struct Recovered {
     pub hard_state: HardState,
     pub snapshot: Option<SnapshotMeta>,
     pub entries: Vec<Entry>,
-    /// Bytes discarded from a torn tail. Non-zero means the process died
-    /// mid-write, which is exactly what a crash test wants to assert.
+    /// Bytes that were written above the recovery cursor, and have been erased.
+    /// Non-zero means the process died mid-write, which is exactly what a crash
+    /// test wants to assert.
+    ///
+    /// Deliberately not "bytes discarded from a torn tail": a crash that takes
+    /// the tail of one write and leaves a later one produces no torn tail at
+    /// all — the hole reads as a clean end — and the bytes above it still have
+    /// to go. Counting them by position rather than by how the scan stopped is
+    /// what closes KEEL-7.
     pub discarded_tail_bytes: u64,
     /// Whether a durable `commit` had to be clamped because the entries it
     /// named were lost with the tail.
@@ -153,23 +160,33 @@ impl<F: Fs> Log<F> {
             let (end, stop) =
                 record::scan(&bytes, start, opts.max_record_bytes, |r| fold.apply(r))?;
 
-            if stop.is_torn() {
+            if stop.is_torn() && i != last_seq {
                 // A torn tail is a crash artifact, and it belongs at the end of
                 // the log. Anywhere else it is damage, and reading past it
                 // would silently produce a log with a hole in it.
-                if i != last_seq {
-                    return Err(Error::Damaged {
-                        path: seg.path.clone(),
-                        reason: format!(
-                            "{stop:?} at offset {end}, with {} later segment(s)",
-                            last_seq - i
-                        ),
-                    });
-                }
-                discarded = record::written_end(&bytes).saturating_sub(end) as u64;
+                return Err(Error::Damaged {
+                    path: seg.path.clone(),
+                    reason: format!(
+                        "{stop:?} at offset {end}, with {} later segment(s)",
+                        last_seq - i
+                    ),
+                });
             }
             if i == last_seq {
                 cursor = end as u64;
+                // What has to be erased is whatever is written above the
+                // cursor, and that does not depend on how the scan stopped.
+                // Keying it on `stop` covers only the tear that takes the head
+                // of a write: the tail arrives over zeros, so a valid length
+                // meets a zeroed body and the checksum says so. A tear that
+                // takes the *tail* of one write and leaves a later one leaves a
+                // hole instead, and `len == 0` makes a hole byte-for-byte
+                // identical to the preallocated space it is supposed to mean —
+                // which is what ADR-009 bought and, here, what it cost. The
+                // scan reads that as a clean end, the erase never runs, and the
+                // survivor above it is a plausible frame for whatever the next
+                // record leaves the cursor pointing at (KEEL-7).
+                discarded = record::written_end(&bytes).saturating_sub(end) as u64;
             }
         }
 
