@@ -24,6 +24,21 @@ deliberate: every fix belongs upstream first, so the diff stays reviewable and
 the two projects do not drift into different engines. The Keel-specific work
 below will break that, and each departure is recorded when it lands.
 
+Two consequences of that rule, both deliberate:
+
+- **This crate stays on edition 2021** while the workspace is on 2024. `gen` is a
+  reserved keyword in 2024 and the manifest uses it as a variable name for the
+  generation number, in 18 places. Renaming it is a `src/` change and therefore
+  an upstream one; it is worth sending, and until it lands the edition cannot
+  move.
+- **This crate does not opt into `[workspace.lints]`**, so the workspace's
+  `unwrap_used` / `expect_used` / `unsafe_code` warnings do not apply to it.
+  Turning them on under `-D warnings` would force changes across `src/` for the
+  same reason. The `unwrap`s that mattered — the ones on the compaction publish
+  path, which ran on a background thread — are already gone upstream; what is
+  left is mostly `try_into().unwrap()` on fixed-size slices, which collapses
+  behind three helpers whenever someone upstreams it.
+
 ## What it does today
 
 A single-crate LSM engine: memtable, write-ahead log, block-based SSTables with
