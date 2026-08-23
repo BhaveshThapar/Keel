@@ -1,0 +1,37 @@
+[package]
+name = "keel-net"
+description = "The seam between a consensus host and a network: a three-method Transport, length-prefixed framing, and one conformance suite every implementation is held to."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+categories = ["network-programming"]
+keywords = ["raft", "transport", "framing", "tcp", "testing"]
+
+[dependencies]
+# thiserror and nothing else. A transport that depended on the consensus crate
+# would make the dependency run the wrong way: the host wires the two together,
+# and neither should know the other exists.
+thiserror = { workspace = true }
+
+[features]
+default = []
+# The TCP implementation. Off by default so that a consumer which only ever runs
+# under the simulator — which is every test in this workspace that matters —
+# cannot accidentally link a socket, and so `cargo tree` can prove it did not.
+tcp = []
+# The shared Transport conformance suite, so every implementation is held to the
+# same assertions rather than to whatever its own tests happened to check.
+conformance = []
+
+[dev-dependencies]
+# The integration tests link the library target, which is built without
+# `cfg(test)`, so both features have to be switched on the way any other
+# consumer would switch them on.
+keel-net = { path = ".", features = ["conformance", "tcp"] }
+keel-api = { workspace = true }
+keel-raft = { workspace = true }
+
+[lints]
+workspace = true
