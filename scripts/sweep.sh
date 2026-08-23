@@ -23,9 +23,34 @@ mkdir -p "$(dirname "$OUT")"
 
 cargo build --quiet --release -p keel-sim
 
+# The host belongs in the artifact, and it has to come from the machine rather
+# than from whoever committed the file. `uname` alone does not say what the CPU
+# is, which is the part a reader wants.
+host_line() {
+    case "$(uname -s)" in
+        Darwin)
+            printf '%s, %s cores, %s GiB, macOS %s, %s\n' \
+                "$(sysctl -n machdep.cpu.brand_string)" \
+                "$(sysctl -n hw.ncpu)" \
+                "$(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 ))" \
+                "$(sw_vers -productVersion)" \
+                "$(uname -m)"
+            ;;
+        Linux)
+            printf '%s, %s cores, %s GiB, Linux %s, %s\n' \
+                "$(awk -F': ' '/model name/ {print $2; exit}' /proc/cpuinfo)" \
+                "$(nproc)" \
+                "$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1024 / 1024 ))" \
+                "$(uname -r)" \
+                "$(uname -m)"
+            ;;
+        *) printf '%s %s, %s\n' "$(uname -s)" "$(uname -r)" "$(uname -m)" ;;
+    esac
+}
+
 {
     echo "=== keel-sim validation sweep ==="
-    echo "host:   $(uname -sr), $(uname -m)"
+    echo "host:   $(host_line)"
     echo "commit: $(git rev-parse --short HEAD)$(git diff --quiet || echo ' (working tree modified)')"
     echo "date:   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo
