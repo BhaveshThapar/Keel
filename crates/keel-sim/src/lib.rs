@@ -27,7 +27,6 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 mod digest;
-mod disk;
 mod faultfs;
 mod invariants;
 mod network;

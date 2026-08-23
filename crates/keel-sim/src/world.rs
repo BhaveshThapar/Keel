@@ -1,14 +1,16 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, VecDeque};
+use std::path::PathBuf;
 
 use bytes::Bytes;
+use keel_log::{Log, LogOptions, SyncMode};
 use keel_raft::{
     Advance, ConfState, Config, Entry, Index, Input, Message, NodeId, RaftCore, Ready, Role,
     SnapshotMeta, Term,
 };
 
 use crate::digest::LogDigest;
-use crate::disk::SimDisk;
+use crate::faultfs::{FaultFs, FaultStats, TearPolicy};
 use crate::invariants::{Oracle, Violation};
 use crate::network::{Delivery, NetConfig, Network};
 use crate::rng::Rng;
@@ -40,11 +42,37 @@ pub struct SimConfig {
     pub pre_vote: bool,
     pub check_quorum: bool,
     pub disable_fig8_guard: bool,
+    /// What a crash does to bytes no fsync covered.
+    ///
+    /// The default lands no sectors, so a crash takes every staged write back
+    /// whole. Turning tearing on is what the `disk-*` profiles are for, and it
+    /// only bites when the unsynced region spans a sector boundary — see
+    /// [`SimConfig::segment_bytes`].
+    pub tear: TearPolicy,
+    /// Size each log segment is preallocated to.
+    ///
+    /// Small, so rollover and multi-segment recovery are reached in a run
+    /// rather than only in principle. It also has to exceed `tear.sector_bytes`
+    /// by enough for a write to straddle a boundary: a segment inside one
+    /// sector has every offset in that sector, so exactly one draw is made and
+    /// tearing is impossible rather than merely unlikely.
+    pub segment_bytes: u64,
+    pub max_record_bytes: u32,
+    /// Pad each client proposal out to at least this many bytes.
+    ///
+    /// A write only tears when it straddles a sector boundary, and the chance
+    /// of that is the record's length over the sector size — so the size of a
+    /// proposal is the most direct lever the tear model has. Zero, the default,
+    /// leaves the payload exactly as it was.
+    pub proposal_bytes: usize,
     /// Chance that a crash or isolation targets the current leader rather than
     /// a random node. Real chaos tooling aims at the leader for a reason: the
     /// windows worth testing are the ones around a leadership change, and
     /// uniform random faults reach them only by luck.
     pub target_leader_pct: u32,
+    /// Aim crashes and isolations at a node that has bytes on its disk no fsync
+    /// has covered yet.
+    pub aim_at_writes_in_flight: bool,
     /// Crash a leader the moment it commits an earlier term's entry on replica
     /// count alone. Uniform random faults reach that one-message-wide window
     /// only by luck; aiming at it directly is how a negative demonstration
@@ -72,6 +100,11 @@ impl Default for SimConfig {
             pre_vote: true,
             check_quorum: true,
             disable_fig8_guard: false,
+            tear: TearPolicy::default(),
+            segment_bytes: 8 << 10,
+            max_record_bytes: 4 << 10,
+            proposal_bytes: 0,
+            aim_at_writes_in_flight: false,
             target_leader_pct: 60,
             kill_leader_on_fig8_bypass: false,
         }
@@ -79,6 +112,20 @@ impl Default for SimConfig {
 }
 
 impl SimConfig {
+    /// How each node opens its log.
+    ///
+    /// `SyncMode::Durable` is not cosmetic: [`FaultFs`] retires a write only on
+    /// a durable sync, so a log configured for `None` would never make anything
+    /// durable and every crash would take everything.
+    pub fn log_options(&self) -> LogOptions {
+        LogOptions {
+            segment_bytes: self.segment_bytes,
+            max_record_bytes: self.max_record_bytes,
+            sync_mode: SyncMode::Durable,
+            preallocate: true,
+        }
+    }
+
     /// Heavier faults and smaller messages. Progress is slower per event, but
     /// the states that only appear under partial replication and rapid
     /// leadership change are reachable, and those are the ones worth checking.
@@ -131,9 +178,69 @@ impl SimConfig {
         }
     }
 
+    /// Faults aimed at the disk rather than at the network.
+    ///
+    /// The sector size is the one modern hardware has, which makes this the
+    /// faithful axis — and the harder one to tear on, since a write only tears
+    /// when it straddles a boundary. What makes it reachable is the size of the
+    /// record: the chance a write of `L` bytes crosses a boundary of `S` is
+    /// `(L - 1) / S`, so a default 23-byte record against a 4 KiB sector tears
+    /// about once in two hundred, and a 1 KiB one about once in four.
+    pub fn disk_chaos(nodes: usize) -> Self {
+        Self {
+            tear: TearPolicy {
+                sector_bytes: 4096,
+                sector_lands_pct: 50,
+            },
+            segment_bytes: 64 << 10,
+            max_record_bytes: 8 << 10,
+            // The lever is the record, not the schedule. A 1 KiB proposal makes
+            // a frame of about 1050 bytes, which straddles a 4 KiB boundary
+            // roughly a quarter of the time; shortening the client period
+            // instead would only fill the event budget with proposals and starve
+            // the nemesis that has to crash a node for any of it to matter.
+            proposal_bytes: 1 << 10,
+            aim_at_writes_in_flight: true,
+            // Slow fsyncs against unchanged client traffic, so the unsynced
+            // window is open most of the time rather than a fraction of it. A
+            // slower fsync costs no extra events — there is one writer pass
+            // however long it takes — whereas speeding the clients up would
+            // fill the event budget with proposals and starve the nemesis that
+            // has to crash a node for any of it to matter.
+            fsync_min_ns: 2_000_000,
+            fsync_max_ns: 12_000_000,
+            ..Self::chaos(nodes)
+        }
+    }
+
+    /// The same, at the sector size a write is most likely to straddle.
+    ///
+    /// 512 bytes is eight times likelier to cut a given write than 4096, so
+    /// this is where the sub-record shapes live and where a tear is cheap to
+    /// reach. Smaller segments too, so rollover and multi-segment recovery are
+    /// crossed often rather than occasionally.
+    pub fn disk_hunt(nodes: usize) -> Self {
+        Self {
+            tear: TearPolicy {
+                sector_bytes: 512,
+                sector_lands_pct: 40,
+            },
+            segment_bytes: 8 << 10,
+            max_record_bytes: 4 << 10,
+            // A 256-byte proposal against a 512-byte sector straddles a
+            // boundary about half the time.
+            proposal_bytes: 256,
+            restart_delay_ns: 40_000_000,
+            ..Self::disk_chaos(nodes)
+        }
+    }
+
     /// Every profile `named` accepts. Kept next to it so an error message
-    /// listing the choices cannot drift from the choices themselves.
-    pub const PROFILES: [&'static str; 3] = ["default", "chaos", "fig8-hunt"];
+    /// listing the choices cannot drift from the choices themselves, and a
+    /// slice rather than a fixed-size array so adding one is a single edit
+    /// that cannot leave the length behind.
+    pub const PROFILES: &'static [&'static str] =
+        &["default", "chaos", "fig8-hunt", "disk-chaos", "disk-hunt"];
 
     pub fn named(name: &str, nodes: usize) -> Option<Self> {
         match name {
@@ -143,6 +250,8 @@ impl SimConfig {
             }),
             "chaos" => Some(Self::chaos(nodes)),
             "fig8-hunt" => Some(Self::fig8_hunt(nodes)),
+            "disk-chaos" => Some(Self::disk_chaos(nodes)),
+            "disk-hunt" => Some(Self::disk_hunt(nodes)),
             _ => None,
         }
     }
@@ -152,11 +261,15 @@ impl SimConfig {
 enum Event {
     Tick(NodeId),
     Deliver(Message),
-    /// The fsync for one `Ready` completed. Only now may its messages go out and
-    /// its committed entries be applied — the persist-before-send contract,
+    /// One `Ready`'s fsync completed. Only now may its messages go out and its
+    /// committed entries be applied — the persist-before-send contract,
     /// enforced by the simulation itself rather than trusted.
+    ///
+    /// Carries the node's crash generation, so an fsync issued before a crash
+    /// cannot be believed by the incarnation that replaced it.
     Fsync {
         node: NodeId,
+        epoch: u64,
         batch: Box<FsyncBatch>,
     },
     Client(usize),
@@ -164,14 +277,12 @@ enum Event {
     Restart(NodeId),
 }
 
-/// One `Ready`'s output, held until its fsync completes.
+/// What one `Ready` still owes once its writes are on the disk but not yet
+/// durable: the watermark to report, the messages to release, and the entries to
+/// apply. All three wait for the fsync.
 #[derive(Debug, Clone)]
 struct FsyncBatch {
-    /// The node's crash generation. A batch from before a crash is discarded.
-    epoch: u64,
     ready_number: u64,
-    /// Which write this fsync covers. Later writes stay at risk.
-    write_token: u64,
     persisted: Option<(Index, Term)>,
     snapshot: Option<SnapshotMeta>,
     messages: Vec<Message>,
@@ -208,7 +319,14 @@ impl Ord for Scheduled {
 struct SimNode {
     id: NodeId,
     core: RaftCore,
-    disk: SimDisk,
+    /// The node's disk. Held here as well as by the `Log`, because it has to
+    /// outlive the crash that drops one: cloning gives another handle on the
+    /// same bytes.
+    fs: FaultFs,
+    dir: PathBuf,
+    /// `None` while the node is dead, so the lock file is released the way a
+    /// killed process releases its flock.
+    log: Option<Log<FaultFs>>,
     digest: LogDigest,
     alive: bool,
     /// Bumped on every crash so that fsyncs scheduled before it are discarded.
@@ -244,6 +362,27 @@ pub struct Stats {
     /// Times a leader committed an earlier term's entry on replica count alone.
     /// Zero unless the Figure 8 guard was compiled out.
     pub fig8_bypasses: u64,
+
+    // The disk. A fault model that never fired proves nothing, and the sizing
+    // arithmetic says a badly configured one can be provably inert, so what it
+    // did is reported rather than assumed.
+    /// Restarts where the real parser found bytes written above the recovery
+    /// cursor and discarded them. Zero means no crash ever caught a write in
+    /// flight, whatever the tear policy says.
+    pub torn_tails: u64,
+    /// How much those tears actually cost.
+    pub bytes_discarded_by_tears: u64,
+    /// Restarts where a durable commit index had to be clamped because the
+    /// entries it named went with the tail.
+    pub commits_clamped: u64,
+    /// Segments seen by a recovery, summed. More than one restart's worth means
+    /// the multi-segment recovery path was actually reached.
+    pub segments_recovered: u64,
+    /// Crashes that tore a node's log while that node was inside a partition.
+    ///
+    /// The counter the durability claim turns on. It is not enough that tears
+    /// happen and partitions happen; what has to be shown is that they met.
+    pub tears_during_partition: u64,
 }
 
 pub struct World {
@@ -263,6 +402,49 @@ pub struct World {
     pub violations: Vec<Violation>,
 }
 
+/// Write one `Ready` through the real log and make it durable, in the order the
+/// host loop documents: truncate what history replaced, append, then the hard
+/// state, then exactly one sync covering all three.
+///
+/// A `Ready` carries no `first_new`, so the truncation is decided by comparing
+/// the batch's first index against what the log already holds. Without that,
+/// `Log::append` refuses with `Discontiguous` the first time a leader overwrites
+/// a divergent tail.
+fn stage(node: &mut SimNode, rd: &Ready) -> Result<(), String> {
+    let Some(log) = node.log.as_mut() else {
+        return Err("a live node has no open log".into());
+    };
+    let step = |r: keel_log::Result<keel_log::SyncToken>| r.map(|_| ()).map_err(|e| e.to_string());
+
+    if let Some(meta) = &rd.snapshot_to_install {
+        step(log.install_snapshot(meta))?;
+    }
+    if let Some(first) = rd.entries.first().map(|e| e.index)
+        && first <= log.last_index()
+    {
+        step(log.truncate(first))?;
+    }
+    step(log.append(&rd.entries))?;
+    if let Some(hs) = rd.hard_state {
+        step(log.set_hard_state(hs))?;
+    }
+    Ok(())
+}
+
+/// Make everything written so far durable.
+///
+/// Not just this `Ready`'s writes: an fsync makes durable what had been written
+/// when it was issued, and saying otherwise is the model error KEEL-5 was. So a
+/// `Ready` staged behind this one and ahead of this fsync is covered by it, and
+/// the watermark reported to the core is still only this batch's — conservative
+/// in the safe direction.
+fn sync(node: &mut SimNode) -> Result<(), String> {
+    let Some(log) = node.log.as_mut() else {
+        return Err("a live node has no open log".into());
+    };
+    log.sync().map(|_| ()).map_err(|e| e.to_string())
+}
+
 impl World {
     pub fn new(seed: u64, cfg: SimConfig) -> Self {
         let mut root = Rng::new(seed);
@@ -273,11 +455,17 @@ impl World {
         let nemesis_rng = root.split("nemesis");
         let workload_rng = root.split("workload");
         let mut node_rng = root.split("nodes");
+        // Derived after `nodes`, never as a fourth draw inside the loop below:
+        // `node_rng` is one generator consumed sequentially across every node,
+        // so a draw added in the loop body would shift node 2's seed, its skew,
+        // its fsync stream, and everything after.
+        let mut disk_rng = root.split("disks");
 
         let ids: Vec<NodeId> = (1..=cfg.nodes as NodeId).collect();
         let conf = ConfState::single(ids.iter().copied());
 
         let mut nodes = BTreeMap::new();
+        let mut violations = Vec::new();
         for id in &ids {
             let core_cfg = Config {
                 election_tick: cfg.election_tick,
@@ -298,12 +486,26 @@ impl World {
                 let high = cfg.tick_ns * (100 + skew) / 100;
                 node_rng.range(low, high + 1)
             };
+            let fs = FaultFs::tearing(cfg.tear, disk_rng.split("node"));
+            let dir = PathBuf::from(format!("/node-{id}"));
+            let log = match Log::open(fs.clone(), &dir, cfg.log_options()) {
+                Ok((log, _)) => Some(log),
+                Err(e) => {
+                    violations.push(Violation {
+                        property: "a node can open its log",
+                        detail: format!("node {id} could not open its log at boot: {e}"),
+                    });
+                    None
+                }
+            };
             nodes.insert(
                 *id,
                 SimNode {
                     id: *id,
                     core: RaftCore::new(core_cfg, conf.clone()),
-                    disk: SimDisk::new(),
+                    fs,
+                    dir,
+                    log,
                     digest: LogDigest::new(),
                     alive: true,
                     epoch: 0,
@@ -329,7 +531,7 @@ impl World {
             trace: VecDeque::new(),
             next_ctx: 1,
             stats: Stats::default(),
-            violations: Vec::new(),
+            violations,
         };
 
         for id in ids {
@@ -384,7 +586,7 @@ impl World {
         match next.event {
             Event::Tick(id) => self.on_tick(id),
             Event::Deliver(msg) => self.on_deliver(msg),
-            Event::Fsync { node, batch } => self.on_fsync(node, *batch),
+            Event::Fsync { node, epoch, batch } => self.on_fsync(node, epoch, *batch),
             Event::Client(c) => self.on_client(c),
             Event::Nemesis => self.on_nemesis(),
             Event::Restart(id) => self.on_restart(id),
@@ -438,11 +640,11 @@ impl World {
         self.check(to);
     }
 
-    fn on_fsync(&mut self, id: NodeId, batch: FsyncBatch) {
+    fn on_fsync(&mut self, id: NodeId, epoch: u64, batch: FsyncBatch) {
         let stale = self
             .nodes
             .get(&id)
-            .is_none_or(|n| !n.alive || n.epoch != batch.epoch);
+            .is_none_or(|n| !n.alive || n.epoch != epoch);
         if stale {
             // The node crashed after this write was issued. Its messages never
             // go out and its entries never became durable, which is the whole
@@ -452,7 +654,13 @@ impl World {
 
         // 1. The write is now durable.
         if let Some(node) = self.nodes.get_mut(&id) {
-            node.disk.sync(batch.write_token);
+            if let Err(detail) = sync(node) {
+                self.violations.push(Violation {
+                    property: "a live node can sync its log",
+                    detail: format!("node {id}: {detail}"),
+                });
+                return;
+            }
             node.core.advance(Advance {
                 ready_number: batch.ready_number,
                 persisted: batch.persisted,
@@ -502,7 +710,11 @@ impl World {
 
         let ctx = self.next_ctx;
         self.next_ctx += 1;
-        let payload = Bytes::from(format!("c{client}:{ctx}").into_bytes());
+        let mut payload = format!("c{client}:{ctx}").into_bytes();
+        // Padded, not replaced, so the identifying prefix a trace shows is
+        // still the first thing in the record.
+        payload.resize(payload.len().max(self.cfg.proposal_bytes), b'.');
+        let payload = Bytes::from(payload);
         if let Some(node) = self.nodes.get_mut(&target) {
             let _ = node.core.step(Input::Propose { ctx, data: payload });
             self.stats.proposals += 1;
@@ -512,18 +724,55 @@ impl World {
     }
 
     fn on_restart(&mut self, id: NodeId) {
-        let Some(node) = self.nodes.get_mut(&id) else {
+        let opts = self.cfg.log_options();
+        // Everything the reopen needs, taken before the borrow is dropped, so
+        // that recording a violation below does not fight the borrow checker.
+        let Some((cfg, conf, fs, dir)) = self.nodes.get(&id).filter(|n| !n.alive).map(|n| {
+            (
+                n.core.config().clone(),
+                n.core.conf().clone(),
+                n.fs.clone(),
+                n.dir.clone(),
+            )
+        }) else {
             return;
         };
-        if node.alive {
-            return;
+        // Through the real recovery parser, over whatever the crash left: the
+        // torn tail, the erase, the clamped commit, all of it.
+        let (log, recovered) = match Log::open(fs, &dir, opts) {
+            Ok(pair) => pair,
+            Err(e) => {
+                // A node that cannot reopen its own log never rejoins, which is
+                // worse than losing the tail — so it is a violation and not a
+                // panic.
+                self.violations.push(Violation {
+                    property: "a crash never leaves a log that will not open",
+                    detail: format!("node {id} could not reopen its log: {e}"),
+                });
+                return;
+            }
+        };
+        if recovered.discarded_tail_bytes > 0 {
+            self.stats.torn_tails += 1;
+            self.stats.bytes_discarded_by_tears += recovered.discarded_tail_bytes;
         }
-        let cfg = node.core.config().clone();
-        let conf = node.core.conf().clone();
-        let hs = node.disk.recovered_hard_state();
-        let snapshot = node.disk.recovered_snapshot();
-        let entries = node.disk.recovered_entries();
-        node.core = RaftCore::restore(cfg, conf, hs, snapshot, entries);
+        if recovered.clamped_commit {
+            self.stats.commits_clamped += 1;
+        }
+        self.stats.segments_recovered += u64::from(recovered.segments);
+
+        let node = match self.nodes.get_mut(&id) {
+            Some(node) => node,
+            None => return,
+        };
+        node.core = RaftCore::restore(
+            cfg,
+            conf,
+            recovered.hard_state,
+            recovered.snapshot,
+            recovered.entries,
+        );
+        node.log = Some(log);
         node.digest = LogDigest::new();
         node.alive = true;
         node.was_leader = false;
@@ -533,19 +782,62 @@ impl World {
     }
 
     fn kill(&mut self, id: NodeId) {
+        // Read before the crash, while there is still something in flight to
+        // count and the cut set still describes the moment.
+        let partitioned = self.net.is_partitioned(id);
         if let Some(node) = self.nodes.get_mut(&id)
             && node.alive
         {
             node.alive = false;
             node.epoch += 1;
-            node.disk.crash();
+            // Drop the `Log` before tearing the image. A killed process has its
+            // descriptors closed by the kernel, which releases its flock — and
+            // holding this handle any longer would let its `Drop` clear the
+            // lock the *restarted* node had since taken.
+            node.log = None;
+            // Whether this crash actually tore is only knowable afterwards, so
+            // the counter is a difference rather than a prediction.
+            let before = node.fs.fault_stats();
+            node.fs.crash();
+            let after = node.fs.fault_stats();
+            let tore = after.writes_that_landed_head_first > before.writes_that_landed_head_first
+                || after.writes_that_landed_tail_first > before.writes_that_landed_tail_first
+                || after.writes_that_landed_in_pieces > before.writes_that_landed_in_pieces;
             self.stats.crashes += 1;
+            if tore && partitioned {
+                self.stats.tears_during_partition += 1;
+            }
             self.schedule_in(self.cfg.restart_delay_ns, Event::Restart(id));
         }
     }
 
     /// Pick a node to disrupt, usually the leader.
     fn victim(&mut self, ids: &[NodeId]) -> Option<NodeId> {
+        if self.cfg.aim_at_writes_in_flight {
+            let dirty: Vec<NodeId> = self
+                .nodes
+                .values()
+                .filter(|n| n.alive && n.fs.pending_bytes() > 0)
+                .map(|n| n.id)
+                .collect();
+            // A node that is *both* writing and inside a partition first. It is
+            // not enough that tears and partitions both occur; the claim is
+            // that they met, and a uniform schedule reaches that intersection
+            // rarely enough to be luck.
+            let cut: Vec<NodeId> = dirty
+                .iter()
+                .copied()
+                .filter(|id| self.net.is_partitioned(*id))
+                .collect();
+            // `pick` draws nothing from an empty slice, so a moment with no
+            // such node falls through without shifting the stream.
+            if let Some(id) = self.nemesis_rng.pick(&cut).copied() {
+                return Some(id);
+            }
+            if let Some(id) = self.nemesis_rng.pick(&dirty).copied() {
+                return Some(id);
+            }
+        }
         if self.nemesis_rng.chance(self.cfg.target_leader_pct)
             && let Some(leader) = self
                 .nodes
@@ -640,8 +932,19 @@ impl World {
 
     // --------------------------------------------------------------- engine
 
-    /// Run one node's host loop: stage the writes, then hand the messages and
-    /// the committed entries to the fsync that must precede them.
+    /// Run one node's host loop: write the `Ready`, then schedule the fsync that
+    /// has to precede its messages.
+    ///
+    /// The writes happen here and the sync happens in the scheduled event, and
+    /// the gap between them is the whole point. It is the only interval in which
+    /// bytes exist on the disk that no fsync has covered, so it is the only
+    /// interval in which a crash has anything to lose or to tear. Doing both in
+    /// one event would make the pair atomic in virtual time, and a fault model
+    /// with no window is a fault model that never fires.
+    ///
+    /// Several `Ready`s can be written before the first fsync fires, and the
+    /// fsync that does fire retires all of them. That is group commit, and it is
+    /// also what makes the unsynced region wide enough to straddle a sector.
     fn pump(&mut self, id: NodeId) {
         loop {
             let Some(node) = self.nodes.get_mut(&id) else {
@@ -652,13 +955,17 @@ impl World {
             }
             let rd: Ready = node.core.ready();
 
-            let write_token =
-                node.disk
-                    .stage(&rd.entries, rd.hard_state, rd.snapshot_to_install.clone());
             let persisted = rd.entries.last().map(|e| (e.index, e.term));
             let needs_sync = !rd.entries.is_empty()
                 || rd.hard_state.is_some()
                 || rd.snapshot_to_install.is_some();
+            if let Err(detail) = stage(node, &rd) {
+                self.violations.push(Violation {
+                    property: "the log accepts what the core hands it",
+                    detail: format!("node {id}: {detail}"),
+                });
+                return;
+            }
             let delay = if needs_sync {
                 node.fsync_rng
                     .range(self.cfg.fsync_min_ns, self.cfg.fsync_max_ns + 1)
@@ -666,15 +973,13 @@ impl World {
                 0
             };
             let epoch = node.epoch;
-
             self.schedule_in(
                 delay,
                 Event::Fsync {
                     node: id,
+                    epoch,
                     batch: Box::new(FsyncBatch {
-                        epoch,
                         ready_number: rd.number,
-                        write_token,
                         persisted,
                         snapshot: rd.snapshot_to_install,
                         messages: rd.messages,
@@ -836,11 +1141,36 @@ impl World {
             mix(s.applied);
             mix(node.applied_count as u64);
             mix(u64::from(node.alive));
+            // The disk is inside the fingerprint, or the determinism gate
+            // cannot see it and a nondeterministic tear replays as identical.
+            mix(node.fs.durable_digest());
             if let Some((_, d)) = node.digest.at(node.digest.last_index()) {
                 mix(d);
             }
         }
         h
+    }
+
+    /// What every node's disk did, summed. The tear model's own coverage, as
+    /// distinct from what recovery then made of it.
+    pub fn disk_stats(&self) -> FaultStats {
+        let mut total = FaultStats::default();
+        for node in self.nodes.values() {
+            let s = node.fs.fault_stats();
+            total.crashes += s.crashes;
+            total.crashes_with_writes_in_flight += s.crashes_with_writes_in_flight;
+            total.bytes_in_flight_at_crash += s.bytes_in_flight_at_crash;
+            total.sectors_that_reached_the_device += s.sectors_that_reached_the_device;
+            total.sectors_the_crash_took_back += s.sectors_the_crash_took_back;
+            total.writes_lost_whole += s.writes_lost_whole;
+            total.writes_that_landed_whole += s.writes_that_landed_whole;
+            total.writes_that_landed_head_first += s.writes_that_landed_head_first;
+            total.writes_that_landed_tail_first += s.writes_that_landed_tail_first;
+            total.writes_that_landed_in_pieces += s.writes_that_landed_in_pieces;
+            total.files_a_crash_left_a_hole_in += s.files_a_crash_left_a_hole_in;
+            total.allocations_a_crash_took_back += s.allocations_a_crash_took_back;
+        }
+        total
     }
 
     pub fn live_nodes(&self) -> usize {

@@ -66,14 +66,12 @@ enum Command {
         steps: u64,
         #[arg(long, default_value_t = 5)]
         nodes: usize,
+        /// The gate exists to catch nondeterminism, and the disk is now inside
+        /// the fingerprint — so it can only cover the tear model if it is
+        /// pointed at a profile that tears.
+        #[arg(long, default_value = "default")]
+        profile: String,
     },
-}
-
-fn config(nodes: usize) -> SimConfig {
-    SimConfig {
-        nodes,
-        ..SimConfig::default()
-    }
 }
 
 fn config_with_guard(profile: &str, nodes: usize, disable_fig8_guard: bool) -> Option<SimConfig> {
@@ -177,6 +175,33 @@ fn main() -> ExitCode {
             println!("  entries rewritten {}", s.entries_rewritten);
             println!("  old-term commit windows {}", s.old_term_commit_windows);
             println!("  figure-8 bypasses {}", s.fig8_bypasses);
+            println!("  torn tails       {}", s.torn_tails);
+            println!("  bytes discarded  {}", s.bytes_discarded_by_tears);
+            println!("  commits clamped  {}", s.commits_clamped);
+            println!("  segments recovered {}", s.segments_recovered);
+            println!("  tears during partition {}", s.tears_during_partition);
+            let d = world.disk_stats();
+            println!(
+                "  crashes with writes in flight {}",
+                d.crashes_with_writes_in_flight
+            );
+            println!("  bytes in flight at crash {}", d.bytes_in_flight_at_crash);
+            println!(
+                "  sectors landed/lost {}/{}",
+                d.sectors_that_reached_the_device, d.sectors_the_crash_took_back
+            );
+            println!(
+                "  writes lost/whole/head/tail/pieces {}/{}/{}/{}/{}",
+                d.writes_lost_whole,
+                d.writes_that_landed_whole,
+                d.writes_that_landed_head_first,
+                d.writes_that_landed_tail_first,
+                d.writes_that_landed_in_pieces
+            );
+            println!(
+                "  files left with a hole {}",
+                d.files_a_crash_left_a_hole_in
+            );
             println!("  fingerprint      {:016x}", world.fingerprint());
             ExitCode::SUCCESS
         }
@@ -186,10 +211,18 @@ fn main() -> ExitCode {
             count,
             steps,
             nodes,
+            profile,
         } => {
+            let Some(cfg) = SimConfig::named(&profile, nodes) else {
+                eprintln!(
+                    "unknown profile {profile:?}; expected one of {:?}",
+                    SimConfig::PROFILES
+                );
+                return ExitCode::FAILURE;
+            };
             for seed in from..from + count {
-                let a = run_seed(seed, steps, config(nodes));
-                let b = run_seed(seed, steps, config(nodes));
+                let a = run_seed(seed, steps, cfg.clone());
+                let b = run_seed(seed, steps, cfg.clone());
                 if a.fingerprint != b.fingerprint {
                     eprintln!(
                         "seed {seed} is not deterministic: {:016x} then {:016x}",
