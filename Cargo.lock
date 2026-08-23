@@ -285,6 +285,7 @@ name = "keel-log"
 version = "0.1.0"
 dependencies = [
  "crc32c",
+ "keel-log",
  "keel-raft",
  "postcard",
  "rustix",

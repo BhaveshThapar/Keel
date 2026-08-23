@@ -21,6 +21,11 @@ rustix = { workspace = true }
 conformance = []
 
 [dev-dependencies]
+# The integration tests link the library target, which is built without
+# `cfg(test)` — so `conformance` has to be switched on the way any other
+# consumer would switch it on, or `tests/fs_conformance.rs` does not compile
+# under a plain `cargo test`.
+keel-log = { path = ".", features = ["conformance"] }
 tempfile = { workspace = true }
 
 [lints]
