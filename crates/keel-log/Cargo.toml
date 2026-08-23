@@ -1,0 +1,27 @@
+[package]
+name = "keel-log"
+description = "Keel's durable Raft log: segmented records, group-commit fsync, torn-tail recovery."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+keel-raft = { workspace = true, features = ["serde"] }
+crc32c = { workspace = true }
+postcard = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+rustix = { workspace = true }
+
+[features]
+# The shared Fs conformance suite, so the simulator's fault-injecting
+# filesystem can be held to the same assertions as the real one.
+conformance = []
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

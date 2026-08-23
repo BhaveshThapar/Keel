@@ -1,0 +1,7 @@
+# `unwrap_used` and `expect_used` are denied across the workspace so a
+# production path cannot panic on an error it should have handled. A test that
+# unwraps is doing the opposite: the panic *is* the assertion, and forcing it
+# through a match would make the failure harder to read, not the code safer.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

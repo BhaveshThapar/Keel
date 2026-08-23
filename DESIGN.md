@@ -181,15 +181,78 @@ that wrong would make the checker quietly lie, which is worse than not having it
 
 ---
 
+## ADR-009 — The durable log is one record stream, and `len == 0` ends it
+
+`keel-log` writes segments of `[len][crc32c][kind][postcard]` records. The hard
+state shares the stream, and therefore the fsync, with the entries beside it.
+Truncation is a record rather than a rewrite; recovery folds the stream in file
+order with later-record-wins. A torn tail is discarded, never repaired.
+
+**Why one stream.** Putting the hard state in its own rename-swapped file would
+add a second fsync to the critical path of every vote and every commit advance,
+and — worse — would make the ordering between the vote and the entries a
+question about two independent fsyncs. ADR-003 exists to remove exactly that
+question. One stream means one fsync and one order.
+
+**Why `len == 0` terminates.** Segments are preallocated, so the unused region
+reads as zeros and a scan stops there with no special case: preallocation and
+torn-tail detection become the same mechanism rather than two that have to agree.
+It also makes a half-written header degrade correctly whichever half landed. If
+the length arrived and the checksum did not, the checksum is compared against
+zeros and mismatches. If the checksum arrived and the length did not, the length
+reads zero and the scan stops. Kind `0` is never used, so no record can be
+confused with the terminator.
+
+**Why preallocate at all.** Every append then writes in place and the file size
+never changes, which keeps a directory fsync off the append path entirely. The
+only four in the whole crate are creating the lock file, creating a segment,
+deleting a headerless one, and a batch of unlinks during compaction.
+
+**Why truncation is explicit.** It would be possible to infer one from an
+`Entries` record whose first index overlaps what is already there. Making the
+writer say so instead lets recovery enforce the stronger rule — an `Entries`
+record must continue the log exactly — which turns the recovery parser into a
+checker rather than a reconstruction. A writer that overwrites history without
+saying so fails loudly at recovery instead of quietly producing a different log.
+It costs one small record per divergence, not per append.
+
+**Why recovery erases the tail.** A torn record leaves bytes after the cursor.
+Writing a shorter record over it would leave the old one's tail sitting there,
+and on the *next* recovery that tail is a plausible frame. Zeroing the region
+once, at open, kills the whole class. It is bounded by what was actually written
+rather than by the segment size, so a clean shutdown pays nothing.
+
+**Cost.** A record is only written if it fits whole, so a segment can end with a
+few unusable bytes. Rollover pays a file create and two fsyncs, roughly once per
+65k entries at the default sizes; pre-creating the next segment in the
+background is the known optimisation and is deliberately deferred, for the same
+reason ADR-003 defers splitting persist from send.
+
+---
+
+## ADR-013 — `fdatasync` on Linux, `F_FULLFSYNC` on macOS
+
+`SyncMode::Durable` maps to `fdatasync` on Linux and `F_FULLFSYNC` on macOS.
+`SyncMode::Barrier` is the cheap ordering-only mode, and `SyncMode::None` is for
+tests.
+
+**Why not `File::sync_data`.** It is not the same operation on both platforms:
+it maps to `fdatasync` on Linux and to plain `fsync` on macOS, and macOS `fsync`
+does **not** flush the drive's write cache. It is not a durability primitive
+there at all, so a benchmark using it would be measuring something else.
+
+**Enforced, not merely documented.** `LogStats` carries the mode that was used,
+and the M4 benchmark harness refuses to write an artifact under `results/`
+unless it was `Durable`. A number that does not say which primitive produced it
+is uninterpretable, so producing one is made impossible rather than discouraged.
+
+---
+
 ## Planned
 
 These are decided but not yet built. They are recorded here so the shape is
 fixed before the code exists.
 
-- **ADR-009 — Durable log layout.** One logical stream of segments, records of
-  `[len][crc32c][type][postcard]`, hard state sharing the group-commit fsync
-  path, logical truncation with later-record-wins on recovery, and a torn tail
-  discarded rather than repaired.
 - **ADR-010 — `applied_index` in the same write batch as the data.** Apply must
   be idempotent across a crash mid-apply, which means the index and the data it
   describes have to become durable together or not at all.
@@ -200,6 +263,3 @@ fixed before the code exists.
   response, held in the state machine so it survives failover and appears in
   snapshots, expired deterministically by leader-stamped time in the log rather
   than by any node's local clock.
-- **ADR-013 — fsync portability.** `fdatasync` on Linux, `F_FULLFSYNC` on macOS.
-  These are not the same operation and the difference is large enough that a
-  benchmark which does not say which one it used is uninterpretable.

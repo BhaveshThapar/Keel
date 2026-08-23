@@ -42,6 +42,27 @@ Status legend: **enforced** — a test or checker fails when the property breaks
 | Membership changes do not stall writes | `cluster_behaviour::writes_keep_flowing_during_a_membership_change` | enforced |
 | A far-behind follower catches up from the log, not a snapshot | `cluster_behaviour::a_follower_that_missed_thousands_of_entries_catches_up_without_a_snapshot` | enforced |
 
+## The durable log
+
+| Property | Enforced by | Status |
+|---|---|---|
+| Every record kind survives a round trip | `record::tests::every_record_kind_round_trips` | enforced |
+| A flipped byte anywhere in a frame is caught | `record::tests::a_flipped_byte_anywhere_in_the_frame_is_caught` (exhaustive over every byte position) | enforced |
+| A torn trailing record is discarded and its prefix kept | `recovery::a_torn_trailing_record_is_discarded_and_the_prefix_survives` | enforced |
+| A half-written frame header degrades correctly whichever half landed | `record::tests::a_half_written_header_degrades_either_way_round` | enforced |
+| Unused space at the end of a full segment is not read as a tear | `record::tests::slack_at_the_end_of_a_full_segment_is_not_a_tear` | enforced |
+| A torn record cannot be resurrected by a shorter one written over it | `recovery::a_torn_record_cannot_be_resurrected_by_a_shorter_one_written_over_it` | enforced |
+| Damage below the end of the log is refused, not guessed past | `recovery::damage_below_the_end_of_the_log_is_refused_rather_than_guessed_past` | enforced |
+| A segment whose header never landed is discarded | `recovery::a_segment_whose_header_never_landed_is_discarded` | enforced |
+| An `Entries` record that does not continue the log is refused | `fold::tests::entries_that_do_not_continue_the_log_are_refused`; `recovery::entries_that_do_not_continue_the_log_are_refused_at_the_door` | enforced |
+| A commit index a torn tail invalidated is clamped, and reported | `recovery::a_commit_index_the_tear_took_with_it_is_clamped_and_reported` | enforced |
+| A truncation survives a restart, replacement and all | `recovery::a_truncation_survives_a_restart` | enforced |
+| A compacted log recovers from its floor, not from index 1 | `fold::tests::a_compacted_log_starts_at_its_floor_rather_than_at_index_one`; `recovery::compaction_drops_only_segments_the_snapshot_covers` | enforced |
+| An append never changes a segment's size | `recovery::preallocation_leaves_the_segment_at_its_full_size_from_the_start` | enforced |
+| A sync covers what was written before it and nothing later | `recovery::a_sync_covers_exactly_what_was_written_before_it` | enforced |
+| Two handles cannot open one log directory | `recovery::a_second_handle_on_a_live_directory_is_refused` | enforced |
+| Both filesystem implementations behave identically | `keel_log::conformance::check`, run against `StdFs` today and against the simulator's fault-injecting filesystem from M1 Phase 2 | enforced |
+
 ## The simulator
 
 The properties above are checked after **every event** in every simulated run,
@@ -99,16 +120,19 @@ without it would only show the schedule was too harsh.
 
 Named here so the gaps are visible rather than discovered:
 
-- **Byte-level** torn writes. The simulator models durability at record
-  granularity: a crash loses everything not yet fsynced. Whether a half-written
-  record is discarded correctly is a question about a parser, and belongs to
-  `keel-log`'s own tests (M1).
+- **Byte-level torn writes _under a fault schedule_.** `keel-log`'s own tests
+  corrupt real files and cover the parser directly (above), but they are
+  hand-written cases. The simulator still models durability at record
+  granularity, so a tear has never met a partition. Closed in M1 Phase 2, when
+  the simulator drives the real log over a fault-injecting filesystem.
 - **What is at an index a durable write covers.** `SimDisk` stages a `Ready`'s
   entries as an opaque batch, so it models *when* a write becomes durable but not
   *what* it contains. A stale acknowledgement and a current one are
   indistinguishable to it, which is why it could not find [KEEL-6](BUGS.md).
   Closed in M1 by running the real `keel-log` underneath the simulator.
-- Durable log recovery and group commit — `keel-log` does not exist yet (M1).
+- Group commit across concurrent proposals. `keel-log` gives one fsync per
+  `sync()` call; batching several proposals into one belongs to the writer that
+  drives it, which does not exist yet (M1 Phase 5).
 - Crash consistency under `SIGKILL`, and atomic `applied_index` with state machine data (M1).
 - Exactly-once client sessions across a failover (M1).
 - Snapshots, streaming `InstallSnapshot`, and log compaction (M2).
