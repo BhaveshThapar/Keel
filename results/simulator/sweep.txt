@@ -1,7 +1,7 @@
 === keel-sim validation sweep ===
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
-commit: 18f33d3 (working tree modified)
-date:   2026-08-23T16:09:06Z
+commit: ec18e7d
+date:   2026-08-23T16:18:19Z
 
 Safety only. No timing claim is made here: the simulator runs on a
 virtual clock, so wall-clock speed says nothing about the system
