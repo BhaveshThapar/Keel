@@ -28,6 +28,8 @@ Status legend: **enforced** — a test or checker fails when the property breaks
 | A vote goes only to an up-to-date candidate (§5.4.1) | `paper_scenarios::vote_is_granted_only_to_an_up_to_date_candidate` | enforced |
 | One vote per term | `paper_scenarios::a_node_votes_at_most_once_per_term` | enforced |
 | A vote is durable before the grant is sent | Asserted inside `send_vote_req`: a grant must carry a `HardState` naming the voter | enforced |
+| A leader counts itself only up to what it has fsynced | `log::tests::next_committed_stops_at_the_persist_watermark`; `RaftLog::set_persisted` clamps to the log | enforced |
+| A persist acknowledgement that a truncation invalidated is rejected | `RaftCore::advance` matches the acknowledged term against the log ([KEEL-6](BUGS.md)); `log::tests::a_truncation_pulls_both_watermarks_back` | enforced |
 | Pre-vote stops a rejoining node from deposing a healthy leader | `election::pre_vote_stops_a_rejoining_node_from_deposing_the_leader` (runs both with and without) | enforced |
 | Check-quorum makes a leader without a majority step down | `election::leader_without_a_quorum_steps_down` | enforced |
 | Leader transfer completes inside one election timeout | `election::leader_transfer_moves_leadership_within_one_election_timeout` | enforced |
@@ -64,7 +66,8 @@ holding an earlier term's entry at their commit index.
 `simulation::heavy_faults_actually_reach_the_interesting_states` enforces this.
 It exists because of [KEEL-4](BUGS.md): the original five-node schedule reached
 the Figure 8 window exactly zero times, so a correct build and a deliberately
-broken one were indistinguishable.
+broken one were indistinguishable. CI sweeps both cluster sizes across all three
+profiles for the same reason.
 
 ### Does the checker catch anything?
 
@@ -100,6 +103,11 @@ Named here so the gaps are visible rather than discovered:
   granularity: a crash loses everything not yet fsynced. Whether a half-written
   record is discarded correctly is a question about a parser, and belongs to
   `keel-log`'s own tests (M1).
+- **What is at an index a durable write covers.** `SimDisk` stages a `Ready`'s
+  entries as an opaque batch, so it models *when* a write becomes durable but not
+  *what* it contains. A stale acknowledgement and a current one are
+  indistinguishable to it, which is why it could not find [KEEL-6](BUGS.md).
+  Closed in M1 by running the real `keel-log` underneath the simulator.
 - Durable log recovery and group commit — `keel-log` does not exist yet (M1).
 - Crash consistency under `SIGKILL`, and atomic `applied_index` with state machine data (M1).
 - Exactly-once client sessions across a failover (M1).

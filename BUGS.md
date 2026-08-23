@@ -178,3 +178,44 @@ implementation it tests. That ratio is not a surprise and it is not a
 digression: an unverified checker is just an opinion, and the only reason these
 were findable is that the negative demonstration gives a known-wrong build to
 compare against.
+
+---
+
+## KEEL-6 — a late fsync acknowledgement could mark the wrong entries durable
+
+**Found by** review while writing the first direct tests for `RaftLog`, prompted
+by noticing that `Advance::persisted` carried a term nothing ever read.
+
+**Symptom.** No test failure. The simulator could not produce one either, and
+that is the interesting part — see below.
+
+**Root cause.** The host reports durability as a watermark: `Advance::persisted`
+is `(Index, Term)`, and `advance` destructured it as `(index, _term)` and threw
+the term away. But a `Ready` can be in flight to the disk while a new leader
+truncates the log underneath it. The acknowledgement that lands afterwards names
+entries that no longer exist.
+
+Concretely: a follower is handed entries 5..10 at term 3 and starts an fsync. A
+new leader at term 4 truncates at 5 and appends its own 5..7, which go out in a
+later `Ready`. The first fsync completes and acknowledges `(10, 3)`.
+`set_persisted(10)` clamps to `last_index`, so the core recorded 7 — marking the
+*replacement* entries durable on the strength of an fsync that covered the ones
+they replaced. On a leader, whose own `matched` is its persisted watermark, that
+is a quorum count against bytes that were never written. That ordering is the
+entire content of ADR-003.
+
+**Fix.** Check the term the acknowledgement names against the log before
+believing it. Nothing stalls as a result: a truncation pulls `unstable_from`
+back, so the replacements are handed out again and acked on their own fsync.
+`advance` also now asserts the host is acknowledging a `Ready` the core actually
+emitted — deliberately a bound and not a sequence, since fsync latencies vary and
+acks legitimately arrive out of order.
+
+**Why the simulator did not find it.** `SimDisk` stages a `Ready`'s entries as an
+opaque batch and returns them wholesale on recovery. It models *when* a write
+becomes durable, correctly and strictly since KEEL-5 — but not *what* is at the
+index the write covers, so a stale acknowledgement and a current one are
+indistinguishable to it. This is the same shape of gap as KEEL-4: not a checker
+that was wrong, but a model that could not reach the state. It is the argument
+for M1's plan to run the real `keel-log` under the simulator rather than an
+abstract disk, and there is now a direct unit test in the meantime.
