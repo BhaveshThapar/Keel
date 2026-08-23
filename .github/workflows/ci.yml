@@ -24,6 +24,11 @@ jobs:
       - run: cargo test --workspace
       - name: The negative demonstrations must still demonstrate
         run: cargo test -p keel-raft --features negative-demos
+      # keel-sim forwards the feature to keel-raft. Nothing else compiles that
+      # forward, so without this a break in it would surface only inside the
+      # negative-demo script, as a confusing failure a long way from its cause.
+      - name: The simulator's feature forward must still compile
+        run: cargo check -p keel-sim --features negative-demos --all-targets
 
   determinism:
     name: the core replays identically
@@ -41,13 +46,20 @@ jobs:
       - run: diff run1.txt run2.txt
 
   simulator:
-    name: seeded fault injection
+    name: ${{ matrix.profile }}, ${{ matrix.nodes }} nodes, shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # Cluster size is not a detail. Commit needs the k-th highest match index
+      # where k is the quorum size, so at five nodes two followers must sit on an
+      # earlier term's entry at once and at three nodes only one must. KEEL-4:
+      # a five-node cluster reached the Figure 8 window zero times, which made a
+      # correct build and a deliberately broken one indistinguishable. Sweeping
+      # only one size is how that bug survived.
       matrix:
-        shard: [0, 1, 2, 3]
-        profile: [default, chaos]
+        shard: [0, 1]
+        nodes: [3, 5]
+        profile: [default, chaos, fig8-hunt]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -56,7 +68,8 @@ jobs:
         run: |
           cargo run --release -p keel-sim -- run \
             --from $(( ${{ matrix.shard }} * 250 )) --count 250 \
-            --steps 50000 --profile ${{ matrix.profile }}
+            --steps 50000 --nodes ${{ matrix.nodes }} \
+            --profile ${{ matrix.profile }}
 
   negative-demo:
     name: the checker must have teeth

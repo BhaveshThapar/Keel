@@ -131,6 +131,10 @@ impl SimConfig {
         }
     }
 
+    /// Every profile `named` accepts. Kept next to it so an error message
+    /// listing the choices cannot drift from the choices themselves.
+    pub const PROFILES: [&'static str; 3] = ["default", "chaos", "fig8-hunt"];
+
     pub fn named(name: &str, nodes: usize) -> Option<Self> {
         match name {
             "default" => Some(Self {

@@ -100,7 +100,10 @@ fn main() -> ExitCode {
             disable_fig8_guard,
         } => {
             let Some(cfg) = config_with_guard(&profile, nodes, disable_fig8_guard) else {
-                eprintln!("unknown profile {profile:?}; expected \"default\" or \"chaos\"");
+                eprintln!(
+                    "unknown profile {profile:?}; expected one of {:?}",
+                    SimConfig::PROFILES
+                );
                 return ExitCode::FAILURE;
             };
             let mut failures = Vec::new();
@@ -143,7 +146,10 @@ fn main() -> ExitCode {
             disable_fig8_guard,
         } => {
             let Some(cfg) = config_with_guard(&profile, nodes, disable_fig8_guard) else {
-                eprintln!("unknown profile {profile:?}; expected \"default\" or \"chaos\"");
+                eprintln!(
+                    "unknown profile {profile:?}; expected one of {:?}",
+                    SimConfig::PROFILES
+                );
                 return ExitCode::FAILURE;
             };
             let mut world = World::new(seed, cfg);

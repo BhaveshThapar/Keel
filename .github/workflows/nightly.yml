@@ -1,0 +1,50 @@
+name: Nightly
+
+# The per-PR sweep is wide and shallow: many seeds, 50k steps each. A long run is
+# the opposite, and it finds a different class of bug — anything that needs a
+# cluster to have been alive for a while, such as a counter that wraps, a
+# structure that grows without bound, or an interleaving that only becomes
+# reachable after enough leadership changes have accumulated.
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  long-run:
+    name: ${{ matrix.profile }}, ${{ matrix.nodes }} nodes, 1M steps
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        nodes: [3, 5]
+        profile: [default, chaos, fig8-hunt]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 25 seeds x 1M steps
+        run: |
+          cargo run --release -p keel-sim -- run \
+            --from 100000 --count 25 --steps 1000000 \
+            --nodes ${{ matrix.nodes }} --profile ${{ matrix.profile }}
+
+  # Seeds above 100000 are the nightly's own range, so a failure here names a
+  # seed the per-PR sweep has never run — and `keel-sim repro --seed N` still
+  # reproduces it byte for byte on a laptop.
+  determinism-at-length:
+    name: a long run still replays identically
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: |
+          cargo run --release -p keel-sim -- determinism \
+            --from 100000 --count 10 --steps 500000
