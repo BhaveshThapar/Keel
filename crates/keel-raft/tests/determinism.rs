@@ -102,29 +102,48 @@ fn a_whole_cluster_replays_identically() {
     assert_eq!(replay(7), replay(7));
 }
 
+/// Every crate `keel-raft` may depend on, and why each one cannot reach a clock,
+/// a thread, or a file descriptor.
+const ALLOWED_DEPENDENCIES: [&str; 3] = [
+    "bytes",     // byte buffers
+    "serde",     // derive only, optional
+    "thiserror", // error derive
+];
+
 /// The core must not be able to reach a clock, a thread, or a file descriptor.
 /// Enforced here as a dependency check so the constraint fails loudly at test
 /// time rather than being noticed in review.
+///
+/// This is an allowlist rather than a denylist on purpose. A denylist only
+/// catches the names someone thought to write down: `rustix`, `libc`, and
+/// `memmap2` all reach a file descriptor and none of them would have been on it.
+/// An allowlist fails on anything new, which is the point — adding a dependency
+/// here should be a deliberate act with an argument attached.
 #[test]
 fn the_core_has_no_io_dependencies() {
     let manifest = include_str!("../Cargo.toml");
-    let deps = manifest
-        .split("[dependencies]")
+    let Some(deps) = manifest
+        .split("\n[dependencies]\n")
         .nth(1)
         .and_then(|s| s.split("\n[").next())
-        .expect("Cargo.toml should declare dependencies");
-    for forbidden in [
-        "tokio",
-        "rand",
-        "std-time",
-        "mio",
-        "async",
-        "rayon",
-        "crossbeam",
-    ] {
+    else {
+        panic!("Cargo.toml should declare a [dependencies] section");
+    };
+
+    for line in deps.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((name, _)) = line.split_once('=') else {
+            panic!("unparsed line in [dependencies]: {line}");
+        };
+        let name = name.trim();
         assert!(
-            !deps.contains(forbidden),
-            "keel-raft must not depend on {forbidden}: it would break determinism (FR-1)"
+            ALLOWED_DEPENDENCIES.contains(&name),
+            "keel-raft must not depend on `{name}`: it could break determinism (FR-1). \
+             If it genuinely cannot reach a clock, a thread, or a file descriptor, \
+             add it to ALLOWED_DEPENDENCIES with the reason."
         );
     }
 }
