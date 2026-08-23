@@ -30,13 +30,14 @@ mod digest;
 mod faultfs;
 mod invariants;
 mod network;
-mod rng;
 mod world;
 
 pub use faultfs::{FaultFile, FaultFs, FaultStats, TearPolicy};
 pub use invariants::Violation;
 pub use network::NetConfig;
-pub use rng::Rng;
+// Re-exported so a consumer of the simulator does not need a second
+// dependency to construct the thing every entry point already takes.
+pub use keel_rand::Rng;
 pub use world::{SimConfig, Stats, World};
 
 /// The result of running one seed.

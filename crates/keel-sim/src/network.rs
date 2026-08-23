@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use keel_raft::{Message, NodeId};
 
-use crate::rng::Rng;
+use keel_rand::Rng;
 
 #[derive(Debug, Clone)]
 pub struct NetConfig {

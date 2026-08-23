@@ -13,7 +13,7 @@ use crate::digest::LogDigest;
 use crate::faultfs::{FaultFs, FaultStats, TearPolicy};
 use crate::invariants::{Oracle, Violation};
 use crate::network::{Delivery, NetConfig, Network};
-use crate::rng::Rng;
+use keel_rand::Rng;
 
 const TRACE_DEPTH: usize = 64;
 

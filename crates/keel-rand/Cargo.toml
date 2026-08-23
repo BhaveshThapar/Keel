@@ -1,0 +1,17 @@
+[package]
+name = "keel-rand"
+description = "SplitMix64 with named stream splitting, for simulations that must reproduce a run from a seed alone."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+categories = ["algorithms", "simulation"]
+keywords = ["random", "splitmix64", "deterministic", "simulation", "seeded"]
+
+# No dependencies, and that is the whole specification. A generator that reached
+# a clock, an operating-system entropy source, or a thread would break the one
+# property every consumer here relies on.
+
+[lints]
+workspace = true

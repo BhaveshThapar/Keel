@@ -12,6 +12,7 @@ keywords = ["raft", "simulation", "deterministic", "testing", "distributed"]
 [dependencies]
 keel-raft = { workspace = true }
 keel-log = { workspace = true }
+keel-rand = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true }
 

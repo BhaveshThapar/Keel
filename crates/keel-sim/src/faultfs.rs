@@ -55,7 +55,7 @@ use std::rc::Rc;
 
 use keel_log::{File, Fs, OpenMode, SyncMode};
 
-use crate::rng::Rng;
+use keel_rand::Rng;
 
 /// The device a crash is modelled against.
 ///

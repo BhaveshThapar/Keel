@@ -304,6 +304,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-rand"
+version = "0.1.0"
+
+[[package]]
 name = "keel-sim"
 version = "0.1.0"
 dependencies = [
@@ -311,6 +315,7 @@ dependencies = [
  "clap",
  "keel-log",
  "keel-raft",
+ "keel-rand",
 ]
 
 [[package]]
