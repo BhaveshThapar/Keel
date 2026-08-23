@@ -1,7 +1,7 @@
 # Vendored: `lsm_kv`
 
 Upstream: <https://github.com/BhaveshThapar/LSM-Tree-Key-Value-Storage-Engine>
-Commit: `fe6eb7afdaa4fe71ccde2449f8302cb7e9cdffe1` (2026-05-22)
+Commit: `d379e2aa3ce9eb3619c08371bb0e8c6bb5c70283` (2026-08-22)
 
 This is Keel's state machine. It is vendored rather than depended on because
 becoming a Raft state machine requires changes *inside* the engine — the manifest
@@ -19,10 +19,10 @@ outside.
 - The nested `fuzz/` cargo-fuzz crate left upstream; Keel's fuzz targets live in
   one place at the repository root (M3).
 
-Two clippy lints from a newer toolchain fixed in `src/` (`sort_by` to
-`sort_by_key`, `map_or` to `is_none_or`) so the workspace can keep building with
-`-D warnings`. Both are worth sending back upstream. Nothing else in `src/` or
-`tests/` was touched, so the diff against upstream stays readable.
+**`src/` and `tests/` are byte-identical to upstream.** Keeping them that way is
+deliberate: every fix belongs upstream first, so the diff stays reviewable and
+the two projects do not drift into different engines. The Keel-specific work
+below will break that, and each departure is recorded when it lands.
 
 ## What it does today
 
@@ -37,6 +37,32 @@ WAL and the manifest replay their frames and stop cleanly at the first truncated
 or bad-CRC record, keeping the valid prefix. Its `SIGKILL` crash tests survive
 the move unchanged.
 
+## Fixed upstream
+
+Five crash-safety defects were found while reading the engine closely enough to
+wire it up, and all five are fixed upstream rather than in this copy
+([PR #1](https://github.com/BhaveshThapar/LSM-Tree-Key-Value-Storage-Engine/pull/1)).
+Recorded here because they are the reason to trust — or not trust — what is left.
+
+- **The WAL rewrite after a flush truncated the live `wal.log` in place.** Writes
+  acknowledged after the memtable freeze existed only in memory and in that file,
+  and the truncate destroyed the second for as long as it took to write them
+  back. This is the one that could lose acknowledged writes. Now built beside the
+  live file and published by rename, with a directory fsync.
+- **No directory fsync after an SSTable rename.** A lost rename with a surviving
+  manifest edit naming that SSTable made the next open fail outright.
+- **Background errors were swallowed.** A failed flush printed to stderr and the
+  loop continued, leaving the frozen memtable stranded and the WAL never
+  rewritten, silently and permanently. Now a latched fatal state that every entry
+  point refuses against, reportable through `Db::health()` — which is exactly
+  what a Raft node needs to step down on.
+- **Panics on the compaction publish path**, plus a poisonable `std::sync::Mutex`
+  in the block cache. A panic in an applier thread is a correctness event, not
+  just an availability one.
+- **No directory lock.** Two `Db::open` calls on one directory each rolled the
+  manifest forward, deleted the other's generation, and reclaimed the other's
+  SSTables as orphans. The lock caught a test that had been relying on this.
+
 ## What has to change before it can be a Raft state machine
 
 Recorded here so the work is visible rather than discovered. None of it is done.
@@ -45,9 +71,9 @@ Recorded here so the work is visible rather than discovered. None of it is done.
 one record, one WAL frame, one fsync, and the frame format has no notion of a
 group. Raft needs `applied_index` to become durable in the *same* atomic write as
 the data it describes, or a crash mid-apply leaves the two disagreeing and apply
-stops being idempotent on replay. This needs a frame group with all-or-nothing
-replay, and a key namespace so `applied_index` and the session table cannot
-collide with user keys.
+stops being idempotent on replay. This needs one frame per batch under one CRC,
+and a key namespace so `applied_index` and the session table cannot collide with
+user keys.
 
 **Group commit (FR-4).** One `fsync` per single-key write, serialised on the WAL
 mutex. Batched `fdatasync` is the difference between a usable write path and an
@@ -55,7 +81,13 @@ unusable one.
 
 **Range scans (FR-6, FR-7).** No iterator at any layer; `SsTableReader` has no
 seek, and `iter_all` materialises a whole table. Needed for `scan`, and also for
-enumerating the session table to expire entries.
+enumerating the session table to expire it.
+
+**A multi-version memtable.** `MemTable` keeps only the newest version per key,
+so a read through an `lsm_kv::Snapshot` returns `None` for a key that was
+rewritten in the memtable — documented at `memtable.rs`, worked around in the
+model test by flushing first. A checkpoint built by reading through a snapshot is
+therefore wrong unless a full flush precedes it, which M2 depends on.
 
 **Checkpoints (FR-9).** No `checkpoint`/`restore`. Every ingredient exists —
 immutable SSTables, an authoritative manifest, atomic rename discipline — but
@@ -67,23 +99,17 @@ does not name. There is no read-only view to build a checkpoint from.
 compaction synchronously, which can take arbitrarily long. FR-9 wants a snapshot
 to stall writes for under 50 ms, so it needs a flush-only path.
 
-### Correctness issues found while reading it
+**An injectable filesystem.** Keel's simulator drives the real storage stack, so
+the engine's file operations have to go through a seam a seeded fault model can
+sit underneath. This is the largest mechanical diff Keel will carry against
+upstream, and it is why it lands alongside the WAL frame changes rather than
+separately: both rewrite the same I/O paths.
 
-- **The WAL rewrite after a flush truncates the live `wal.log` in place.** Writes
-  that were acknowledged after the memtable freeze exist only in memory and in
-  that file; a crash inside the truncate window loses them. The fix is the usual
-  one: write a new file, fsync, rename over, fsync the directory.
-- **No directory fsync after an SSTable rename.** If the rename is lost while the
-  manifest edit naming it survives, the next open fails outright.
-- **Background errors are swallowed.** A failed flush prints to stderr and the
-  loop continues, leaving the frozen memtable stranded and the WAL never
-  rewritten, silently and permanently. A Raft node needs this surfaced as a
-  fatal state it can report.
-- **Panics on the compaction publish path** (`.expect`, `.unwrap`, and a
-  poisonable `std::sync::Mutex` in the block cache). A panic in an applier thread
-  is a correctness event, not just an availability one.
-- **CRC-32/ISO-HDLC, not CRC32C.** Cosmetic, but Keel's log uses CRC32C and the
-  two should agree.
+**CRC-32/ISO-HDLC, not CRC32C.** Keel's log uses CRC32C and the two should agree.
+Cosmetic, and more dangerous than it looks: changing the checksum alone makes
+every existing frame fail its CRC, so the manifest replays to an empty state and
+`Db::open_with` deletes every SSTable in the directory. It ships with a file
+magic and version, validated before reclamation runs, or it does not ship.
 
 ### A naming collision to keep in mind
 

@@ -19,6 +19,11 @@ lz4_flex = "0.11"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 parking_lot = "0.12"
 
+# flock, for the database directory lock. Unix-only, as the engine's directory
+# fsync already is.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 proptest = { workspace = true }

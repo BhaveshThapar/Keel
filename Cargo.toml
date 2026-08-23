@@ -24,6 +24,7 @@ postcard = { version = "1", features = ["use-std"] }
 thiserror = "2"
 anyhow = "1"
 crc32c = "0.6"
+libc = "0.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
