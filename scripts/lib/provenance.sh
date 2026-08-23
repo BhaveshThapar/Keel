@@ -42,13 +42,30 @@ host_line() {
 # new script — exactly what a brand new artifact is usually produced by — would
 # otherwise record itself as having run against a clean tree.
 #
+# The whole of results/ is excluded rather than just this artifact. The flag
+# exists to say whether the code that ran is the code at this commit, and a
+# recording is not code: a script that records several artifacts in one pass
+# would otherwise have every file after the first report a modified tree,
+# because the earlier ones had just been written. An artifact that has drifted
+# away from the commit it names is caught by check-artifacts.sh instead, which
+# is the check that can actually tell.
+#
 # Call as: provenance_of results/simulator/sweep.txt
 provenance_of() {
+    # The exclusion above is written as results/, so an artifact somewhere else
+    # would be measuring its own side effect again and quietly.
+    case "$1" in
+        results/*) ;;
+        *)
+            echo "provenance_of: $1 is not under results/" >&2
+            return 1
+            ;;
+    esac
     HEAD_SHA="$(git rev-parse --short HEAD)"
     DIRTY=""
-    git diff --quiet -- . ":(exclude)$1" || DIRTY=" (working tree modified)"
-    git diff --quiet --cached || DIRTY=" (working tree modified)"
-    if git ls-files --others --exclude-standard -- . | grep -qvF "$1"; then
+    git diff --quiet -- . ':(exclude)results' || DIRTY=" (working tree modified)"
+    git diff --quiet --cached -- . ':(exclude)results' || DIRTY=" (working tree modified)"
+    if git ls-files --others --exclude-standard -- . ':(exclude)results' | grep -q .; then
         DIRTY=" (working tree modified)"
     fi
 }
