@@ -292,3 +292,187 @@ impl ProgressTracker {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn progress() -> Progress {
+        Progress::new(1, false, 4, 4096)
+    }
+
+    #[test]
+    fn the_window_caps_message_count() {
+        let mut w = Inflights::new(3, usize::MAX);
+        for i in 1..=3 {
+            assert!(!w.full());
+            w.add(i, 1);
+        }
+        assert!(w.full());
+        assert_eq!(w.count(), 3);
+    }
+
+    #[test]
+    fn the_window_caps_accumulated_bytes() {
+        let mut w = Inflights::new(usize::MAX, 1024);
+        w.add(1, 512);
+        assert!(!w.full());
+        w.add(2, 512);
+        assert!(
+            w.full(),
+            "the window exists to bound memory, not message count alone"
+        );
+    }
+
+    #[test]
+    fn an_acknowledgement_retires_every_message_at_or_below_it() {
+        let mut w = Inflights::new(8, usize::MAX);
+        w.add(10, 1);
+        w.add(20, 1);
+        w.add(30, 1);
+
+        w.free_le(20);
+
+        assert_eq!(w.count(), 1, "one ack covers every message it subsumes");
+        w.free_le(30);
+        assert_eq!(w.count(), 0);
+    }
+
+    #[test]
+    fn an_acknowledgement_below_the_window_retires_nothing() {
+        let mut w = Inflights::new(8, usize::MAX);
+        w.add(10, 1);
+        w.free_le(5);
+        assert_eq!(w.count(), 1);
+    }
+
+    /// KEEL-1. A window filled just before a partition is never drained by
+    /// `free_le`, because the acknowledgements that would drain it are exactly
+    /// what the partition swallowed. Releasing one slot on independent evidence
+    /// of life is what restarts replication.
+    #[test]
+    fn one_slot_can_be_released_without_an_acknowledgement() {
+        let mut pr = progress();
+        pr.become_replicate();
+        for i in 1..=4 {
+            pr.inflight.add(i, 10);
+        }
+        assert!(
+            pr.is_paused(),
+            "a full window pauses replication, which is the trap"
+        );
+
+        pr.inflight.free_first_one();
+
+        assert!(
+            !pr.is_paused(),
+            "one freed slot is enough to get an append out"
+        );
+        assert_eq!(pr.inflight.count(), 3);
+    }
+
+    #[test]
+    fn changing_state_empties_the_window() {
+        let mut pr = progress();
+        pr.become_replicate();
+        pr.inflight.add(1, 4096);
+        pr.probe_sent = true;
+
+        pr.become_probe();
+
+        assert_eq!(pr.inflight.count(), 0);
+        assert!(!pr.probe_sent);
+        assert!(!pr.is_paused());
+    }
+
+    #[test]
+    fn a_freed_window_stops_reporting_its_bytes() {
+        let mut w = Inflights::new(usize::MAX, 100);
+        w.add(1, 100);
+        assert!(w.full());
+        w.free_le(1);
+        assert!(
+            !w.full(),
+            "byte accounting must come back down with the window"
+        );
+    }
+
+    #[test]
+    fn probe_sends_one_message_at_a_time() {
+        let mut pr = progress();
+        assert_eq!(pr.state, ProgressState::Probe);
+        assert!(!pr.is_paused());
+        pr.probe_sent = true;
+        assert!(pr.is_paused());
+    }
+
+    #[test]
+    fn a_snapshot_in_flight_pauses_replication_outright() {
+        let mut pr = progress();
+        pr.become_snapshot(50);
+        assert!(pr.is_paused());
+        assert_eq!(pr.pending_snapshot, 50);
+
+        // Backing out of Snapshot resumes above whatever the snapshot covered,
+        // not above `matched`, which is still wherever it was before.
+        pr.become_probe();
+        assert_eq!(pr.next, 51);
+    }
+
+    #[test]
+    fn matched_never_moves_backwards() {
+        let mut pr = progress();
+        assert!(pr.maybe_update(10));
+        assert!(
+            !pr.maybe_update(4),
+            "a reordered ack must not rewind matched"
+        );
+        assert_eq!(pr.matched, 10);
+        assert_eq!(pr.next, 11);
+    }
+
+    #[test]
+    fn a_stale_rejection_in_replicate_is_ignored() {
+        let mut pr = progress();
+        pr.maybe_update(20);
+        pr.become_replicate();
+
+        assert!(
+            !pr.maybe_decr_to(15, 16),
+            "in Replicate the follower echoes its match index, so a rejection \
+             below it is a reordered leftover"
+        );
+        assert_eq!(pr.next, 21);
+
+        assert!(pr.maybe_decr_to(25, 21));
+        assert_eq!(pr.next, 21);
+    }
+
+    #[test]
+    fn a_probe_rejection_backs_off_to_the_conflict_hint() {
+        let mut pr = progress();
+        pr.next = 100;
+        pr.probe_sent = true;
+
+        assert!(pr.maybe_decr_to(99, 40));
+        assert_eq!(pr.next, 40);
+        assert!(!pr.probe_sent, "the hint is evidence the follower is alive");
+
+        // A rejection that does not name the index we probed is stale.
+        assert!(!pr.maybe_decr_to(12, 5));
+        assert_eq!(pr.next, 40);
+    }
+
+    #[test]
+    fn a_probe_never_backs_off_below_what_is_already_matched() {
+        let mut pr = progress();
+        pr.maybe_update(30);
+        pr.next = 40;
+
+        assert!(pr.maybe_decr_to(39, 2));
+        assert_eq!(
+            pr.next, 31,
+            "matched entries are known to agree; re-probing them proves nothing"
+        );
+    }
+}

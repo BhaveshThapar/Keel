@@ -21,8 +21,5 @@ serde = ["dep:serde", "bytes/serde"]
 # violations (TR-8). Never enable outside negative-demo scripts.
 negative-demos = []
 
-[dev-dependencies]
-proptest = { workspace = true }
-
 [lints]
 workspace = true

@@ -211,7 +211,6 @@ name = "keel-raft"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "proptest",
  "serde",
  "thiserror",
 ]
