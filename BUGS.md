@@ -1,11 +1,24 @@
 # Bugs the harness found
 
-Every defect found by a test, the simulator, or the fuzzer — not by reading the
-code — is recorded here with its symptom, root cause, and fix. A nonzero count
-is the point: a verification harness that has never caught anything has not been
-shown to work.
+Every defect in code that was already believed correct — already shipped, or
+already passing the suite written for it — recorded with its symptom, root
+cause, and fix. A nonzero count is the point: a verification harness that has
+never caught anything has not been shown to work.
 
 Format: what broke, how it was found, why it happened, what fixed it.
+
+**What is in scope, and what is not.** The test that catches a bug is usually
+the simulator or a unit test, and three of the entries below were instead found
+by review — KEEL-2, KEEL-5 and KEEL-6. Those are here because in each case the
+harness *should* have found it and could not: the model was more permissive
+than a real disk, or could not reach the state, or could not tell two states
+apart. That gap is the finding, and each entry says so.
+
+What is **not** here is a bug a commit's own new tests caught before that commit
+shipped. Writing a test, watching it fail, and fixing the code is what writing
+the code is; logging it would inflate a count whose whole value is that it
+counts the times the system was believed correct and was not. Those go in the
+commit message instead, and two of them are in `cc4618d`'s.
 
 ---
 
