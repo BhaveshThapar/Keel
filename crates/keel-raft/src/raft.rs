@@ -1250,6 +1250,18 @@ impl RaftCore {
     }
 
     pub fn advance(&mut self, ack: Advance) {
+        // A host may only acknowledge a `Ready` this core actually emitted.
+        // Acks may arrive out of order — fsync latencies vary and several
+        // `Ready`s can be in flight at once — so this is a bound, not a
+        // sequence. Every watermark below is a max, which is what makes
+        // out-of-order acks safe.
+        assert!(
+            ack.ready_number > 0 && ack.ready_number <= self.ready_number,
+            "advance acknowledged Ready {} but only {} have been emitted",
+            ack.ready_number,
+            self.ready_number
+        );
+
         if let Some(meta) = ack.snapshot_installed {
             self.log.restore_snapshot(meta.index, meta.term);
             self.tracker.set_conf(meta.conf, self.log.last_index() + 1);
@@ -1257,7 +1269,18 @@ impl RaftCore {
             self.hard_state_dirty = true;
         }
 
-        if let Some((index, _term)) = ack.persisted {
+        // The term is what makes a late ack safe. A `Ready` can be in flight to
+        // the disk while a new leader truncates the log underneath it; the ack
+        // that lands afterwards names entries that no longer exist. Taking it at
+        // face value would mark the *replacement* entries durable on the
+        // strength of an fsync that covered the ones they replaced — and on a
+        // leader, that is a quorum count against bytes that were never written
+        // (ADR-003). Matching the term rejects exactly that ack. Nothing stalls:
+        // a truncation pulls `unstable_from` back, so the replacements are
+        // handed out again and acked on their own fsync.
+        if let Some((index, term)) = ack.persisted
+            && self.log.term(index) == Some(term)
+        {
             self.log.set_persisted(index);
             if self.role == Role::Leader
                 && let Some(pr) = self.tracker.progress.get_mut(&self.cfg.id)
