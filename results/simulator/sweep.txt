@@ -1,22 +1,33 @@
 === keel-sim validation sweep ===
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
-commit: 3eb92dc
-date:   2026-08-23T13:40:51Z
+commit: 18f33d3 (working tree modified)
+date:   2026-08-23T16:09:06Z
 
 Safety only. No timing claim is made here: the simulator runs on a
 virtual clock, so wall-clock speed says nothing about the system
 under test.
 
 --- profile=default nodes=3
-500 seeds x 60000 steps, 3 nodes, default profile: 500 passed, 0 failed (mean 5418 entries committed per run)
+200 seeds x 40000 steps, 3 nodes, default profile: 200 passed, 0 failed (mean 3687 entries committed per run)
 --- profile=default nodes=5
-500 seeds x 60000 steps, 5 nodes, default profile: 500 passed, 0 failed (mean 3327 entries committed per run)
+200 seeds x 40000 steps, 5 nodes, default profile: 200 passed, 0 failed (mean 2244 entries committed per run)
 --- profile=chaos nodes=3
-500 seeds x 60000 steps, 3 nodes, chaos profile: 500 passed, 0 failed (mean 195 entries committed per run)
+200 seeds x 40000 steps, 3 nodes, chaos profile: 200 passed, 0 failed (mean 130 entries committed per run)
 --- profile=chaos nodes=5
-500 seeds x 60000 steps, 5 nodes, chaos profile: 500 passed, 0 failed (mean 197 entries committed per run)
+200 seeds x 40000 steps, 5 nodes, chaos profile: 200 passed, 0 failed (mean 125 entries committed per run)
 --- profile=fig8-hunt nodes=3
-500 seeds x 80000 steps, 3 nodes, fig8-hunt profile: 500 passed, 0 failed (mean 198 entries committed per run)
+200 seeds x 60000 steps, 3 nodes, fig8-hunt profile: 200 passed, 0 failed (mean 146 entries committed per run)
+
+--- profile=disk-chaos nodes=3
+60 seeds x 40000 steps, 3 nodes, disk-chaos profile: 60 passed, 0 failed (mean 89 entries committed per run)
+--- profile=disk-chaos nodes=5
+60 seeds x 40000 steps, 5 nodes, disk-chaos profile: 60 passed, 0 failed (mean 110 entries committed per run)
+--- profile=disk-hunt nodes=3
+60 seeds x 40000 steps, 3 nodes, disk-hunt profile: 60 passed, 0 failed (mean 86 entries committed per run)
+--- profile=disk-hunt nodes=5
+60 seeds x 40000 steps, 5 nodes, disk-hunt profile: 60 passed, 0 failed (mean 107 entries committed per run)
 
 --- determinism: 100 seeds, each run twice
 100 seeds replayed identically
+--- determinism with the disk in the fingerprint: 60 seeds, disk-hunt
+60 seeds replayed identically

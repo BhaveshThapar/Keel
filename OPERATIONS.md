@@ -26,6 +26,16 @@ violated property, the last events before it, and every node's state.
 | `default` | Steady client traffic with occasional partitions and crashes. Commits thousands of entries per run, so it exercises the ordinary path hard. |
 | `chaos` | Heavy loss, one entry per message, frequent leadership change. Commits far less per run, and reaches states the default profile does not. |
 | `fig8-hunt` | Aimed at the window the Figure 8 rule guards. Strikes the leader the moment it commits an earlier term's entry. Not a fair sample of real faults — evidence about one specific hazard. |
+| `disk-chaos` | Faults aimed at the disk. A crash decides sector by sector what reached the device, at the 4096-byte sector modern hardware has. Proposals are padded to 1 KiB, because a write tears only if it straddles a boundary and the chance of that is the record's length over the sector size. |
+| `disk-hunt` | The same at a 512-byte sector, where a record of a few hundred bytes straddles a boundary about half the time. Smaller segments too, so rollover and multi-segment recovery are crossed often. |
+
+The two sector sizes are a deliberate pair, not a redundancy. 4096 is what the
+hardware is; 512 is where the sub-record shapes are cheap to reach. Both matter,
+and a profile whose segments are smaller than its sector cannot tear **at all** —
+every offset lies in the same sector, so one draw is made and the only outcomes
+are lost and whole. That is not a weaker fault model but an absent one, and
+`fault_fs::a_four_kilobyte_sector_over_a_one_kilobyte_segment_can_never_tear`
+pins the arithmetic so nobody configures it by accident.
 
 Cluster size matters and is not a detail. Commit needs the k-th highest match
 index where k is the quorum size, so a three-node cluster reaches partial
@@ -45,6 +55,27 @@ elections, crashes, partitions, entries committed — plus coverage counters
 saying which of the states the safety rules guard were actually reached. A clean
 run over a schedule that never partitioned anything would prove nothing, so the
 counters are part of the result, not decoration.
+
+### Reproduce a disk failure
+
+```
+keel-sim repro --seed 0 --steps 40000 --nodes 3 --profile disk-hunt
+```
+
+The disk counters are the ones to read on a `disk-*` profile:
+
+| Counter | Zero means |
+|---|---|
+| `crashes with writes in flight` | no crash landed between a write and the fsync covering it, so nothing could have torn however the policy is configured |
+| `bytes in flight at crash` | the same, in bytes; below one sector means a tear was very unlikely |
+| `writes lost/whole/head/tail/pieces` | a head or tail count of zero means the sector model never cut a write |
+| `files left with a hole` | no crash left bytes above a gap — the state [KEEL-7](BUGS.md) lived in |
+| `torn tails` | the real recovery parser never met one, so nothing the tear model produced reached the code it exists to exercise |
+| `tears during partition` | tears and partitions both happened and never met |
+
+A failure on a `disk-*` profile reproduces the same way as any other: the seed is
+the reproduction, and the disk is inside the fingerprint, so
+`keel-sim determinism --profile disk-hunt` covers it too.
 
 ### Check determinism
 

@@ -13,6 +13,7 @@ jobs:
   check:
     name: fmt, clippy, test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -33,6 +34,7 @@ jobs:
   determinism:
     name: the core replays identically
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -44,10 +46,18 @@ jobs:
       - run: cargo test -p keel-raft --test determinism -- --test-threads=1 > run1.txt
       - run: cargo test -p keel-raft --test determinism -- --test-threads=1 > run2.txt
       - run: diff run1.txt run2.txt
+      # The disk is inside the world's fingerprint now, so this is the gate that
+      # would catch a nondeterministic tear. It can only do that if it is pointed
+      # at a profile that tears.
+      - name: the simulated disk replays identically
+        run: |
+          cargo run --release -p keel-sim -- determinism \
+            --from 0 --count 40 --steps 30000 --nodes 3 --profile disk-hunt
 
   simulator:
     name: ${{ matrix.profile }}, ${{ matrix.nodes }} nodes, shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       # Cluster size is not a detail. Commit needs the k-th highest match index
@@ -71,13 +81,52 @@ jobs:
             --steps 50000 --nodes ${{ matrix.nodes }} \
             --profile ${{ matrix.profile }}
 
-  negative-demo:
-    name: the checker must have teeth
+  # The disk profiles run the real log over a disk that tears, so every record is
+  # really encoded, checksummed, written and parsed and every restart re-scans
+  # every segment. That costs enough per event to need its own job at its own
+  # seed count rather than more cells on the matrix above — cutting the sweep
+  # there to pay for it would trade breadth for depth in the wrong direction.
+  #
+  # Both sector sizes run. 4096 is what modern hardware is; 512 is where a
+  # record of a few hundred bytes straddles a boundary often enough to tear.
+  # A write only tears when it straddles one, so this axis is not a detail.
+  disk-simulator:
+    name: ${{ matrix.profile }}, ${{ matrix.nodes }} nodes
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        nodes: [3, 5]
+        profile: [disk-chaos, disk-hunt]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 120 seeds x 40k steps over the real log
+        run: |
+          cargo run --release -p keel-sim -- run \
+            --from 0 --count 120 --steps 40000 \
+            --nodes ${{ matrix.nodes }} \
+            --profile ${{ matrix.profile }}
+
+  negative-demo:
+    name: ${{ matrix.demo }} must have teeth
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      # A matrix, so a failure names which demonstration stopped demonstrating
+      # rather than just that one of them did.
+      fail-fast: false
+      matrix:
+        demo: [figure-8, torn-record, tearing-is-load-bearing]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Removing a safety rule must make the simulator fail. A clean run is only
-      # evidence if a broken build would have produced a dirty one.
-      - run: scripts/negative-demos/figure-8.sh 40 80000
+      # evidence if a broken build would have produced a dirty one. And
+      # tearing-is-load-bearing holds the bug fixed and varies the fault model
+      # instead, because three of the seven bugs so far were in the harness.
+      - name: the rule removed must produce a violation
+        run: scripts/negative-demos/${{ matrix.demo }}.sh

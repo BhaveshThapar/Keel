@@ -155,6 +155,13 @@ than an afterthought. Commit needs the k-th highest match index where k is the
 quorum size: at five nodes two followers must sit on an earlier term's entry at
 once, at three nodes only one must.
 
+The disk needed the same treatment for the same reason. The window between a
+write and the fsync that covers it is the only interval in which a crash has
+anything to tear, and measured it is open about seven per cent of the time — so
+a uniform nemesis reaches a torn write once a run and often not at all. The
+`disk-*` profiles draw their victim first from nodes that are both writing and
+inside a partition, then from nodes that are writing.
+
 **Cost.** An aimed schedule is not a fair sample of what a real cluster
 experiences, so it cannot support a claim like "this survives realistic faults".
 It is evidence about a specific hazard. The unaimed profiles are what the broad
@@ -257,6 +264,122 @@ there at all, so a benchmark using it would be measuring something else.
 and the M4 benchmark harness refuses to write an artifact under `results/`
 unless it was `Durable`. A number that does not say which primitive produced it
 is uninterpretable, so producing one is made impossible rather than discouraged.
+
+---
+
+## ADR-014 — The simulator writes real bytes
+
+Each simulated node drives a real `keel_log::Log` over a filesystem that lives
+in memory. The record model it replaces — `SimDisk`, which staged a `Ready`'s
+entries as an opaque batch — is deleted rather than kept as a fast tier.
+
+**Why.** A model can only be wrong in ways somebody thought of, and this one was
+wrong twice. It modelled *when* a write became durable but not *what* the write
+contained, which is why it could not find [KEEL-6](BUGS.md); and it lost bytes
+whole, which is why it could not find [KEEL-7](BUGS.md). Both are the shape of
+[KEEL-4](BUGS.md): not a checker that was wrong, but a model that could not
+reach the state. The parser is where torn-tail bugs actually live, so the
+simulator runs the parser.
+
+Keeping both models was considered and rejected. The only thing `SimDisk` still
+offered was speed, and two models of one thing is two things to keep honest plus
+a standing risk that they disagree silently.
+
+**Cost.** Every record is really encoded, checksummed, written and parsed, and
+every restart re-reads and re-scans every segment. The disk profiles therefore
+sweep fewer seeds than the record-model profiles did, and the response to that
+is more shards at the same depth rather than fewer seeds — the seed count is
+what the README publishes.
+
+**Enforced by** `dependencies::the_simulated_disk_is_the_only_place_the_log_writes`,
+which fails if a stray `std::fs` call escapes the seam, and by the disk profiles
+sweeping clean over the real parser.
+
+---
+
+## ADR-015 — The tear model is harsher than the hardware, and says which parts
+
+A crash decides, one sector at a time, which of a file's unsynced writes had
+reached the device. Sectors are cut at multiples of `sector_bytes` measured from
+file offset zero, never from the start of a write, and a sector a write only
+partly covers lands whole, carrying the older bytes around it.
+
+**Why offset zero.** That is the difference between modelling a device and
+modelling an API. A device has no idea where a caller's `pwrite` began, only
+which of its own blocks it had committed when the power went. A cut measured
+from the write would produce faults no hardware makes.
+
+**Why the whole sector.** A `pwrite` inside a page does not hand the device a
+fragment: the page is read, modified in place, marked dirty, and writeback
+submits it whole. Two consequences follow for free — landing a sector is a copy
+from the already-folded visible image rather than a merge, and overlapping
+pending writes resolve themselves in write order rather than needing a rule.
+
+**Where it is harsher than the hardware.** The per-sector decisions are
+independent, while real writeback submits pages roughly in offset order and so
+tends to produce prefixes. Holes are genuinely reachable — nothing orders
+completions without FUA or a flush — so the model overstates how often a
+possible state happens rather than inventing an impossible one. That is
+deliberate: the hole is the state [KEEL-7](BUGS.md) lived in. A verifier should
+be harsher than the device it models, and should say so rather than implying
+the model is faithful.
+
+**Where it is more permissive.** A misdirected write — the right bytes at the
+wrong address — is not modelled at all, because the frame carries no
+self-identifying offset and nothing could detect one. Bit rot in already-durable
+bytes is not modelled either. Both are recorded in CORRECTNESS.md.
+
+**What is deliberately absent.** A shred inside a sector: a sector that reaches
+the media reaches it whole, and a partially written one reads as an error rather
+than as half-old bytes. It would also buy no parser coverage, since
+`record::tests::a_flipped_byte_anywhere_in_the_frame_is_caught` already flips
+every byte position of a frame. And permutation of the pending list: the hole it
+exists to produce is already reached by the sector decisions, more faithfully,
+and where writes overlap it would fabricate a filesystem that retired a later
+write before an earlier one to the same bytes.
+
+**Cost, and the trap in it.** A write tears only if it straddles a sector
+boundary, with probability `(L - 1) / S` for a record of `L` bytes. So a 23-byte
+record against a 4096-byte sector tears about once in two hundred, and a segment
+smaller than one sector cannot tear **at all** — every offset is in the same
+sector, one draw is made, and the only outcomes are lost and whole. A badly
+sized profile is not a weaker fault model but an absent one, sweeping clean and
+proving nothing. `fault_fs::a_four_kilobyte_sector_over_a_one_kilobyte_segment_can_never_tear`
+pins that arithmetic as an assertion so nobody configures it by accident.
+
+**Enforced by** `simulation::heavy_disk_faults_actually_tear_the_log`, which
+fails on a zero in any tear counter, and by
+`scripts/negative-demos/tearing-is-load-bearing.sh`, which shows the same broken
+build caught with tearing on and invisible with it off.
+
+---
+
+## ADR-016 — A `Ready` is written when it is pumped and made durable when its fsync fires
+
+The host loop stages a `Ready`'s writes at pump time and calls `Log::sync` in a
+separate, later event. The interval between them is the only one in which bytes
+sit on the disk that no fsync has covered.
+
+**Why not both in the fsync event.** That is the arrangement the ordering
+argument recommends — it matches the real host loop, where staging and syncing
+are back to back — and it makes the pair atomic in virtual time. Measured, it
+leaves zero bytes in flight at every crash across a full run, so the fault model
+can never fire at all. The ordering concern it answers is answered instead by
+the fact that pump stages in order: which fsync completes first does not matter,
+because an fsync makes durable everything written before it was issued, and
+reporting only the batch's own watermark is conservative in the safe direction.
+
+**Why not one fsync in flight per node.** More faithful still, and it holds the
+window open properly. It also collapsed the `chaos` profile from 195 committed
+entries per run to 19, because messages are gated on the fsync and grouping them
+lock-steps the cluster: 516 fsyncs where the latency alone predicts nine
+thousand. Group commit belongs with the writer that drives it, and that writer
+does not exist yet (M1 Phase 5).
+
+**Cost.** `Log::append` can roll a segment, and `Log::roll` fsyncs the outgoing
+one — so some bytes become durable at pump time rather than at the scheduled
+event. That is what a real host's append does too; what is not modelled is the
+latency of that internal fsync.
 
 ---
 

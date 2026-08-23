@@ -37,6 +37,28 @@ jobs:
   # Seeds above 100000 are the nightly's own range, so a failure here names a
   # seed the per-PR sweep has never run — and `keel-sim repro --seed N` still
   # reproduces it byte for byte on a laptop.
+  # The disk profiles cost enough per event that a nightly is where a long run
+  # over them is affordable at all. A tear that only appears after a cluster has
+  # been alive for a while is exactly the class this job exists for.
+  disk-long-run:
+    name: ${{ matrix.profile }}, ${{ matrix.nodes }} nodes, 200k steps
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        nodes: [3, 5]
+        profile: [disk-chaos, disk-hunt]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 25 seeds x 200k steps over the real log
+        run: |
+          cargo run --release -p keel-sim -- run \
+            --from 100000 --count 25 --steps 200000 \
+            --nodes ${{ matrix.nodes }} --profile ${{ matrix.profile }}
+
   determinism-at-length:
     name: a long run still replays identically
     runs-on: ubuntu-latest

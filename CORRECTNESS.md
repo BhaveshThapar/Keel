@@ -61,7 +61,10 @@ Status legend: **enforced** — a test or checker fails when the property breaks
 | An append never changes a segment's size | `recovery::preallocation_leaves_the_segment_at_its_full_size_from_the_start` | enforced |
 | A sync covers what was written before it and nothing later | `recovery::a_sync_covers_exactly_what_was_written_before_it` | enforced |
 | Two handles cannot open one log directory | `recovery::a_second_handle_on_a_live_directory_is_refused` | enforced |
-| Both filesystem implementations behave identically | `keel_log::conformance::check`, run against `StdFs` today and against the simulator's fault-injecting filesystem from M1 Phase 2 | enforced |
+| Both filesystem implementations behave identically | `keel_log::conformance::check`, run against `StdFs` and against the simulator's fault-injecting filesystem, tearing and not | enforced |
+| Bytes written above the recovery cursor are erased however the scan stopped | `recovery::a_hole_a_crash_left_is_not_read_as_the_clean_end_it_looks_like` ([KEEL-7](BUGS.md)) | enforced |
+| A record left above a hole is never read back as one | `recovery::a_record_above_a_hole_is_erased_rather_than_read_on_the_next_open`; `log_over_faultfs::a_log_whose_crash_left_a_hole_never_reads_the_leftover_as_a_record` | enforced |
+| The checksum is load-bearing, not decorative | `scripts/negative-demos/torn-record.sh` (control passes, experiment fails) | enforced |
 
 ## The simulator
 
@@ -75,6 +78,14 @@ comparison, which is what makes per-event checking affordable.
 | Different seeds explore different schedules | `simulation::different_seeds_produce_different_runs` | enforced |
 | The cluster actually makes progress | `simulation::the_cluster_makes_progress` | enforced |
 | A leader never commits an earlier term's entry by counting | `simulation::no_leader_ever_commits_an_old_term_entry_by_counting` (must be exactly zero) | enforced |
+| Every node drives the real log over a disk that can tear | `dependencies::the_simulated_disk_is_the_only_place_the_log_writes`; the `disk-*` profiles sweeping clean | enforced |
+| A crash never leaves a log that will not open | `log_over_faultfs::a_log_that_crashed_can_always_be_reopened`; a failed reopen is a violation in the sweep, not a panic | enforced |
+| A cut is always at a sector boundary from the start of the file | `fault_fs::the_cut_falls_at_a_multiple_of_the_sector_size_from_the_start_of_the_file` | enforced |
+| A sector a write only partly covers keeps the bytes it did not touch | `fault_fs::a_sector_a_write_only_partly_covers_keeps_the_bytes_it_did_not_touch` | enforced |
+| A pending allocation is all or nothing | `fault_fs::a_pending_allocation_is_all_or_nothing` | enforced |
+| The disk is inside the replay fingerprint | `fault_fs::two_disks_with_the_same_seed_tear_identically`; `keel-sim determinism --profile disk-hunt` in CI | enforced |
+| A quiet file does not shift the tear stream | `fault_fs::a_file_with_nothing_staged_does_not_shift_the_tear_stream` | enforced |
+| The profile list cannot drift from the constructor | `simulation::the_profile_list_and_the_named_constructor_cannot_drift` | enforced |
 
 ### Coverage
 
@@ -87,10 +98,39 @@ holding an earlier term's entry at their commit index.
 `simulation::heavy_faults_actually_reach_the_interesting_states` enforces this.
 It exists because of [KEEL-4](BUGS.md): the original five-node schedule reached
 the Figure 8 window exactly zero times, so a correct build and a deliberately
-broken one were indistinguishable. CI sweeps both cluster sizes across all three
-profiles for the same reason.
+broken one were indistinguishable. CI sweeps both cluster sizes across every
+profile for the same reason.
+
+The disk is held to the same standard, and it has a sharper version of the same
+hazard. A write tears only if it straddles a sector boundary, so a profile whose
+segments are smaller than its sector cannot tear **at all** — every offset lies
+in the same sector, one draw is made, and the only outcomes are lost and whole.
+A badly sized profile is therefore not a weaker fault model but an absent one,
+sweeping clean and proving nothing.
+
+| Test | What a zero would mean |
+|---|---|
+| `simulation::heavy_disk_faults_actually_tear_the_log` | no crash caught a write in flight, or the sector model never cut one, or no crash left bytes above a gap, or the real parser never met a torn tail |
+| `simulation::a_tear_meets_a_partition` | tears and partitions both happened and never met — the claim the durability bullet in the README turns on |
+| `simulation::restarts_recover_across_more_than_one_segment` | recovery never saw more than one segment, so the multi-segment path went untested |
+| `fault_fs::a_four_kilobyte_sector_over_a_one_kilobyte_segment_can_never_tear` | the arithmetic itself, pinned so the inert configuration cannot be reached by accident |
 
 ### Does the checker catch anything?
+
+Three demonstrations, each control-then-experiment, each with committed output
+under `results/negative-demos/`. Two remove a rule and require the simulator to
+find the violation. The third holds the bug fixed and varies the *fault model*
+instead — `tearing-is-load-bearing.sh` runs the same checksum-removed build with
+tears on and with writes lost whole, and requires it to be caught under the
+first and invisible under the second. Three of the seven bugs so far were in the
+harness, so the harness is checked the same way the code is.
+
+One rule has a test and no demonstration, and that is worth stating rather than
+leaving as a gap in the pattern: removing the torn-tail erase produces no
+violation in eighty seeds at sixty thousand steps, because resurrection needs
+the replacement record to end exactly where the leftover begins and the
+simulator reaches that alignment rarely. It keeps its deterministic regression
+in `keel-log`'s own tests, where the alignment is constructed rather than hunted.
 
 `scripts/negative-demos/figure-8.sh` removes the Figure 8 current-term commit
 rule and requires the simulator to find the resulting violation, with a control
@@ -120,16 +160,27 @@ without it would only show the schedule was too harsh.
 
 Named here so the gaps are visible rather than discovered:
 
-- **Byte-level torn writes _under a fault schedule_.** `keel-log`'s own tests
-  corrupt real files and cover the parser directly (above), but they are
-  hand-written cases. The simulator still models durability at record
-  granularity, so a tear has never met a partition. Closed in M1 Phase 2, when
-  the simulator drives the real log over a fault-injecting filesystem.
-- **What is at an index a durable write covers.** `SimDisk` stages a `Ready`'s
-  entries as an opaque batch, so it models *when* a write becomes durable but not
-  *what* it contains. A stale acknowledgement and a current one are
-  indistinguishable to it, which is why it could not find [KEEL-6](BUGS.md).
-  Closed in M1 by running the real `keel-log` underneath the simulator.
+- **Misdirected writes.** The right bytes at the wrong address. The CRC covers a
+  frame's contents, not where it sits, so nothing in the format could detect
+  one. Adding a self-identifying `(seq, offset)` to the frame would — at eight
+  bytes against a thirteen-byte minimal entry frame, and a format change after
+  the tag. The decision taken is to keep the format at v1 and record the gap
+  here instead, which makes this the one entry in this list with no milestone
+  that closes it. Revisited when injected I/O errors land, since a `write_at`
+  that fails without rewinding the cursor reaches the same class through the
+  error path rather than through a crash.
+- **Bit rot in bytes that are already durable.** The tear model decides what
+  reached the device; nothing decays afterwards.
+- **A crash *during* recovery.** The simulator runs an event to completion in
+  virtual time, so `Log::open` is atomic and a torn `Log::erase` is unreachable
+  there. The erase converges under tearing by construction — each open erases
+  whatever non-zero bytes remain above the cursor — but that is an argument, not
+  a test.
+- **Injected I/O errors under a fault schedule.** `ENOSPC` on `allocate` and
+  `EIO` on `sync` or `read` are not modelled. A node that cannot fsync must halt,
+  and there is no server to halt yet (M1 Phase 5).
+- **fsync loss.** A `Durable` sync that reports success and does not stick.
+  Modelled by nothing, and the other half of TR-5.
 - Group commit across concurrent proposals. `keel-log` gives one fsync per
   `sync()` call; batching several proposals into one belongs to the writer that
   drives it, which does not exist yet (M1 Phase 5).

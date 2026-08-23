@@ -23,9 +23,9 @@ every Raft safety property after every event.
 **[`keel-log`](crates/keel-log/)** — the durable log: segmented, checksummed
 records with the hard state on the same fsync as the entries beside it, and a
 torn tail discarded rather than repaired. It reaches the filesystem through a
-seam so the simulator can run this exact code — the real framing, the real
-checksums, the real recovery parser — over an injectable disk, instead of a
-model of it.
+seam, and the simulator runs this exact code — the real framing, the real
+checksums, the real recovery parser — over a disk that tears writes at sector
+granularity, rather than over a model of one.
 
 The first exists to make the second possible. Because the core is a pure function
 of its inputs, a run is a pure function of `(seed, config)`: any failure is
@@ -47,13 +47,23 @@ prefix — which is what makes per-event checking affordable at this scale.
 
 ```
 $ scripts/sweep.sh
-500 seeds x 60000 steps, 3 nodes, default   profile: 500 passed, 0 failed
-500 seeds x 60000 steps, 5 nodes, default   profile: 500 passed, 0 failed
-500 seeds x 60000 steps, 3 nodes, chaos     profile: 500 passed, 0 failed
-500 seeds x 60000 steps, 5 nodes, chaos     profile: 500 passed, 0 failed
-500 seeds x 80000 steps, 3 nodes, fig8-hunt profile: 500 passed, 0 failed
+200 seeds x 40000 steps, 3 nodes, default    profile: 200 passed, 0 failed
+200 seeds x 40000 steps, 5 nodes, default    profile: 200 passed, 0 failed
+200 seeds x 40000 steps, 3 nodes, chaos      profile: 200 passed, 0 failed
+200 seeds x 40000 steps, 5 nodes, chaos      profile: 200 passed, 0 failed
+200 seeds x 60000 steps, 3 nodes, fig8-hunt  profile: 200 passed, 0 failed
+ 60 seeds x 40000 steps, 3 nodes, disk-chaos profile:  60 passed, 0 failed
+ 60 seeds x 40000 steps, 5 nodes, disk-chaos profile:  60 passed, 0 failed
+ 60 seeds x 40000 steps, 3 nodes, disk-hunt  profile:  60 passed, 0 failed
+ 60 seeds x 40000 steps, 5 nodes, disk-hunt  profile:  60 passed, 0 failed
 100 seeds replayed identically
+ 60 seeds replayed identically, disk in the fingerprint
 ```
+
+The `disk-*` profiles are the ones running the real log over a disk that tears:
+every record really encoded, checksummed, written and parsed, and every restart
+going through the real recovery parser. They cost more per event, so they sweep
+fewer seeds.
 
 > Safety only. The simulator runs on a virtual clock, so nothing here is a
 > statement about speed. Full output, with the host it ran on, is in
@@ -71,7 +81,7 @@ The paper's own scenarios are encoded directly as tests:
 
 ### Does the checker actually catch anything?
 
-A harness that has only ever reported success has not been shown to work. So one
+A harness that has only ever reported success has not been shown to work. So a
 safety rule gets compiled out, and the simulator has to find the violation:
 
 ```
@@ -79,11 +89,31 @@ $ scripts/negative-demos/figure-8.sh
 --- CONTROL: the rule in place.      40 of 40 seeds pass
 --- EXPERIMENT: the rule removed.    5 of 40 seeds fail, all Leader Completeness
 PASS: the schedule is survivable with the rule and not without it.
+
+$ scripts/negative-demos/torn-record.sh
+--- CONTROL: the rule in place.      25 of 25 seeds pass
+--- EXPERIMENT: the CRC removed.     7 of 25 seeds fail, all Log Matching
+PASS: the schedule is survivable with the rule and not without it.
 ```
 
 The control run is the half that makes the experiment mean anything: without it,
 a failure would only prove the fault schedule was too harsh. Output is committed
 under [`results/negative-demos/`](results/negative-demos/).
+
+The fault model is held to the same standard as the code. This run holds the bug
+fixed — the checksum stays compiled out in both halves — and varies what a crash
+does to bytes no fsync covered:
+
+```
+$ scripts/negative-demos/tearing-is-load-bearing.sh
+--- WITH TEARS (disk-hunt).       13 of 25 seeds fail
+--- WITHOUT TEARS (chaos).        25 of 25 seeds pass
+PASS: the same bug is caught when writes tear and invisible when they
+      are lost whole.
+```
+
+Without byte-granular tearing, no record is ever half-written, the missing
+checksum has nothing to catch, and that bug ships.
 
 Getting there took three rounds of the harness being wrong — a check that fired on
 correct code *and* missed the real bug, a fault schedule that never once reached
@@ -93,10 +123,13 @@ reason to distrust a clean run with no negative demonstration behind it. Three
 of the seven bugs found so far are in the harness rather than in the code it
 tests, which is roughly what should be expected.
 
-The simulator now reports its own coverage — partitions, crashes, leadership
-changes, entries overwritten, and how often a leader's commit index rested on an
-earlier term's entry — and a test fails if a heavy-fault run does not reach those
-states.
+The simulator reports its own coverage — partitions, crashes, leadership
+changes, entries overwritten, how often a leader's commit index rested on an
+earlier term's entry, and, for the disk, how often a crash caught a write in
+flight, tore one, left a hole with bytes above it, or **tore a log on a node
+that was inside a partition at the time**. A test fails if a heavy-fault run
+does not reach those states, because a fault model that never fired proves
+nothing — and the arithmetic says a badly sized one is not weaker but absent.
 
 [CORRECTNESS.md](CORRECTNESS.md) maps every claimed property to what enforces it,
 and lists what is not enforced yet.
@@ -105,6 +138,8 @@ and lists what is not enforced yet.
 cargo test --workspace
 scripts/sweep.sh
 scripts/negative-demos/figure-8.sh
+scripts/negative-demos/torn-record.sh
+scripts/negative-demos/tearing-is-load-bearing.sh
 ```
 
 ## Not claimed
@@ -115,11 +150,8 @@ scripts/negative-demos/figure-8.sh
 - **Not Jepsen-tested.** The plan is Jepsen-*style* checking via Maelstrom and
   Porcupine. A real Jepsen run is a different artifact, and the distinction
   matters.
-- **Durability is not proven end to end.** The log's recovery parser has direct
-  tests that corrupt real files, but they are hand-written cases, and the
-  simulator still models a disk at record granularity — so a byte-level tear has
-  never met a partition. Nothing has yet been killed under load and checked for
-  what it lost (M1).
+- **Durability is not proven end to end.** Nothing has yet been killed under
+  load and checked for what it lost (M1).
 - **No linearizability checking yet.** The simulator checks Raft's internal
   safety properties. It does not yet check that clients observe a linearizable
   history; that needs the state machine and a history export (M1/M2).

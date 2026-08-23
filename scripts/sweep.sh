@@ -11,58 +11,26 @@
 # replication states that a five-node cluster reaches far more rarely — and one
 # of those states is the window the Figure 8 rule guards.
 #
-# Usage: scripts/sweep.sh [seeds] [steps]
+# Usage: scripts/sweep.sh [seeds] [steps] [disk-seeds]
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SEEDS="${1:-500}"
 STEPS="${2:-60000}"
+DISK_SEEDS="${3:-100}"
 OUT=results/simulator/sweep.txt
 mkdir -p "$(dirname "$OUT")"
 
 cargo build --quiet --release -p keel-sim
 
-# The host belongs in the artifact, and it has to come from the machine rather
-# than from whoever committed the file. `uname` alone does not say what the CPU
-# is, which is the part a reader wants.
-host_line() {
-    case "$(uname -s)" in
-        Darwin)
-            printf '%s, %s cores, %s GiB, macOS %s, %s\n' \
-                "$(sysctl -n machdep.cpu.brand_string)" \
-                "$(sysctl -n hw.ncpu)" \
-                "$(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 ))" \
-                "$(sw_vers -productVersion)" \
-                "$(uname -m)"
-            ;;
-        Linux)
-            printf '%s, %s cores, %s GiB, Linux %s, %s\n' \
-                "$(awk -F': ' '/model name/ {print $2; exit}' /proc/cpuinfo)" \
-                "$(nproc)" \
-                "$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1024 / 1024 ))" \
-                "$(uname -r)" \
-                "$(uname -m)"
-            ;;
-        *) printf '%s %s, %s\n' "$(uname -s)" "$(uname -r)" "$(uname -m)" ;;
-    esac
-}
-
-# Read the tree's state *before* the pipeline starts. `tee` truncates $OUT the
-# moment it opens, and $OUT is tracked, so a check made inside the block always
-# reports a modified tree — including when the tree is clean. The provenance
-# line is the whole point of this artifact, so it may not be measuring its own
-# side effect.
-HEAD_SHA="$(git rev-parse --short HEAD)"
-DIRTY=""
-git diff --quiet -- . ":(exclude)$OUT" || DIRTY=" (working tree modified)"
-git diff --quiet --cached || DIRTY=" (working tree modified)"
+# shellcheck source=scripts/lib/provenance.sh
+source "$(dirname "$0")/lib/provenance.sh"
+provenance_of "$OUT"
 
 {
     echo "=== keel-sim validation sweep ==="
-    echo "host:   $(host_line)"
-    echo "commit: ${HEAD_SHA}${DIRTY}"
-    echo "date:   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    provenance_header
     echo
     echo "Safety only. No timing claim is made here: the simulator runs on a"
     echo "virtual clock, so wall-clock speed says nothing about the system"
@@ -83,7 +51,25 @@ git diff --quiet --cached || DIRTY=" (working tree modified)"
         --from 0 --count "$SEEDS" --steps $(( STEPS + 20000 )) \
         --nodes 3 --profile fig8-hunt | tail -2
 
+    # The disk profiles cost more per event, because every record is really
+    # encoded, checksummed and parsed rather than modelled — so they sweep
+    # fewer seeds. Both sector sizes run: 4096 is what modern hardware is, and
+    # 512 is where a write of a few hundred bytes straddles a boundary often
+    # enough to tear.
+    echo
+    for profile in disk-chaos disk-hunt; do
+        for nodes in 3 5; do
+            echo "--- profile=$profile nodes=$nodes"
+            ./target/release/keel-sim run \
+                --from 0 --count "$DISK_SEEDS" --steps "$STEPS" \
+                --nodes "$nodes" --profile "$profile" | tail -2
+        done
+    done
+
     echo
     echo "--- determinism: 100 seeds, each run twice"
     ./target/release/keel-sim determinism --from 0 --count 100 --steps 30000 | tail -2
+    echo "--- determinism with the disk in the fingerprint: 60 seeds, disk-hunt"
+    ./target/release/keel-sim determinism --from 0 --count 60 --steps 30000 \
+        --nodes 3 --profile disk-hunt | tail -2
 } | tee "$OUT"
