@@ -383,6 +383,82 @@ latency of that internal fsync.
 
 ---
 
+## ADR-017 — A command and a query are different types, and a session carries a nonce
+
+`keel-api` has `Command` and `Query` as separate enums. A `Request` can carry
+either; nothing can carry a `Query` where a `Command` is required.
+
+**Why not one enum with `is_read()`.** Because then a single missing match arm is
+the difference between answering a read and applying an unreplicated write, and
+nothing else in the system would notice. The type system is free here and the
+mistake it forecloses is not a cosmetic one.
+
+**Why the nonce.** `(client_id, seq)` is what makes a retried command apply
+exactly once. It only works once the client *has* an id — and acquiring one is
+itself a request that can be delivered and then have its response lost. Without
+a nonce, a client that retried `Register` would be handed a second identity, and
+the commands it then retried under it would deduplicate against a different row
+and apply twice. The one request that establishes exactly-once delivery would be
+the one request delivered at-least-once. With it, a server that has seen the
+nonce returns the identity it handed out the first time.
+
+**Cost.** The server keeps nonces, so a nonce table has to expire alongside the
+session table. That is the same mechanism, and it is P4's work.
+
+---
+
+## ADR-018 — Framing belongs to the transport, not to the wire types
+
+`keel-api` encodes payloads; `keel-net` puts a length prefix in front of them.
+Neither depends on the other, and `keel-net` depends on nothing but `thiserror`
+— not on `keel-raft`.
+
+**Why they are separate.** A length prefix is a property of a byte stream. The
+Maelstrom adapter (P11) carries exactly these payload types over line-delimited
+JSON on stdin and stdout, where a length prefix is meaningless; the simulator
+carries them with no stream at all. Putting framing in the wire-type crate would
+make both of those depend on a thing they cannot use.
+
+**Why a transport does not know about consensus.** A transport that imported
+`keel-raft` would have the dependency running the wrong way: the host owns both
+and wires them together. Keeping `keel-net` a leaf is what lets the simulator and
+the Maelstrom adapter each supply their own implementation of the same trait.
+
+**Where the limits live.** Both ends check. `keel-net`'s reader validates the
+length against its limit *before* reserving anything, because a stream that is
+corrupt, hostile, or mid-upgrade can present a length of four billion and a
+reader that reserves first has already taken the machine down by the time it
+validates. `keel-api` checks again at the decoder, because a decoder is reachable
+from more than one transport and only one of them has to forget.
+
+---
+
+## ADR-019 — One TCP connection per direction
+
+A node writes to a peer only on the connection it dialled, and reads from a peer
+only on the connection that peer dialled. Two sockets per pair.
+
+**Why not one shared connection.** TCP is full duplex and one connection is the
+obvious design. But two nodes that dial each other in the same instant have two
+connections and must agree on which to discard, and whichever loses takes its
+queued frames with it. That is loss, and consensus survives loss — but it is a
+timing-dependent hole in the transport's own stated contract, reachable exactly
+when a cluster is forming or healing, which is when it is least wanted.
+
+This was not reasoned out in advance. The shared-connection version was written
+first and the conformance suite's `both_directions_are_independent` failed
+against it, which is the argument for having written the suite before the second
+implementation.
+
+**Cost.** One extra socket and one extra file descriptor per pair. At the
+cluster sizes this project targets that is four descriptors on a five-node node.
+
+**What it does not cost.** Ordering. Everything from one node to another travels
+one connection, so per-peer order is preserved exactly as the contract requires.
+
+
+---
+
 ## Planned
 
 These are decided but not yet built. They are recorded here so the shape is

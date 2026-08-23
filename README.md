@@ -3,14 +3,14 @@
 A Raft-replicated key-value store in Rust, built on an LSM storage engine, and
 verified by a deterministic simulator that replays any failure from a seed.
 
-> **Status: in development (M1).** The consensus core, the simulator, and the
-> durable log are built and tested. The storage adapter and networking are not.
-> No performance number is claimed, because none has been measured. See
-> [Not claimed](#not-claimed).
+> **Status: in development (M1).** The consensus core, the simulator, the durable
+> log, the wire types and the transports are built and tested. The storage
+> adapter, the node loop and the server are not. No performance number is
+> claimed, because none has been measured. See [Not claimed](#not-claimed).
 
 ## What is here today
 
-Three crates.
+Six crates.
 
 **[`keel-raft`](crates/keel-raft/)** — a Raft consensus core that does no I/O,
 owns no threads, and reads no clock. You feed it events and it hands back a
@@ -27,7 +27,21 @@ seam, and the simulator runs this exact code — the real framing, the real
 checksums, the real recovery parser — over a disk that tears writes at sector
 granularity, rather than over a model of one.
 
-The first exists to make the second possible. Because the core is a pure function
+**[`keel-api`](crates/keel-api/)** — the wire types. A command and a query are
+different types, so a missing match arm cannot turn a read into an unreplicated
+write; a session carries a nonce, so the one request that establishes
+exactly-once delivery is not itself delivered at-least-once.
+
+**[`keel-net`](crates/keel-net/)** — the transport seam: three operations,
+length-prefixed framing that validates a length before reserving anything, an
+in-memory implementation and a TCP one, and one conformance suite both are held
+to. It depends on `thiserror` and nothing else.
+
+**[`keel-rand`](crates/keel-rand/)** — SplitMix64 with named stream splitting and
+zero dependencies, so that "the run is a pure function of the seed" is a property
+of a thing rather than a habit.
+
+The consensus core exists to make the simulator possible. Because the core is a pure function
 of its inputs, a run is a pure function of `(seed, config)`: any failure is
 reproduced by rerunning its seed, and the same code will run under a real
 network, under Maelstrom, and inside the simulator with no conditional
@@ -36,7 +50,8 @@ compilation anywhere.
 Implemented and tested: leader election with **pre-vote** and **check-quorum**,
 log replication with pipelining and conflict-term backtracking, the Figure 8
 commit rule, **ReadIndex** and **lease** reads with follower forwarding,
-**leader transfer**, and **learners with joint-consensus** membership changes.
+**leader transfer**, voluntary **step-down**, and **learners with
+joint-consensus** membership changes.
 
 ## Correctness
 
