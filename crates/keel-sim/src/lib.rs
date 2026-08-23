@@ -34,7 +34,7 @@ mod network;
 mod rng;
 mod world;
 
-pub use faultfs::{FaultFile, FaultFs};
+pub use faultfs::{FaultFile, FaultFs, FaultStats, TearPolicy};
 pub use invariants::Violation;
 pub use network::NetConfig;
 pub use rng::Rng;

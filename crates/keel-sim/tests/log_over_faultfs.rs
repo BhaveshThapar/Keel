@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use bytes::Bytes;
 use keel_log::{Log, LogOptions, Recovered, SyncMode};
 use keel_raft::{Entry, EntryPayload, HardState, Index, Term};
-use keel_sim::FaultFs;
+use keel_sim::{FaultFs, Rng, TearPolicy};
 
 fn dir() -> PathBuf {
     PathBuf::from("/node-1")
@@ -238,4 +238,105 @@ fn the_simulated_disk_is_the_only_place_the_log_writes() {
         log.sync().unwrap();
     }
     assert!(!Path::new("/node-1").exists());
+}
+
+// --- a crash that leaves a hole ---------------------------------------------
+
+/// A disk whose crashes cut at 512-byte boundaries, which is small enough that
+/// the log's own records straddle one often.
+fn torn_disk(seed: u64) -> FaultFs {
+    FaultFs::tearing(
+        TearPolicy {
+            sector_bytes: 512,
+            sector_lands_pct: 50,
+        },
+        Rng::new(seed),
+    )
+}
+
+/// Sync a prefix, then stage enough records to carry the unsynced region across
+/// a sector boundary — the only way a crash can leave a hole — and crash.
+/// Returns the disk if this seed actually produced one.
+fn crashed_into_a_hole(seed: u64) -> Option<FaultFs> {
+    let fs = torn_disk(seed);
+    {
+        let (mut log, _) = open(&fs);
+        log.append(&entries(1, 1, 4)).unwrap();
+        log.sync().unwrap();
+        for i in 0..30 {
+            log.append(&entries(1, 5 + i, 1)).unwrap();
+        }
+    }
+    fs.crash();
+    (fs.fault_stats().files_a_crash_left_a_hole_in > 0).then_some(fs)
+}
+
+#[test]
+fn a_crash_that_leaves_a_record_above_a_hole_still_reports_bytes_discarded() {
+    let mut checked = 0;
+    for seed in 0..200 {
+        let Some(fs) = crashed_into_a_hole(seed) else {
+            continue;
+        };
+        let (_, recovered) = open(&fs);
+        checked += 1;
+
+        assert!(
+            recovered.discarded_tail_bytes > 0,
+            "recovery called this crash clean. The hole reads as the end of the \
+             written region, but a record survived above it, and reporting zero \
+             is what lets that record live to be misread (seed {seed})"
+        );
+    }
+    assert!(
+        checked > 0,
+        "no seed left a hole, so the tear model cannot reach the state this \
+         test is about and the test proves nothing"
+    );
+}
+
+#[test]
+fn a_log_whose_crash_left_a_hole_never_reads_the_leftover_as_a_record() {
+    let mut checked = 0;
+    for seed in 0..200 {
+        let Some(fs) = crashed_into_a_hole(seed) else {
+            continue;
+        };
+        let survived = open(&fs).0.last_index();
+        checked += 1;
+
+        // One record per entry, exactly as the lost stream was written, and a
+        // reopen between each. A record of one shape is one length, so the
+        // replacements walk the offsets the lost ones did — and stepping one at
+        // a time is what guarantees the cursor is checked at the position where
+        // it lands on the survivor's first byte, rather than at whichever
+        // position a fixed batch happened to leave it.
+        //
+        // The replacements carry a different term, so anything from before the
+        // crash that comes back is identifiable rather than suspected.
+        for _ in 0..30 {
+            let (mut log, recovered) = open(&fs);
+
+            let indices: Vec<Index> = recovered.entries.iter().map(|e| e.index).collect();
+            let contiguous: Vec<Index> = (1..=indices.len() as u64).collect();
+            assert_eq!(
+                indices, contiguous,
+                "the recovered log has a gap or a repeat in it (seed {seed})"
+            );
+            for e in recovered.entries.iter().filter(|e| e.index > survived) {
+                assert_eq!(
+                    e.term, 9,
+                    "entry {} came from before the crash and was read back as \
+                     though this incarnation had written it, which is a Raft \
+                     log inventing an entry (seed {seed})",
+                    e.index
+                );
+            }
+
+            let last = log.last_index();
+            log.append(&entries(9, last + 1, 1)).unwrap();
+            log.sync().unwrap();
+        }
+    }
+    assert!(checked > 0, "no seed left a hole, so nothing was checked");
 }

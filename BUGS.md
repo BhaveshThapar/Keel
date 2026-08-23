@@ -290,3 +290,9 @@ structurally incapable of reaching the state, which is the same shape as KEEL-4
 and KEEL-6 — not a checker that was wrong, but a model that could not get there.
 This is the bug M1 Phase 2's tear model exists to make reachable, and it was
 found while building it rather than by it.
+
+The tear model now reaches it. `log_over_faultfs::a_log_whose_crash_left_a_hole_never_reads_the_leftover_as_a_record`
+crashes a real log over a disk that cuts at sector boundaries, and against the
+old erase condition it recovers an entry from before the crash still carrying
+the term it had then. The gap is closed rather than merely described: the state
+that hid this is one the simulator can now produce on demand.
