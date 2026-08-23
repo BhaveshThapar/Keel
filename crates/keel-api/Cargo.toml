@@ -1,0 +1,20 @@
+[package]
+name = "keel-api"
+description = "Keel's wire types: the client protocol, the peer protocol, and the encoding both use."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+categories = ["network-programming", "encoding"]
+keywords = ["raft", "protocol", "wire-format", "postcard", "serde"]
+
+[dependencies]
+keel-raft = { workspace = true, features = ["serde"] }
+bytes = { workspace = true }
+serde = { workspace = true }
+postcard = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
