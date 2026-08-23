@@ -15,22 +15,41 @@ use std::path::Path;
 
 use crate::fs::{File, Fs, OpenMode, SyncMode};
 
+/// How many assertions [`check`] runs.
+///
+/// The table below is typed `[_; ASSERTIONS]`, so adding an assertion without
+/// bumping this — or deleting one and leaving it — fails to compile rather than
+/// leaving a documented count quietly wrong. A suite that has silently shrunk
+/// is the same hazard as a suite that has silently drifted.
+pub const ASSERTIONS: usize = 14;
+
 /// Run every conformance assertion against `fs`, using `dir` as scratch. `dir`
 /// must exist and be empty.
 ///
 /// Panics with a message naming the assertion that failed, because this is a
 /// test harness and a returned error would just be unwrapped by the caller.
 pub fn check<F: Fs>(fs: &F, dir: &Path) {
-    open_create_does_not_truncate(fs, dir);
-    read_at_is_short_at_the_end_and_empty_past_it(fs, dir);
-    write_past_the_end_zero_fills_the_gap(fs, dir);
-    allocate_makes_the_region_read_as_zeros(fs, dir);
-    allocate_never_shrinks(fs, dir);
-    list_names_what_was_created_and_not_what_was_removed(fs, dir);
-    read_of_a_missing_file_fails(fs, dir);
-    remove_of_a_missing_file_fails(fs, dir);
-    sync_dir_succeeds(fs, dir);
-    every_sync_mode_is_accepted(fs, dir);
+    // Each assertion names itself in its own panic message, so the table
+    // carries no names. What it does carry is the count.
+    let assertions: [fn(&F, &Path); ASSERTIONS] = [
+        open_create_does_not_truncate,
+        read_at_is_short_at_the_end_and_empty_past_it,
+        write_past_the_end_zero_fills_the_gap,
+        allocate_makes_the_region_read_as_zeros,
+        allocate_never_shrinks,
+        size_is_the_high_water_mark_of_allocate_and_write,
+        two_handles_on_one_path_see_one_file,
+        list_names_what_was_created_and_not_what_was_removed,
+        read_of_a_missing_file_fails,
+        remove_of_a_missing_file_fails,
+        a_second_lock_is_refused_with_would_block,
+        a_lock_is_released_when_its_handle_is_dropped,
+        sync_dir_succeeds,
+        every_sync_mode_is_accepted,
+    ];
+    for assertion in assertions {
+        assertion(fs, dir);
+    }
 }
 
 fn fresh<F: Fs>(fs: &F, dir: &Path, name: &str) -> F::File {
@@ -120,6 +139,104 @@ fn allocate_never_shrinks<F: Fs>(fs: &F, dir: &Path) {
     let mut buf = [0u8; 7];
     f.read_at(0, &mut buf).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(&buf, b"keep me");
+}
+
+fn size_is_the_high_water_mark_of_allocate_and_write<F: Fs>(fs: &F, dir: &Path) {
+    let mut f = fresh(fs, dir, "highwater.bin");
+    f.allocate(2048).unwrap_or_else(|e| panic!("{e}"));
+    f.write_at(4096, b"beyond")
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    // `Log::read_all` sizes its buffer from `size()` and reads the whole file in
+    // one call, so a byte `size()` does not cover is a byte the recovery parser
+    // cannot see — it would read as a short file and the tail would look like a
+    // clean end rather than the record it is.
+    assert_eq!(
+        f.size().unwrap_or_else(|e| panic!("{e}")),
+        4102,
+        "size must cover the furthest write, not just the allocation"
+    );
+
+    f.allocate(1024).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        f.size().unwrap_or_else(|e| panic!("{e}")),
+        4102,
+        "an allocation below the high-water mark moves nothing"
+    );
+}
+
+fn two_handles_on_one_path_see_one_file<F: Fs>(fs: &F, dir: &Path) {
+    let path = dir.join("shared.bin");
+    let _ = fs.remove(&path);
+    let mut writer = fs
+        .open(&path, OpenMode::Create)
+        .unwrap_or_else(|e| panic!("{e}"));
+    writer.allocate(1024).unwrap_or_else(|e| panic!("{e}"));
+    writer
+        .write_at(0, b"first")
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    // `Log::open` reads every segment through a fresh `Read` handle while the
+    // newest segment is still open for writing, and `Log::read` does it again on
+    // a live log. A write visible only through the handle that made it would
+    // make recovery parse a stale file and report a torn tail that never
+    // happened.
+    let reader = fs
+        .open(&path, OpenMode::Read)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut buf = [0u8; 5];
+    let n = reader
+        .read_at(0, &mut buf)
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        (n, &buf),
+        (5, b"first"),
+        "a write must be visible through another handle on the same path"
+    );
+    assert_eq!(
+        reader.size().unwrap_or_else(|e| panic!("{e}")),
+        1024,
+        "and so must an allocation"
+    );
+}
+
+fn a_second_lock_is_refused_with_would_block<F: Fs>(fs: &F, dir: &Path) {
+    let path = dir.join("contended.lock");
+    let _ = fs.remove(&path);
+    let _held = fs
+        .open(&path, OpenMode::Lock)
+        .unwrap_or_else(|e| panic!("taking a free lock failed: {e}"));
+
+    let err = fs
+        .open(&path, OpenMode::Lock)
+        .err()
+        .unwrap_or_else(|| panic!("a second exclusive lock must be refused"));
+
+    // The kind is part of the contract rather than an implementation detail:
+    // `Log::open` maps exactly `WouldBlock` to `Error::Locked` and everything
+    // else to `Error::Io`, so an implementation that refused with a different
+    // kind would turn "another process holds this log" into "the disk failed".
+    assert_eq!(
+        err.kind(),
+        ErrorKind::WouldBlock,
+        "a held lock must be refused with WouldBlock specifically"
+    );
+}
+
+fn a_lock_is_released_when_its_handle_is_dropped<F: Fs>(fs: &F, dir: &Path) {
+    let path = dir.join("released.lock");
+    let _ = fs.remove(&path);
+    let held = fs
+        .open(&path, OpenMode::Lock)
+        .unwrap_or_else(|e| panic!("{e}"));
+    drop(held);
+
+    // A killed process releases its lock because the kernel closes its
+    // descriptors, and a simulated crash has to do the same or a restarted node
+    // could never reopen its own log.
+    let _retaken = fs
+        .open(&path, OpenMode::Lock)
+        .unwrap_or_else(|e| panic!("a lock must be retakeable once its holder is dropped: {e}"));
 }
 
 fn list_names_what_was_created_and_not_what_was_removed<F: Fs>(fs: &F, dir: &Path) {
