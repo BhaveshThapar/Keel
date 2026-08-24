@@ -171,7 +171,7 @@ and lists what is not enforced yet.
 ```
 cargo test --workspace
 scripts/sweep.sh
-scripts/record-demos.sh          # runs all three demonstrations and records them
+scripts/record-demos.sh          # runs all five demonstrations and records them
 scripts/check-docs.sh            # every test a document names still exists
 scripts/check-artifacts.sh       # every committed result says where it came from
 ```
