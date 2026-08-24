@@ -35,9 +35,27 @@ RUNNER_FACTOR=6
 # checkout, toolchain, and a cache miss compiling the workspace from scratch.
 SWEEP_MINUTES=25
 # What the workflow actually asks for. The gap between this and SWEEP_MINUTES is
-# margin against RUNNER_FACTOR being wrong, and it is a factor of five — which
-# is the point of choosing a target rather than spending the ceiling.
-TARGET_MINUTES=5
+# margin against RUNNER_FACTOR being wrong.
+#
+# It was five minutes, a five-fold margin, until P19: TR-3 asks for two thousand
+# distinct seeds per pull request, and two thousand seeds at fifty thousand steps
+# does not fit in five minutes at any factor this host's measurements support.
+# Ten is what the target costs, and the margin is now two and a half. Written
+# down rather than quietly widened, because the margin is the thing that decides
+# whether a red build can be attributed to a code change.
+TARGET_MINUTES=10
+
+# The extrapolation above is a rate measured on 40k-step runs, multiplied out to
+# a sweep fifty times larger. That step is where a budget usually goes wrong —
+# process startup amortises, caches warm, and the per-step cost at scale is not
+# the per-step cost of a short run. So the sweep the workflow actually issues is
+# run once, in full, and the prediction is printed beside the measurement.
+#
+# Set to 0 to skip it; it costs a couple of minutes.
+VERIFY_SEEDS="${4:-1000}"
+VERIFY_STEPS=50000
+VERIFY_PROFILE=chaos
+VERIFY_NODES=5
 
 cargo build --quiet --release -p keel-sim
 
@@ -80,6 +98,17 @@ done
 for profile in disk-chaos disk-hunt; do
     for nodes in 3 5; do measure "$profile" "$nodes"; done
 done
+
+# The verification sweep: the exact shape .github/workflows/ci.yml issues.
+VERIFY_SECONDS=0
+if [ "$VERIFY_SEEDS" -gt 0 ]; then
+    v0="$(now_s)"
+    ./target/release/keel-sim run \
+        --from 0 --count "$VERIFY_SEEDS" --steps "$VERIFY_STEPS" \
+        --nodes "$VERIFY_NODES" --profile "$VERIFY_PROFILE" >/dev/null
+    v1="$(now_s)"
+    VERIFY_SECONDS="$(awk -v a="$v1" -v b="$v0" 'BEGIN { printf "%.2f", a - b }')"
+fi
 
 # A budget has to survive the slowest cell in its matrix, not the average one.
 # Column 6 is steps/s, which is the rate a budget of (seeds x steps) divides by.
@@ -143,11 +172,40 @@ budget() {
     printf "                                 %5s seeds is what CI asks for\n" \
         "$(budget "$disk_rate" 40000 "$TARGET_MINUTES")"
     echo
-    echo "CI asks for the ${TARGET_MINUTES}-minute figure, not the ceiling. The five-fold gap is"
-    echo "margin against the runner factor being wrong, and it is deliberate: a"
-    echo "budget spent to its limit fails the day the runners get slower, and a"
-    echo "red build nobody can attribute to a code change is worse than a sweep"
-    echo "that is narrower than it could be."
+    echo "CI asks for the ${TARGET_MINUTES}-minute figure, not the ceiling. The gap is margin"
+    echo "against the runner factor being wrong, and it is deliberate: a budget"
+    echo "spent to its limit fails the day the runners get slower, and a red"
+    echo "build nobody can attribute to a code change is worse than a sweep that"
+    echo "is narrower than it could be."
+
+    if [ "$VERIFY_SEEDS" -gt 0 ]; then
+        echo
+        echo "--- and the extrapolation, checked"
+        echo
+        echo "Everything above is a rate measured on ${STEPS}-step runs and multiplied"
+        echo "out to a sweep many times larger. That step is where a budget"
+        echo "usually goes wrong, so the sweep the workflow actually issues was"
+        echo "run once, in full, on this host:"
+        echo
+        awk -v r="$net_rate" -v seeds="$VERIFY_SEEDS" -v steps="$VERIFY_STEPS" \
+            -v measured="$VERIFY_SECONDS" -v f="$RUNNER_FACTOR" \
+            -v prof="$VERIFY_PROFILE" -v n="$VERIFY_NODES" 'BEGIN {
+            predicted = (seeds * steps) / r
+            printf "  %s at %s nodes, %d seeds x %d steps\n", prof, n, seeds, steps
+            printf "  predicted from the table above    %8.1f s\n", predicted
+            printf "  measured                          %8.1f s\n", measured
+            printf "  extrapolation error               %8.1f %%\n", \
+                100 * (predicted - measured) / measured
+            printf "\n"
+            printf "  on a runner at the assumed factor of %d  %6.1f minutes\n", f, (measured * f) / 60
+        }'
+        echo
+        echo "A negative error means the short runs were pessimistic and the"
+        echo "budget has more room than it claims, which is the direction to be"
+        echo "wrong in. A large positive one would mean the whole table above"
+        echo "understates what a long sweep costs, and every number derived from"
+        echo "it is too generous."
+    fi
     echo
     echo "Re-measured whenever a phase changes what a seed costs. P8 put the"
     echo "real state machine under every node — every committed entry is now"

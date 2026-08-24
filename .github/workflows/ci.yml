@@ -66,6 +66,9 @@ jobs:
         run: shellcheck -x scripts/*.sh scripts/lib/*.sh scripts/negative-demos/*.sh
       - run: scripts/check-docs.sh
       - run: scripts/check-artifacts.sh
+      # And the sweep covers as many distinct seeds as its comments claim. The
+      # shard arithmetic lives in a shell expression nothing else reads back.
+      - run: scripts/check-ci-budget.sh 2000 50000
 
   # A thousand kill/restart cycles is the exit criterion, and it takes minutes —
   # its own job rather than a slow line in the test suite, which runs sixty.
@@ -138,25 +141,31 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # 500 seeds, and the number is a measurement rather than a feeling.
-      # results/simulator/disk-throughput.txt times the slowest cell of this
-      # matrix at 518,247 steps/s on an M2 Pro. Divided by 6 for a runner nobody
-      # has measured yet, that is 86,374 steps/s; five minutes of it is
-      # 25,912,350 steps; at 50k steps a seed-run, 500 seeds. Five of the job's
-      # 25 available sweep-minutes, so the runner factor can be wrong by five
-      # times before this goes red.
+      # 1,000 seeds a shard, two shards, so the sweep covers 2,000 distinct
+      # seeds per profile and cluster size — TR-3's target, and the reason this
+      # number moved.
       #
-      # It was 600 before P8. Every node now drives the real state machine, so
-      # every committed entry is decoded, deduplicated against a session table
-      # and written — about fifteen per cent more work per event, and the budget
-      # follows the measurement rather than the other way round.
+      # The arithmetic, from results/simulator/disk-throughput.txt: the slowest
+      # cell of this matrix is chaos at 5 nodes, 511,400 steps/s on an M2 Pro.
+      # Divided by 6 for a runner nobody has measured yet, 85,233 steps/s.
+      # 1,000 seeds x 50,000 steps is 50,000,000 steps, so 587 seconds — 9.8 of
+      # the job's 25 available sweep-minutes.
       #
-      # The shards are disjoint ranges, so the two of them cover seeds 0..999
-      # and no seed is swept twice.
-      - name: 500 seeds x 50k steps
+      # That margin is 2.5x rather than the 5x this job carried at 500 seeds,
+      # and shrinking it is the price of the target rather than an oversight.
+      # The runner factor can still be wrong by two and a half times before this
+      # goes red, and the nightly throughput job exists to replace that factor
+      # with a measurement.
+      #
+      # The stride equals the count, so the two shards cover 0..999 and
+      # 1000..1999 with no seed swept twice. scripts/check-ci-budget.sh reads
+      # these numbers back out of this file and fails if they stop adding up —
+      # a stride smaller than the count would halve the coverage while every
+      # job still passed in the same time.
+      - name: 1000 seeds x 50k steps
         run: |
           cargo run --release -p keel-sim -- run \
-            --from $(( ${{ matrix.shard }} * 500 )) --count 500 \
+            --from $(( ${{ matrix.shard }} * 1000 )) --count 1000 \
             --steps 50000 --nodes ${{ matrix.nodes }} \
             --profile ${{ matrix.profile }}
 
@@ -170,30 +179,39 @@ jobs:
   # record of a few hundred bytes straddles a boundary often enough to tear.
   # A write only tears when it straddles one, so this axis is not a detail.
   disk-simulator:
-    name: ${{ matrix.profile }}, ${{ matrix.nodes }} nodes
+    name: ${{ matrix.profile }}, ${{ matrix.nodes }} nodes, shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
+        shard: [0, 1]
         nodes: [3, 5]
         profile: [disk-chaos, disk-hunt]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # 200 seeds, derived the same way as the job above and from the same file.
-      # disk-chaos at 5 nodes is the slowest cell in the workspace at 198,725
-      # steps/s; 198,725 / 6 x 300 / 40,000 = 248, floored to 200.
+      # 500 seeds a shard, two shards, 1,000 distinct — and deliberately *not*
+      # the 2,000 the job above reaches. From the same file: disk-chaos at 5
+      # nodes is the slowest cell in the workspace at 169,996 steps/s, which is
+      # 28,333 on a runner at the assumed factor. 500 x 40,000 is 20,000,000
+      # steps, so 706 seconds — 11.8 of the 25 available sweep-minutes, already
+      # a longer job than the 50k-step sweep despite a fifth of the seeds.
       #
-      # That it is only 200 against the other job's 600 is the finding, not a
-      # concession: a seed-run here costs roughly three times as much, because
-      # every record is really encoded, checksummed, written and parsed and every
-      # restart re-scans every segment.
-      - name: 200 seeds x 40k steps over the real log
+      # Reaching 2,000 here would need four shards at 47 minutes of runner time
+      # per profile and cluster size, and it would buy breadth in the cheapest
+      # dimension. It is not claimed, which is why the number is written down
+      # next to the one it is not.
+      #
+      # That a seed-run costs roughly three times as much is the finding rather
+      # than the concession: every record is really encoded, checksummed,
+      # written and parsed, and every restart re-scans every segment.
+      - name: 500 seeds x 40k steps over the real log
         run: |
           cargo run --release -p keel-sim -- run \
-            --from 0 --count 200 --steps 40000 \
+            --from $(( ${{ matrix.shard }} * 500 )) --count 500 \
+            --steps 40000 \
             --nodes ${{ matrix.nodes }} \
             --profile ${{ matrix.profile }}
 
