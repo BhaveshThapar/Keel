@@ -19,14 +19,18 @@ mod compaction;
 mod compactor;
 mod db;
 mod error;
+pub mod fs;
 mod fsutil;
+mod header;
 mod manifest;
 mod memtable;
 mod record;
+mod scan;
 mod sstable;
 mod wal;
 
-pub use db::{Db, Options, Snapshot};
+pub use db::{Db, Maintenance, Options, Snapshot, WriteBatch};
+pub use fs::{BufAppend, File, Fs, OpenMode, StdFile, StdFs, SyncMode};
 
 /// Internal decoders exposed for fuzzing only (`--features fuzzing`).
 ///

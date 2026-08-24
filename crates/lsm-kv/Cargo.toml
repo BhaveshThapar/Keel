@@ -4,7 +4,7 @@
 name = "lsm_kv"
 description = "A log-structured merge-tree key/value storage engine"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 license.workspace = true
 publish = false
 
@@ -15,6 +15,9 @@ path = "src/bin/lsm.rs"
 [dependencies]
 thiserror = { workspace = true }
 crc32fast = "1"
+# CRC32C for the log frames, at the same version the workspace pins for
+# keel-log. The two stacks checksum with the same polynomial now.
+crc32c = { workspace = true }
 lz4_flex = "0.11"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 parking_lot = "0.12"
@@ -27,6 +30,9 @@ libc = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 proptest = { workspace = true }
+# tests/format_versions.rs rewrites frames the way a build from before the
+# checksum change would have.
+crc32fast = "1"
 
 [features]
 # Re-exports internal decoders for fuzz targets.

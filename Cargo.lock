@@ -364,6 +364,7 @@ dependencies = [
 name = "lsm_kv"
 version = "0.1.0"
 dependencies = [
+ "crc32c",
  "crc32fast",
  "libc",
  "lz4_flex",

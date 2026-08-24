@@ -15,9 +15,6 @@
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
-use std::fs::File;
-use std::io::{BufWriter, Write};
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -25,6 +22,7 @@ use parking_lot::Mutex;
 
 use crate::bloom::BloomFilter;
 use crate::error::{Error, Result};
+use crate::fs::{BufAppend, File as _, Fs, OpenMode};
 use crate::record::Record;
 
 const MAGIC: &[u8; 4] = b"LSM2";
@@ -43,8 +41,8 @@ pub struct SsTableWriter;
 impl SsTableWriter {
     /// Write `records` (which MUST be sorted ascending by key) to `path`.
     /// Returns the number of records written.
-    pub fn write(path: &Path, records: &[Record]) -> Result<u64> {
-        let mut w = BufWriter::new(File::create(path)?);
+    pub fn write<F: Fs>(fs: &F, path: &Path, records: &[Record]) -> Result<u64> {
+        let mut w = BufAppend::new(fs.open(path, OpenMode::Truncate)?);
         let mut bloom = BloomFilter::new(records.len(), BLOOM_FP_RATE);
 
         // (first_key, block_offset, compressed_len) per data block.
@@ -55,7 +53,7 @@ impl SsTableWriter {
 
         let flush_block = |block: &mut Vec<u8>,
                            first_key: &mut Vec<u8>,
-                           w: &mut BufWriter<File>,
+                           w: &mut BufAppend<F::File>,
                            offset: &mut u64,
                            index: &mut Vec<(Vec<u8>, u64, u32)>|
          -> Result<()> {
@@ -63,7 +61,7 @@ impl SsTableWriter {
                 return Ok(());
             }
             let comp = lz4_flex::compress_prepend_size(block);
-            w.write_all(&comp)?;
+            w.write(&comp)?;
             index.push((std::mem::take(first_key), *offset, comp.len() as u32));
             *offset += comp.len() as u64;
             block.clear();
@@ -99,10 +97,10 @@ impl SsTableWriter {
 
         let index_offset = offset;
         for (key, block_offset, comp_len) in &index {
-            w.write_all(&(key.len() as u32).to_le_bytes())?;
-            w.write_all(key)?;
-            w.write_all(&block_offset.to_le_bytes())?;
-            w.write_all(&comp_len.to_le_bytes())?;
+            w.write(&(key.len() as u32).to_le_bytes())?;
+            w.write(key)?;
+            w.write(&block_offset.to_le_bytes())?;
+            w.write(&comp_len.to_le_bytes())?;
         }
 
         let bloom_bytes = bloom.encode();
@@ -113,18 +111,17 @@ impl SsTableWriter {
             }
             o
         };
-        w.write_all(&bloom_bytes)?;
+        w.write(&bloom_bytes)?;
 
         let count = records.len() as u64;
-        w.write_all(&index_offset.to_le_bytes())?;
-        w.write_all(&(index.len() as u32).to_le_bytes())?;
-        w.write_all(&bloom_offset.to_le_bytes())?;
-        w.write_all(&(bloom_bytes.len() as u64).to_le_bytes())?;
-        w.write_all(&count.to_le_bytes())?;
-        w.write_all(&FORMAT_VERSION.to_le_bytes())?;
-        w.write_all(MAGIC)?;
-        w.flush()?;
-        w.get_ref().sync_all()?;
+        w.write(&index_offset.to_le_bytes())?;
+        w.write(&(index.len() as u32).to_le_bytes())?;
+        w.write(&bloom_offset.to_le_bytes())?;
+        w.write(&(bloom_bytes.len() as u64).to_le_bytes())?;
+        w.write(&count.to_le_bytes())?;
+        w.write(&FORMAT_VERSION.to_le_bytes())?;
+        w.write(MAGIC)?;
+        w.sync()?;
         Ok(count)
     }
 }
@@ -151,10 +148,10 @@ impl BlockCache {
         if self.map.contains_key(&offset) {
             return;
         }
-        if self.order.len() >= BLOCK_CACHE_CAP {
-            if let Some(evicted) = self.order.pop_front() {
-                self.map.remove(&evicted);
-            }
+        if self.order.len() >= BLOCK_CACHE_CAP
+            && let Some(evicted) = self.order.pop_front()
+        {
+            self.map.remove(&evicted);
         }
         self.map.insert(offset, block);
         self.order.push_back(offset);
@@ -163,8 +160,8 @@ impl BlockCache {
 
 /// Read handle over an immutable SSTable. The block index and Bloom filter are
 /// held in memory; data blocks are decompressed on demand and cached.
-pub struct SsTableReader {
-    file: File,
+pub struct SsTableReader<F: Fs> {
+    file: F::File,
     path: PathBuf,
     /// Block index: (first key of block, block offset, compressed length).
     index: Vec<(Vec<u8>, u64, u32)>,
@@ -174,19 +171,19 @@ pub struct SsTableReader {
     cache: Mutex<BlockCache>,
 }
 
-impl SsTableReader {
+impl<F: Fs> SsTableReader<F> {
     /// Open the SSTable at `path`. `bloom_enabled` gates the Bloom-filter
     /// pre-check on lookups (always `true` outside benchmarks).
-    pub fn open(path: impl Into<PathBuf>, bloom_enabled: bool) -> Result<SsTableReader> {
+    pub fn open(fs: &F, path: impl Into<PathBuf>, bloom_enabled: bool) -> Result<SsTableReader<F>> {
         let path = path.into();
-        let file = File::open(&path)?;
-        let file_len = file.metadata()?.len();
+        let file = fs.open(&path, OpenMode::Read)?;
+        let file_len = file.size()?;
         if file_len < FOOTER_LEN {
             return Err(Error::BadFormat("file smaller than footer".into()));
         }
 
         let mut footer = [0u8; FOOTER_LEN as usize];
-        file.read_exact_at(&mut footer, file_len - FOOTER_LEN)?;
+        file.read_exact_at(file_len - FOOTER_LEN, &mut footer)?;
         if &footer[40..44] != MAGIC {
             return Err(Error::BadFormat("bad magic (expected LSM2)".into()));
         }
@@ -202,7 +199,7 @@ impl SsTableReader {
         }
 
         let mut ibuf = vec![0u8; (bloom_offset - index_offset) as usize];
-        file.read_exact_at(&mut ibuf, index_offset)?;
+        file.read_exact_at(index_offset, &mut ibuf)?;
         let mut index = Vec::with_capacity(index_entries);
         let mut pos = 0usize;
         for _ in 0..index_entries {
@@ -214,7 +211,7 @@ impl SsTableReader {
         }
 
         let mut bbuf = vec![0u8; bloom_len as usize];
-        file.read_exact_at(&mut bbuf, bloom_offset)?;
+        file.read_exact_at(bloom_offset, &mut bbuf)?;
         let bloom = BloomFilter::decode(&bbuf)?;
 
         Ok(SsTableReader {
@@ -246,7 +243,7 @@ impl SsTableReader {
             return Ok(block);
         }
         let mut comp = vec![0u8; comp_len as usize];
-        self.file.read_exact_at(&mut comp, block_offset)?;
+        self.file.read_exact_at(block_offset, &mut comp)?;
         let raw = lz4_flex::decompress_size_prepended(&comp)
             .map_err(|e| Error::Corrupt(format!("block decompression failed: {e}")))?;
         let mut records = Vec::new();
@@ -300,6 +297,49 @@ impl SsTableReader {
         Ok(None)
     }
 
+    /// The index of the first block that could hold `key`, or `None` if every
+    /// key in the table is below it.
+    ///
+    /// A block's index entry is its *first* key, so the block that could hold
+    /// `key` is the last one whose first key is at or below it — the same
+    /// bracketing `get_at` does.
+    fn block_bracketing(&self, key: &[u8]) -> Option<usize> {
+        if self.index.is_empty() {
+            return None;
+        }
+        match self
+            .index
+            .binary_search_by(|(k, _, _)| k.as_slice().cmp(key))
+        {
+            Ok(i) => Some(i),
+            // `key` precedes the first key in the table, so the scan starts at
+            // the first block rather than nowhere: every record is above it.
+            Err(0) => Some(0),
+            Err(i) => Some(i - 1),
+        }
+    }
+
+    /// Records from `start` onward, in the table's own order — key ascending,
+    /// sequence descending within a key.
+    ///
+    /// Lazy by block. A scan that stops after ten keys decompresses one block,
+    /// not the whole table, which is the difference between a `scan` and
+    /// [`SsTableReader::iter_all`].
+    pub fn scan(&self, start: Option<&[u8]>) -> TableScan<'_, F> {
+        let first_block = match start {
+            Some(key) => self.block_bracketing(key),
+            None if self.index.is_empty() => None,
+            None => Some(0),
+        };
+        TableScan {
+            reader: self,
+            block: first_block.unwrap_or(self.index.len()),
+            loaded: None,
+            pos: 0,
+            start: start.map(|k| k.to_vec()),
+        }
+    }
+
     /// Every record in the table, ascending by key. Decompresses block by
     /// block; used by compaction and flush verification.
     pub fn iter_all(&self) -> Result<Vec<Record>> {
@@ -334,16 +374,76 @@ fn read_u64(buf: &[u8], pos: &mut usize) -> Result<u64> {
     ))
 }
 
+/// A lazy walk over one SSTable's records from a starting key.
+///
+/// Holds at most one decompressed block. Yields `Result` per record because a
+/// block can fail to decompress or decode part-way through a scan, and the
+/// alternative — deciding on behalf of the caller that a corrupt block is the
+/// end of the table — is how a torn read becomes a short answer.
+pub struct TableScan<'a, F: Fs> {
+    reader: &'a SsTableReader<F>,
+    /// Index of the block being read. Equal to `index.len()` when exhausted.
+    block: usize,
+    loaded: Option<Arc<Vec<Record>>>,
+    pos: usize,
+    /// Records below this key are skipped. Only the first block can contain
+    /// any, because the block was chosen to bracket it.
+    start: Option<Vec<u8>>,
+}
+
+impl<F: Fs> Iterator for TableScan<'_, F> {
+    type Item = Result<Record>;
+
+    fn next(&mut self) -> Option<Result<Record>> {
+        loop {
+            if self.loaded.is_none() {
+                let (_, offset, comp_len) = *self.reader.index.get(self.block)?;
+                match self.reader.load_block(offset, comp_len) {
+                    Ok(block) => {
+                        self.loaded = Some(block);
+                        self.pos = 0;
+                    }
+                    Err(e) => {
+                        // Do not go on to the next block: a caller cannot tell a
+                        // skipped block from a table that ends there.
+                        self.block = self.reader.index.len();
+                        return Some(Err(e));
+                    }
+                }
+            }
+            let block = self.loaded.as_ref()?;
+            match block.get(self.pos) {
+                Some(record) => {
+                    self.pos += 1;
+                    if let Some(start) = &self.start
+                        && record.key.as_slice() < start.as_slice()
+                    {
+                        continue;
+                    }
+                    return Some(Ok(record.clone()));
+                }
+                None => {
+                    self.block += 1;
+                    self.loaded = None;
+                    // Past the first block nothing can be below the start key.
+                    self.start = None;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fs::StdFs;
 
-    fn write_table(records: &[Record]) -> (tempfile::TempDir, SsTableReader) {
+    fn write_table(records: &[Record]) -> (tempfile::TempDir, SsTableReader<StdFs>) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.db");
-        let n = SsTableWriter::write(&path, records).unwrap();
+        let n = SsTableWriter::write(&StdFs, &path, records).unwrap();
         assert_eq!(n, records.len() as u64);
-        let reader = SsTableReader::open(&path, true).unwrap();
+        let reader = SsTableReader::open(&StdFs, &path, true).unwrap();
         (dir, reader)
     }
 
@@ -403,8 +503,8 @@ mod tests {
             .collect();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.db");
-        SsTableWriter::write(&path, &recs).unwrap();
-        let r = SsTableReader::open(&path, false).unwrap();
+        SsTableWriter::write(&StdFs, &path, &recs).unwrap();
+        let r = SsTableReader::open(&StdFs, &path, false).unwrap();
         assert!(r.get(b"k0100").unwrap().is_some());
         assert!(r.get(b"missing").unwrap().is_none());
     }
@@ -414,6 +514,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("junk.db");
         std::fs::write(&path, vec![0u8; 64]).unwrap();
-        assert!(SsTableReader::open(&path, true).is_err());
+        assert!(SsTableReader::open(&StdFs, &path, true).is_err());
     }
 }

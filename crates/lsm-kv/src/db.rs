@@ -7,7 +7,6 @@
 //! background worker thread, so writers never stall waiting on flush I/O.
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,9 +19,10 @@ use parking_lot::{Mutex, RwLock};
 use crate::compaction;
 use crate::compactor::{self, CompactMsg};
 use crate::error::Result;
+use crate::fs::{Fs, StdFs, SyncMode};
 use crate::fsutil::{self, DirLock};
 use crate::manifest::{Manifest, ManifestState, VersionEdit};
-use crate::memtable::{MemTable, DEFAULT_THRESHOLD};
+use crate::memtable::{DEFAULT_THRESHOLD, MemTable};
 use crate::record::Record;
 use crate::sstable::{SsTableReader, SsTableWriter};
 use crate::wal::Wal;
@@ -36,30 +36,94 @@ const WAL_TMP_FILENAME: &str = "wal.log.tmp";
 pub struct Options {
     /// MemTable size (bytes) at which an automatic flush is triggered.
     pub memtable_threshold: usize,
-    /// If true, `fsync` the WAL after every append (durable but slower).
-    pub sync_wal: bool,
+    /// How hard the WAL is synced after every append. See [`SyncMode`].
+    ///
+    /// Replaces an earlier `sync_wal: bool`, which could only say "fsync or
+    /// not" — and on macOS `fsync` is not a durability primitive at all, so the
+    /// `true` arm was making a promise the platform did not keep.
+    pub sync_wal: SyncMode,
     /// Number of similarly-sized, adjacent SSTables that triggers a
     /// size-tiered compaction of that run.
     pub compaction_threshold: usize,
     /// If false, SSTable reads skip the Bloom-filter pre-check (benchmarks only).
     pub bloom_enabled: bool,
+    /// Who runs flushes and compactions. See [`Maintenance`].
+    pub maintenance: Maintenance,
+}
+
+/// Who runs the engine's background work.
+///
+/// The default spawns two threads and is what an application wants: a writer
+/// never stalls behind a flush, and a long merge never blocks one.
+///
+/// [`Maintenance::Manual`] spawns nothing and hands the work to the caller,
+/// which is what a deterministic harness needs. A simulator that replays a run
+/// from a seed cannot have a thread deciding when a flush happens: the whole
+/// claim is that the run is a function of the seed, and a thread makes it a
+/// function of the scheduler too. The same is true of any caller that wants to
+/// know exactly when its data reached an SSTable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Maintenance {
+    /// A flush thread and a compaction thread, started by `open` and joined on
+    /// drop.
+    #[default]
+    Threads,
+    /// No threads. The caller drives the work with [`Db::maintain`], and
+    /// nothing happens if it does not — including the automatic flush that
+    /// bounds the MemTable, so a caller that never maintains will grow one
+    /// without limit.
+    Manual,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Options {
             memtable_threshold: DEFAULT_THRESHOLD,
-            sync_wal: true,
+            sync_wal: SyncMode::Durable,
             compaction_threshold: 4,
             bloom_enabled: true,
+            maintenance: Maintenance::default(),
         }
     }
 }
 
+/// A set of mutations to apply together.
+///
+/// Order matters within a batch: two writes to one key leave the later one
+/// winning, the same as if they had been separate calls.
+#[derive(Debug, Clone, Default)]
+pub struct WriteBatch {
+    ops: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+}
+
+impl WriteBatch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn put(&mut self, key: &[u8], value: &[u8]) -> &mut Self {
+        self.ops.push((key.to_vec(), Some(value.to_vec())));
+        self
+    }
+
+    pub fn delete(&mut self, key: &[u8]) -> &mut Self {
+        self.ops.push((key.to_vec(), None));
+        self
+    }
+
+    pub fn len(&self) -> usize {
+        self.ops.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ops.is_empty()
+    }
+}
+
 /// An immutable SSTable on disk, tagged with its id (higher id == newer).
-struct SsTable {
+struct SsTable<F: Fs> {
     id: u64,
-    reader: SsTableReader,
+    reader: SsTableReader<F>,
 }
 
 /// A unit of background work for the flush worker thread.
@@ -70,6 +134,10 @@ enum Task {
 
 /// Owns the background flush and compaction threads, shutting both down and
 /// joining them on drop.
+///
+/// Absent entirely under [`Maintenance::Manual`], which is the point: not a
+/// thread that is idle, but no thread at all, so a caller can prove by
+/// inspection that nothing runs behind its back.
 struct Workers {
     flush_tx: Sender<Task>,
     compact_tx: Sender<CompactMsg>,
@@ -92,24 +160,26 @@ impl Drop for Workers {
 
 /// The shared, lock-protected engine state. Reachable from both the public
 /// [`Db`] handle and (via a `Weak`) the background threads.
-pub(crate) struct DbInner {
+pub(crate) struct DbInner<F: Fs> {
     dir: PathBuf,
     opts: Options,
+    /// The filesystem every path below goes through.
+    fs: F,
     /// Held for the lifetime of the handle; released when it is dropped.
-    _lock: DirLock,
+    _lock: DirLock<F>,
     /// Serializes WAL appends; also held across the matching MemTable insert
     /// so a record is never visible in one without the other.
-    wal: Mutex<Wal>,
+    wal: Mutex<Wal<F>>,
     /// The MemTable accepting writes.
     active: RwLock<MemTable>,
     /// A MemTable frozen for flushing; reads still consult it until the flush
     /// publishes its SSTable.
     frozen: RwLock<Option<Arc<MemTable>>>,
     /// Live SSTables, oldest -> newest by position; swapped wholesale on change.
-    sstables: RwLock<Arc<Vec<Arc<SsTable>>>>,
+    sstables: RwLock<Arc<Vec<Arc<SsTable<F>>>>>,
     next_sst_id: AtomicU64,
     next_seq: AtomicU64,
-    manifest: Mutex<Manifest>,
+    manifest: Mutex<Manifest<F>>,
     /// Held for the duration of a flush; the publish step of a compaction
     /// takes it too, so the two never mutate `sstables` concurrently.
     flush_lock: Mutex<()>,
@@ -128,25 +198,105 @@ pub(crate) struct DbInner {
 }
 
 /// An embedded LSM-tree key/value store.
-pub struct Db {
+pub struct Db<F: Fs = StdFs> {
     // Field order matters: `workers` is dropped first, joining the background
     // threads before `inner` (and its `Arc` refcount) goes away. It is only
     // ever used for that drop-time shutdown.
     #[allow(dead_code)]
-    workers: Workers,
-    inner: Arc<DbInner>,
+    workers: Option<Workers>,
+    inner: Arc<DbInner<F>>,
 }
 
-impl Db {
+impl Db<StdFs> {
     /// Open (creating if needed) the database rooted at `dir` with defaults.
-    pub fn open(dir: impl AsRef<Path>) -> Result<Db> {
+    pub fn open(dir: impl AsRef<Path>) -> Result<Db<StdFs>> {
         Db::open_with(dir, Options::default())
     }
 
     /// Open the database rooted at `dir` with explicit [`Options`].
-    pub fn open_with(dir: impl AsRef<Path>, opts: Options) -> Result<Db> {
+    pub fn open_with(dir: impl AsRef<Path>, opts: Options) -> Result<Db<StdFs>> {
+        Db::open_on(StdFs, dir, opts)
+    }
+}
+
+impl<F: Fs + Send + Sync> Db<F>
+where
+    F::File: Send + Sync,
+{
+    /// Open on `fs`, honouring [`Options::maintenance`].
+    ///
+    /// The `Send + Sync` bounds are here rather than on [`Fs`] because they are
+    /// what spawning a thread needs, and only [`Maintenance::Threads`] spawns
+    /// one. A single-threaded harness whose filesystem is built on
+    /// `Rc<RefCell<_>>` cannot satisfy them and should not have to: see
+    /// [`Db::open_manual`].
+    pub fn open_on(fs: F, dir: impl AsRef<Path>, opts: Options) -> Result<Db<F>> {
+        let (inner, flush_tx, flush_rx, compact_tx, compact_rx) = Db::assemble(fs, dir, opts)?;
+        let workers = match inner.opts.maintenance {
+            Maintenance::Threads => {
+                let flush_weak = Arc::downgrade(&inner);
+                let flush_handle = thread::spawn(move || worker_loop(flush_rx, flush_weak));
+                let compact_weak = Arc::downgrade(&inner);
+                let compact_handle =
+                    thread::spawn(move || compactor::compaction_loop(compact_rx, compact_weak));
+                Some(Workers {
+                    flush_tx,
+                    compact_tx,
+                    flush_handle: Some(flush_handle),
+                    compact_handle: Some(compact_handle),
+                })
+            }
+            // The receivers are dropped here along with `flush_rx` and
+            // `compact_rx`, so every later `send` fails — which is already the
+            // ignored-error path the triggers take.
+            Maintenance::Manual => None,
+        };
+        Ok(Db { workers, inner })
+    }
+}
+
+impl<F: Fs> Db<F> {
+    /// Open on `fs` with no background threads, whatever [`Options::maintenance`]
+    /// says.
+    ///
+    /// This is the constructor a deterministic harness uses. It asks nothing of
+    /// `F` beyond [`Fs`] — no `Send`, no `Sync` — because it starts no thread
+    /// that would need them, so a filesystem built on `Rc<RefCell<_>>` is
+    /// allowed here and atomics stay out of the one component that has to
+    /// reproduce a run exactly.
+    ///
+    /// The caller drives the work with [`Db::maintain`]; nothing happens if it
+    /// does not.
+    pub fn open_manual(fs: F, dir: impl AsRef<Path>, opts: Options) -> Result<Db<F>> {
+        let opts = Options {
+            maintenance: Maintenance::Manual,
+            ..opts
+        };
+        let (inner, _flush_tx, _flush_rx, _compact_tx, _compact_rx) = Db::assemble(fs, dir, opts)?;
+        Ok(Db {
+            workers: None,
+            inner,
+        })
+    }
+
+    /// Everything both constructors do: lock, recover, and build the state.
+    ///
+    /// Hands back the channel ends rather than keeping them, so the caller
+    /// decides whether anything is on the other side of them.
+    #[allow(clippy::type_complexity)]
+    fn assemble(
+        fs: F,
+        dir: impl AsRef<Path>,
+        opts: Options,
+    ) -> Result<(
+        Arc<DbInner<F>>,
+        Sender<Task>,
+        Receiver<Task>,
+        Sender<CompactMsg>,
+        Receiver<CompactMsg>,
+    )> {
         let dir = dir.as_ref().to_path_buf();
-        fs::create_dir_all(&dir)?;
+        fs.create_dir_all(&dir)?;
 
         // Before anything else. Everything below this line either mutates the
         // directory or deletes from it — the manifest rolls its generation
@@ -154,41 +304,43 @@ impl Db {
         // every SSTable the manifest does not name. A second handle running the
         // same sequence concurrently would delete this one's files, and this
         // one would delete its files back.
-        let lock = DirLock::acquire(&dir)?;
+        let lock = DirLock::acquire(&fs, &dir)?;
 
         // The manifest is the authoritative record of the live SSTable set and
         // the global counters. If absent, migrate a Phase 2 directory by
         // scanning its `sst_*.db` files into a fresh manifest.
-        let (manifest, state) = if Manifest::exists(&dir) {
-            Manifest::open(&dir)?
+        let (manifest, state) = if Manifest::exists(&fs, &dir) {
+            Manifest::open(&fs, &dir)?
         } else {
-            Db::migrate_dir(&dir)?
+            Db::migrate_dir(&fs, &dir)?
         };
 
         // Reclaim orphan SSTables: any `sst_*.db` not named by the manifest is
         // a leftover from a crash before its `AddTable` edit was durable.
         let lock_name = fsutil::lock_path(&dir);
-        for entry in fs::read_dir(&dir)? {
-            let name = entry?.file_name();
-            let name = name.to_string_lossy();
-            if dir.join(name.as_ref()) == lock_name {
+        for path in fs.list(&dir)? {
+            if path == lock_name {
                 continue;
             }
+            let name = match path.file_name() {
+                Some(name) => name.to_string_lossy().into_owned(),
+                None => continue,
+            };
             if let Some(id) = parse_sst_id(&name) {
                 if !state.live_tables.contains(&id) {
-                    fs::remove_file(dir.join(name.as_ref()))?;
+                    fs.remove(&path)?;
                 }
             } else if name.ends_with(".db.tmp") || name == WAL_TMP_FILENAME {
-                fs::remove_file(dir.join(name.as_ref()))?;
+                fs.remove(&path)?;
             }
         }
 
         // Open the live SSTables, ordered oldest -> newest by id.
-        let sstables: Vec<Arc<SsTable>> = state
+        let sstables: Vec<Arc<SsTable<F>>> = state
             .live_tables
             .iter()
             .map(|&id| {
-                SsTableReader::open(sst_path(&dir, id), opts.bloom_enabled)
+                SsTableReader::open(&fs, sst_path(&dir, id), opts.bloom_enabled)
                     .map(|reader| Arc::new(SsTable { id, reader }))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -196,7 +348,7 @@ impl Db {
         // Replay the WAL into a fresh MemTable. The manifest persists `next_seq`
         // across clean flushes; the live WAL may carry seqs beyond it.
         let wal_path = dir.join(WAL_FILENAME);
-        let replayed = Wal::replay(&wal_path)?;
+        let replayed = Wal::replay(&fs, &wal_path)?;
         let mut memtable = MemTable::new(opts.memtable_threshold);
         let mut next_seq = state.next_seq;
         for record in replayed {
@@ -206,13 +358,14 @@ impl Db {
         // Open the WAL for *appending*: it still backs the records just
         // replayed into the MemTable until the next flush moves them to an
         // SSTable. Truncating here would lose them if we exit before flushing.
-        let wal = Wal::open_append(&wal_path, opts.sync_wal)?;
+        let wal = Wal::open_append(&fs, &wal_path, opts.sync_wal)?;
 
         let (flush_tx, flush_rx) = mpsc::channel();
         let (compact_tx, compact_rx) = mpsc::channel();
         let inner = Arc::new(DbInner {
             dir,
             opts,
+            fs,
             _lock: lock,
             wal: Mutex::new(wal),
             active: RwLock::new(memtable),
@@ -229,37 +382,24 @@ impl Db {
             failed: RwLock::new(None),
         });
 
-        let flush_weak = Arc::downgrade(&inner);
-        let flush_handle = thread::spawn(move || worker_loop(flush_rx, flush_weak));
-        let compact_weak = Arc::downgrade(&inner);
-        let compact_handle =
-            thread::spawn(move || compactor::compaction_loop(compact_rx, compact_weak));
-
-        Ok(Db {
-            workers: Workers {
-                flush_tx,
-                compact_tx,
-                flush_handle: Some(flush_handle),
-                compact_handle: Some(compact_handle),
-            },
-            inner,
-        })
+        Ok((inner, flush_tx, flush_rx, compact_tx, compact_rx))
     }
 
     /// First open of a directory: synthesize a manifest from whatever SSTables
     /// already exist (a Phase 2 layout, or an empty directory).
-    fn migrate_dir(dir: &Path) -> Result<(Manifest, ManifestState)> {
+    fn migrate_dir(fs: &F, dir: &Path) -> Result<(Manifest<F>, ManifestState)> {
         let mut sst_ids = Vec::new();
-        for entry in fs::read_dir(dir)? {
-            let name = entry?.file_name();
-            if let Some(id) = parse_sst_id(&name.to_string_lossy()) {
+        for path in fs.list(dir)? {
+            if let Some(name) = path.file_name()
+                && let Some(id) = parse_sst_id(&name.to_string_lossy())
+            {
                 sst_ids.push(id);
             }
         }
         sst_ids.sort_unstable();
         let next_sst_id = sst_ids.last().map_or(0, |&id| id + 1);
 
-        let mut manifest = Manifest::create(dir)?;
+        let mut manifest = Manifest::create(fs, dir)?;
         let mut edits = vec![VersionEdit::SetNextSstId(next_sst_id)];
         edits.extend(sst_ids.iter().map(|&id| VersionEdit::AddTable { id }));
         manifest.append_batch(&edits)?;
@@ -282,18 +422,131 @@ impl Db {
         self.inner.write(key, None)
     }
 
+    /// Apply every mutation in `batch`, all of them or none of them.
+    ///
+    /// The atomicity is the log format's rather than the filesystem's: the
+    /// whole batch is one length-prefixed frame under one CRC, so a crash
+    /// caught mid-write leaves a frame that does not verify and replay drops
+    /// every record in it. There is no interleaving in which half a batch
+    /// survives a restart.
+    ///
+    /// That is what makes it possible to keep an index and the data it
+    /// describes consistent across a crash — a replicated state machine's
+    /// applied position and the writes it describes, say — without a second
+    /// durability mechanism beside this one.
+    ///
+    /// One fsync for the whole batch. A hundred keys written one at a time cost
+    /// a hundred.
+    ///
+    /// ```no_run
+    /// # use lsm_kv::{Db, WriteBatch};
+    /// # let db = Db::open("./data")?;
+    /// let mut batch = WriteBatch::new();
+    /// batch.put(b"user/1", b"alice");
+    /// batch.put(b"meta/applied", &7u64.to_le_bytes());
+    /// db.write_batch(&batch)?;
+    /// # Ok::<(), lsm_kv::Error>(())
+    /// ```
+    pub fn write_batch(&self, batch: &WriteBatch) -> Result<()> {
+        self.inner.write_batch(batch)
+    }
+
     /// Return the current value for `key`, or `None` if absent or deleted.
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         self.inner.get_at(key, u64::MAX)
     }
 
+    /// Every live key in `start..end`, ascending, at most `limit` of them.
+    ///
+    /// Half-open: `start` is included, `end` is excluded, and `None` means
+    /// unbounded on that side. A `limit` of zero returns nothing.
+    ///
+    /// The work is proportional to what is returned rather than to what is
+    /// stored: each SSTable is walked one block at a time from the block that
+    /// brackets `start`, so a scan of ten keys out of a million decompresses one
+    /// block per table.
+    ///
+    /// Deleted keys are absent rather than present-and-empty. A tombstone is a
+    /// record like any other and shadows what is beneath it, but it is not a
+    /// result.
+    pub fn scan(
+        &self,
+        start: Option<&[u8]>,
+        end: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        self.inner.scan_at(start, end, limit, u64::MAX)
+    }
+
+    /// [`Db::scan`] as of `snapshot`.
+    pub fn scan_at(
+        &self,
+        snapshot: &Snapshot<F>,
+        start: Option<&[u8]>,
+        end: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        self.inner.scan_at(start, end, limit, snapshot.horizon)
+    }
+
     /// Flush the MemTable to a new SSTable and start a fresh WAL, then run any
     /// pending compaction — all synchronously. A no-op if the MemTable is
     /// empty.
+    ///
+    /// See [`Db::flush_only`] for the half of this that does not merge.
     pub fn flush(&self) -> Result<()> {
         self.inner.flush_inner()?;
         while self.inner.compact_step()? {}
         Ok(())
+    }
+
+    /// Flush the MemTable to a new SSTable, and stop there.
+    ///
+    /// [`Db::flush`] also drains every pending compaction, which is a merge of
+    /// unbounded size: a caller who wanted their writes on disk cannot tell how
+    /// long it will take, because the answer depends on how many SSTables have
+    /// accumulated. This is the bounded half — the work is proportional to the
+    /// MemTable, which the caller chose the size of.
+    ///
+    /// A caller that wants both, and wants to know the cost of each, calls this
+    /// and then [`Db::maintain`] in a loop.
+    pub fn flush_only(&self) -> Result<()> {
+        self.inner.flush_inner()
+    }
+
+    /// Do one unit of the work a background thread would otherwise have done,
+    /// and report whether any remains.
+    ///
+    /// A flush first when one is due, then one compaction step. One unit rather
+    /// than all of it, so a caller with something else to do — a consensus
+    /// host with a timer to service — can interleave rather than disappear into
+    /// a merge.
+    ///
+    /// Useful under either [`Maintenance`] setting, and required under
+    /// [`Maintenance::Manual`]: nothing else will flush, including the automatic
+    /// flush that bounds the MemTable.
+    ///
+    /// ```no_run
+    /// # use lsm_kv::{Db, Maintenance, Options};
+    /// # let opts = Options { maintenance: Maintenance::Manual, ..Options::default() };
+    /// # let db = Db::open_with("./data", opts)?;
+    /// while db.maintain()? {}
+    /// # Ok::<(), lsm_kv::Error>(())
+    /// ```
+    pub fn maintain(&self) -> Result<bool> {
+        if self.inner.flush_is_due() {
+            self.inner.flush_inner()?;
+            return Ok(true);
+        }
+        self.inner.compact_step()
+    }
+
+    /// Whether [`Db::maintain`] would do anything.
+    ///
+    /// Cheap enough to poll every turn of a host loop: it reads two lock-guarded
+    /// booleans and a length, and does no I/O.
+    pub fn pending_work(&self) -> bool {
+        self.inner.flush_is_due() || self.inner.compaction_is_due()
     }
 
     /// `Err` once a flush or a compaction has failed.
@@ -317,7 +570,7 @@ impl Db {
     ///
     /// While a snapshot is alive, compaction preserves the record versions it
     /// can see, so a long-lived snapshot pins disk space.
-    pub fn snapshot(&self) -> Snapshot {
+    pub fn snapshot(&self) -> Snapshot<F> {
         let horizon = self.inner.next_seq.load(Ordering::SeqCst);
         *self.inner.snapshots.lock().entry(horizon).or_insert(0) += 1;
         Snapshot {
@@ -328,20 +581,20 @@ impl Db {
 
     /// Read `key` as of `snapshot` — the value it had when the snapshot was
     /// taken, ignoring every later write.
-    pub fn get_at(&self, snapshot: &Snapshot, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub fn get_at(&self, snapshot: &Snapshot<F>, key: &[u8]) -> Result<Option<Vec<u8>>> {
         self.inner.get_at(key, snapshot.horizon)
     }
 }
 
 /// A point-in-time view of the database. Reads through a snapshot (via
 /// [`Db::get_at`]) see only writes that preceded [`Db::snapshot`].
-pub struct Snapshot {
+pub struct Snapshot<F: Fs = StdFs> {
     /// Sequence-number horizon: records with `seq < horizon` are visible.
     horizon: u64,
-    inner: Arc<DbInner>,
+    inner: Arc<DbInner<F>>,
 }
 
-impl Drop for Snapshot {
+impl<F: Fs> Drop for Snapshot<F> {
     fn drop(&mut self) {
         let mut snapshots = self.inner.snapshots.lock();
         if let Some(count) = snapshots.get_mut(&self.horizon) {
@@ -353,7 +606,7 @@ impl Drop for Snapshot {
     }
 }
 
-impl DbInner {
+impl<F: Fs> DbInner<F> {
     /// Latch the first failure and return the error every later call will see.
     ///
     /// Only the first is kept: everything after it is a consequence, and the
@@ -404,6 +657,48 @@ impl DbInner {
         Ok(())
     }
 
+    /// Append every mutation in `batch` to the WAL as one frame, then to the
+    /// active MemTable.
+    fn write_batch(&self, batch: &WriteBatch) -> Result<()> {
+        self.health()?;
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let trigger_flush;
+        {
+            // The same lock discipline as a single write, and for the same
+            // reason: the frame and the in-memory records are published as one
+            // unit, so a concurrent flush rewriting the WAL cannot catch the
+            // batch half-way in.
+            let mut wal = self.wal.lock();
+            let first_seq = self
+                .next_seq
+                .fetch_add(batch.ops.len() as u64, Ordering::SeqCst);
+            let records: Vec<Record> = batch
+                .ops
+                .iter()
+                .enumerate()
+                .map(|(i, (key, value))| {
+                    let seq = first_seq + i as u64;
+                    match value {
+                        Some(v) => Record::put(key.clone(), v.clone(), seq),
+                        None => Record::tombstone(key.clone(), seq),
+                    }
+                })
+                .collect();
+            wal.append_batch(&records)?;
+            let mut active = self.active.write();
+            for record in records {
+                active.insert(record);
+            }
+            trigger_flush = active.is_full();
+        }
+        if trigger_flush {
+            let _ = self.worker_tx.send(Task::Flush);
+        }
+        Ok(())
+    }
+
     /// Resolve `key` across the active MemTable, the frozen MemTable, then the
     /// SSTables newest-to-oldest. Only records with `seq < seq_bound` are
     /// visible — `u64::MAX` resolves the latest value.
@@ -417,10 +712,10 @@ impl DbInner {
             return Ok(record.value.clone());
         }
         let frozen = self.frozen.read().clone();
-        if let Some(frozen) = frozen {
-            if let Some(record) = frozen.get_at(key, seq_bound) {
-                return Ok(record.value.clone());
-            }
+        if let Some(frozen) = frozen
+            && let Some(record) = frozen.get_at(key, seq_bound)
+        {
+            return Ok(record.value.clone());
         }
         let sstables = self.sstables.read().clone();
         for table in sstables.iter().rev() {
@@ -429,6 +724,55 @@ impl DbInner {
             }
         }
         Ok(None)
+    }
+
+    /// Merge a key range across the MemTables and every SSTable.
+    fn scan_at(
+        &self,
+        start: Option<&[u8]>,
+        end: Option<&[u8]>,
+        limit: usize,
+        seq_bound: u64,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        self.health()?;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        // The MemTables are copied out rather than borrowed. Holding their
+        // locks for the length of a scan would block every writer for as long
+        // as the caller took to consume it, and a scan is bounded by `limit`
+        // whereas a writer's patience is not.
+        let mut sources: Vec<std::vec::IntoIter<crate::scan::Item>> = Vec::new();
+        let from_memtable = |table: &MemTable| -> Vec<crate::scan::Item> {
+            table.range(start, end).cloned().map(Ok).collect()
+        };
+        sources.push(from_memtable(&self.active.read()).into_iter());
+        if let Some(frozen) = self.frozen.read().clone() {
+            sources.push(from_memtable(&frozen).into_iter());
+        }
+
+        // The SSTables are held open for the length of the scan, which is what
+        // the `Arc` snapshot of the live set is for: a compaction that unlinks
+        // one mid-scan cannot pull the file out from under it.
+        let sstables = self.sstables.read().clone();
+        let mut merged: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        {
+            let mut all: Vec<Box<dyn Iterator<Item = crate::scan::Item> + '_>> = sources
+                .into_iter()
+                .map(|s| Box::new(s) as Box<dyn Iterator<Item = crate::scan::Item>>)
+                .collect();
+            for table in sstables.iter() {
+                all.push(Box::new(table.reader.scan(start)));
+            }
+            for item in crate::scan::Merge::new(all, seq_bound, end.map(|e| e.to_vec())) {
+                merged.push(item?);
+                if merged.len() == limit {
+                    break;
+                }
+            }
+        }
+        Ok(merged)
     }
 
     /// The lowest sequence-number horizon any live snapshot can observe, or
@@ -440,6 +784,29 @@ impl DbInner {
             .next()
             .copied()
             .unwrap_or(u64::MAX)
+    }
+
+    /// Whether there is anything for a flush to do.
+    ///
+    /// A frozen MemTable means a previous flush froze and then failed to
+    /// publish; a full active one means the threshold has been crossed and
+    /// nothing has acted on it yet. Either way the next flush has work.
+    fn flush_is_due(&self) -> bool {
+        if self.frozen.read().is_some() {
+            return true;
+        }
+        let active = self.active.read();
+        !active.is_empty() && active.is_full()
+    }
+
+    /// Whether a compaction step would find a run to merge.
+    ///
+    /// Deliberately approximate: it compares the table count against the
+    /// threshold without reading a single file size, because the exact answer
+    /// costs a `stat` per table and this is polled on a hot loop. A false
+    /// positive costs one `compact_step` that returns `false`.
+    fn compaction_is_due(&self) -> bool {
+        self.sstables.read().len() >= self.opts.compaction_threshold
     }
 
     /// Freeze the active MemTable, write it to a new SSTable, publish it, and
@@ -471,14 +838,14 @@ impl DbInner {
         let tmp_path = final_path.with_extension("db.tmp");
 
         let records: Vec<Record> = frozen.iter().cloned().collect();
-        SsTableWriter::write(&tmp_path, &records)?;
+        SsTableWriter::write(&self.fs, &tmp_path, &records)?;
         // Atomic publish: a crash before the rename leaves only a stale .tmp.
         // The writer already fsynced the file's contents; this makes its *name*
         // durable, which is a separate thing and the one the manifest is about
         // to depend on.
-        fs::rename(&tmp_path, &final_path)?;
-        fsutil::sync_dir(&self.dir)?;
-        let reader = SsTableReader::open(&final_path, self.opts.bloom_enabled)?;
+        self.fs.rename(&tmp_path, &final_path)?;
+        self.fs.sync_dir(&self.dir)?;
+        let reader = SsTableReader::open(&self.fs, &final_path, self.opts.bloom_enabled)?;
 
         // Record the new table in the manifest *before* truncating the WAL:
         // the WAL still backs these records until the manifest makes the
@@ -511,13 +878,13 @@ impl DbInner {
             let mut wal = self.wal.lock();
             let active = self.active.read();
             let tmp_path = self.dir.join(WAL_TMP_FILENAME);
-            let mut fresh = Wal::create(&tmp_path, self.opts.sync_wal)?;
+            let mut fresh = Wal::create(&self.fs, &tmp_path, self.opts.sync_wal)?;
             for record in active.iter() {
                 fresh.append(record)?;
             }
             fresh.sync()?;
-            fresh.rename_to(self.dir.join(WAL_FILENAME))?;
-            fsutil::sync_dir(&self.dir)?;
+            fresh.rename_to(&self.fs, self.dir.join(WAL_FILENAME))?;
+            self.fs.sync_dir(&self.dir)?;
             *wal = fresh;
         }
         *self.frozen.write() = None;
@@ -541,10 +908,12 @@ impl DbInner {
         let _compaction_guard = self.compaction_lock.lock();
 
         let tables = self.sstables.read().clone();
-        let Some((start, end)) = pick_compaction(&tables, self.opts.compaction_threshold)? else {
+        let Some((start, end)) =
+            pick_compaction(&self.fs, &tables, self.opts.compaction_threshold)?
+        else {
             return Ok(false);
         };
-        let run: Vec<Arc<SsTable>> = tables[start..end].to_vec();
+        let run: Vec<Arc<SsTable<F>>> = tables[start..end].to_vec();
         // The merged table reuses the run's highest id, keeping it in the same
         // position in the live set; the manifest makes the swap crash-safe.
         let Some(last) = run.last() else {
@@ -560,19 +929,25 @@ impl DbInner {
         let final_path = sst_path(&self.dir, max_id);
         let tmp_path = final_path.with_extension("db.tmp");
         {
-            let inputs: Vec<&SsTableReader> = run.iter().map(|t| &t.reader).collect();
-            compaction::compact(&tmp_path, &inputs, drop_tombstones, min_snapshot_seq)?;
+            let inputs: Vec<&SsTableReader<F>> = run.iter().map(|t| &t.reader).collect();
+            compaction::compact(
+                &self.fs,
+                &tmp_path,
+                &inputs,
+                drop_tombstones,
+                min_snapshot_seq,
+            )?;
         }
 
         // Publish: rename over the max-id input, drop the rest from the
         // manifest, splice the live set, then unlink the stale files.
         {
             let _flush_guard = self.flush_lock.lock();
-            fs::rename(&tmp_path, &final_path)?;
+            self.fs.rename(&tmp_path, &final_path)?;
             // Before the DeleteTable edits below: the merged output has to be
             // durable at its name before the manifest says its inputs are gone.
-            fsutil::sync_dir(&self.dir)?;
-            let reader = SsTableReader::open(&final_path, self.opts.bloom_enabled)?;
+            self.fs.sync_dir(&self.dir)?;
+            let reader = SsTableReader::open(&self.fs, &final_path, self.opts.bloom_enabled)?;
 
             let stale_ids: Vec<u64> = run[..run.len() - 1].iter().map(|t| t.id).collect();
             self.manifest.lock().append_batch(
@@ -598,18 +973,18 @@ impl DbInner {
             *self.sstables.write() = Arc::new(next);
 
             for id in &stale_ids {
-                fs::remove_file(sst_path(&self.dir, *id))?;
+                self.fs.remove(&sst_path(&self.dir, *id))?;
             }
             // Hygiene only, and one fsync for the whole batch: a lost unlink is
             // a space leak the next open reclaims, not a correctness problem.
-            fsutil::sync_dir(&self.dir)?;
+            self.fs.sync_dir(&self.dir)?;
         }
         Ok(true)
     }
 }
 
 /// Background worker: drains flush requests until the [`Db`] is dropped.
-fn worker_loop(rx: Receiver<Task>, inner: Weak<DbInner>) {
+fn worker_loop<F: Fs>(rx: Receiver<Task>, inner: Weak<DbInner<F>>) {
     while let Ok(task) = rx.recv() {
         match task {
             Task::Shutdown => break,
@@ -627,13 +1002,17 @@ fn worker_loop(rx: Receiver<Task>, inner: Weak<DbInner>) {
 
 /// Pick a contiguous, id-ordered run of `threshold`+ SSTables that fall in the
 /// same size tier, returning its `start..end` range.
-fn pick_compaction(tables: &[Arc<SsTable>], threshold: usize) -> Result<Option<(usize, usize)>> {
+fn pick_compaction<F: Fs>(
+    fs: &F,
+    tables: &[Arc<SsTable<F>>],
+    threshold: usize,
+) -> Result<Option<(usize, usize)>> {
     if tables.len() < threshold {
         return Ok(None);
     }
     let mut tiers = Vec::with_capacity(tables.len());
     for t in tables {
-        let len = fs::metadata(t.reader.path())?.len();
+        let len = fs.size(t.reader.path())?;
         // Tier = bit-width of the file size, i.e. floor(log2)+1.
         tiers.push(64 - len.leading_zeros());
     }
@@ -667,7 +1046,7 @@ mod tests {
 
     fn fast_opts() -> Options {
         Options {
-            sync_wal: false,
+            sync_wal: SyncMode::None,
             ..Options::default()
         }
     }
@@ -783,7 +1162,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let opts = Options {
             memtable_threshold: 4 * 1024,
-            sync_wal: false,
+            sync_wal: SyncMode::None,
             ..Options::default()
         };
         let db = Db::open_with(dir.path(), opts).unwrap();
@@ -803,7 +1182,7 @@ mod tests {
     fn compaction_reduces_table_count_and_preserves_data() {
         let dir = tempfile::tempdir().unwrap();
         let opts = Options {
-            sync_wal: false,
+            sync_wal: SyncMode::None,
             compaction_threshold: 4,
             ..Options::default()
         };
@@ -845,7 +1224,7 @@ mod tests {
     fn compaction_keeps_newest_value_and_drops_deleted_key() {
         let dir = tempfile::tempdir().unwrap();
         let opts = Options {
-            sync_wal: false,
+            sync_wal: SyncMode::None,
             compaction_threshold: 3,
             ..Options::default()
         };
@@ -873,7 +1252,7 @@ mod tests {
 
         // A stray SSTable not named by the manifest must be reclaimed on open.
         let orphan = dir.path().join("sst_0000009999.db");
-        fs::copy(sst_path(dir.path(), 0), &orphan).unwrap();
+        std::fs::copy(sst_path(dir.path(), 0), &orphan).unwrap();
         let db = Db::open_with(dir.path(), fast_opts()).unwrap();
         assert!(!orphan.exists());
         assert_eq!(db.get(b"k").unwrap(), Some(b"v".to_vec()));
@@ -888,11 +1267,11 @@ mod tests {
             db.flush().unwrap();
         }
         // Simulate a Phase 2 layout: drop the manifest, keep the SSTable.
-        fs::remove_file(dir.path().join("CURRENT")).unwrap();
-        for entry in fs::read_dir(dir.path()).unwrap() {
+        std::fs::remove_file(dir.path().join("CURRENT")).unwrap();
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
             let name = entry.unwrap().file_name();
             if name.to_string_lossy().starts_with("MANIFEST-") {
-                fs::remove_file(dir.path().join(name)).unwrap();
+                std::fs::remove_file(dir.path().join(name)).unwrap();
             }
         }
         let db = Db::open_with(dir.path(), fast_opts()).unwrap();
@@ -906,7 +1285,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let opts = Options {
             memtable_threshold: 16 * 1024,
-            sync_wal: false,
+            sync_wal: SyncMode::None,
             ..Options::default()
         };
         let db = Arc::new(Db::open_with(dir.path(), opts).unwrap());
@@ -940,7 +1319,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let opts = Options {
             memtable_threshold: 8 * 1024,
-            sync_wal: false,
+            sync_wal: SyncMode::None,
             compaction_threshold: 4,
             ..Options::default()
         };
@@ -1000,7 +1379,7 @@ mod tests {
     fn snapshot_survives_compaction() {
         let dir = tempfile::tempdir().unwrap();
         let opts = Options {
-            sync_wal: false,
+            sync_wal: SyncMode::None,
             compaction_threshold: 3,
             ..Options::default()
         };
@@ -1138,6 +1517,117 @@ mod tests {
         let db = Db::open(dir.path()).unwrap();
         assert_eq!(db.get(b"k").unwrap().as_deref(), Some(&b"v"[..]));
         assert!(crate::fsutil::lock_path(dir.path()).exists());
+    }
+
+    /// Manual maintenance spawns nothing. The evidence is that the work does
+    /// not happen on its own: writes past the threshold leave the MemTable
+    /// full and no SSTable behind them.
+    #[test]
+    fn manual_maintenance_runs_nothing_until_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let opts = Options {
+            memtable_threshold: 128,
+            maintenance: Maintenance::Manual,
+            ..fast_opts()
+        };
+        let db = Db::open_with(dir.path(), opts).unwrap();
+
+        for i in 0..64u32 {
+            db.put(format!("k{i:04}").as_bytes(), b"some value bytes")
+                .unwrap();
+        }
+        // A threads-mode handle would have flushed by now, on its own schedule.
+        // Give one every chance to prove it did.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(
+            db.sstable_count(),
+            0,
+            "something flushed without being asked to"
+        );
+        assert!(
+            db.pending_work(),
+            "a full MemTable is work waiting to happen"
+        );
+
+        while db.maintain().unwrap() {}
+        assert!(db.sstable_count() > 0, "maintain did not flush");
+        assert!(!db.pending_work());
+
+        // And the data is all still there.
+        for i in 0..64u32 {
+            assert_eq!(
+                db.get(format!("k{i:04}").as_bytes()).unwrap().as_deref(),
+                Some(&b"some value bytes"[..])
+            );
+        }
+    }
+
+    /// Under manual maintenance the engine is a function of its calls. Two
+    /// databases given the same writes and the same maintenance calls end with
+    /// the same number of SSTables — which is the property a deterministic
+    /// harness needs and a thread cannot provide.
+    #[test]
+    fn manual_maintenance_is_reproducible() {
+        let run = || {
+            let dir = tempfile::tempdir().unwrap();
+            let opts = Options {
+                memtable_threshold: 256,
+                compaction_threshold: 2,
+                maintenance: Maintenance::Manual,
+                ..fast_opts()
+            };
+            let db = Db::open_with(dir.path(), opts).unwrap();
+            let mut counts = Vec::new();
+            for i in 0..200u32 {
+                db.put(format!("k{i:04}").as_bytes(), b"value").unwrap();
+                if i % 10 == 0 {
+                    let _ = db.maintain().unwrap();
+                    counts.push(db.sstable_count());
+                }
+            }
+            counts
+        };
+        assert_eq!(run(), run(), "the same calls produced a different history");
+    }
+
+    /// `flush_only` is the bounded half of `flush`: it writes the MemTable out
+    /// and does not go on to merge.
+    #[test]
+    fn flush_only_does_not_compact() {
+        let dir = tempfile::tempdir().unwrap();
+        let opts = Options {
+            memtable_threshold: 64,
+            compaction_threshold: 2,
+            maintenance: Maintenance::Manual,
+            ..fast_opts()
+        };
+        let db = Db::open_with(dir.path(), opts).unwrap();
+
+        // Three separate flushes, so a compaction is well past due.
+        for round in 0..3u32 {
+            for i in 0..8u32 {
+                db.put(format!("k{round}{i}").as_bytes(), b"v").unwrap();
+            }
+            db.flush_only().unwrap();
+        }
+        assert_eq!(
+            db.sstable_count(),
+            3,
+            "flush_only merged tables it was not asked to merge"
+        );
+        assert!(db.pending_work(), "a merge is due and was not noticed");
+
+        db.flush().unwrap();
+        assert!(
+            db.sstable_count() < 3,
+            "flush did not drain the compaction flush_only left"
+        );
+    }
+
+    /// The default is unchanged: threads, started by open.
+    #[test]
+    fn threads_remain_the_default() {
+        assert_eq!(Options::default().maintenance, Maintenance::Threads);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 # Vendored: `lsm_kv`
 
 Upstream: <https://github.com/BhaveshThapar/LSM-Tree-Key-Value-Storage-Engine>
-Commit: `d379e2aa3ce9eb3619c08371bb0e8c6bb5c70283` (2026-08-22)
+Commit: `44404ec87e9906d2a0ff755e1bdacc0bc3a30072` (2026-08-23)
 
 This is Keel's state machine. It is vendored rather than depended on because
 becoming a Raft state machine requires changes *inside* the engine — the manifest
@@ -21,31 +21,32 @@ outside.
 
 **`src/` and `tests/` are byte-identical to upstream.** Keeping them that way is
 deliberate: every fix belongs upstream first, so the diff stays reviewable and
-the two projects do not drift into different engines. The Keel-specific work
-below will break that, and each departure is recorded when it lands.
+the two projects do not drift into different engines. It has not been broken yet:
+everything M1 Phase 3 needed went upstream first, and this copy is byte-identical
+to the commit named above. Any future departure is recorded here when it lands.
 
-Two consequences of that rule, both deliberate:
+One consequence of that rule, deliberate:
 
-- **This crate stays on edition 2021** while the workspace is on 2024. `gen` is a
-  reserved keyword in 2024 and the manifest uses it as a variable name for the
-  generation number, in 18 places. Renaming it is a `src/` change and therefore
-  an upstream one; it is worth sending, and until it lands the edition cannot
-  move.
 - **This crate does not opt into `[workspace.lints]`**, so the workspace's
   `unwrap_used` / `expect_used` / `unsafe_code` warnings do not apply to it.
-  Turning them on under `-D warnings` would force changes across `src/` for the
-  same reason. The `unwrap`s that mattered — the ones on the compaction publish
-  path, which ran on a background thread — are already gone upstream; what is
-  left is mostly `try_into().unwrap()` on fixed-size slices, which collapses
-  behind three helpers whenever someone upstreams it.
+  Turning them on under `-D warnings` would force changes across `src/`, and
+  every such change belongs upstream first. The `unwrap`s that mattered — the
+  ones on the compaction publish path, which ran on a background thread — are
+  already gone; what is left is mostly `try_into().unwrap()` on fixed-size
+  slices, which collapses behind three helpers whenever someone upstreams it.
+
+The edition is no longer a departure. `gen` became `generation` upstream, which
+is what let the crate move to edition 2024 with the rest of the workspace.
 
 ## What it does today
 
 A single-crate LSM engine: memtable, write-ahead log, block-based SSTables with
-Bloom filters, size-tiered compaction on a background thread, and a LevelDB-style
-manifest with a `CURRENT` pointer as the authoritative record of which SSTables
-are live. `Db` is `Send + Sync` with a `&self` API and no async anywhere, which
-is exactly the shape Keel's apply loop wants.
+Bloom filters, size-tiered compaction, atomic multi-key batches, range scans, and
+a LevelDB-style manifest with a `CURRENT` pointer as the authoritative record of
+which SSTables are live. `Db<StdFs>` is `Send + Sync` with a `&self` API and no
+async anywhere, which is exactly the shape Keel's apply loop wants; every file
+operation goes through a seam, and background work can be handed to the caller,
+which is exactly the shape Keel's simulator needs.
 
 Recovery already discards a torn tail rather than trying to repair it: both the
 WAL and the manifest replay their frames and stop cleanly at the first truncated
@@ -78,53 +79,63 @@ Recorded here because they are the reason to trust — or not trust — what is 
   manifest forward, deleted the other's generation, and reclaimed the other's
   SSTables as orphans. The lock caught a test that had been relying on this.
 
-## What has to change before it can be a Raft state machine
+## What M1 Phase 3 changed, upstream
 
-Recorded here so the work is visible rather than discovered. None of it is done.
+Six pull requests, merged upstream and vendored here at the commit named above.
+Each is listed with the thing it makes possible rather than with what it did.
 
-**Atomic multi-key writes (FR-6).** There is no `write_batch`. Every mutation is
-one record, one WAL frame, one fsync, and the frame format has no notion of a
-group. Raft needs `applied_index` to become durable in the *same* atomic write as
-the data it describes, or a crash mid-apply leaves the two disagreeing and apply
-stops being idempotent on replay. This needs one frame per batch under one CRC,
-and a key namespace so `applied_index` and the session table cannot collide with
-user keys.
+- **[#2](https://github.com/BhaveshThapar/LSM-Tree-Key-Value-Storage-Engine/pull/2) — `Maintenance::Manual`.**
+  `Db::open` spawned two threads, and a deterministic harness cannot have a
+  thread deciding when a flush happens: the claim is that a run is a function of
+  the seed, and a thread makes it a function of the scheduler too. `Db::maintain`
+  does one unit of that work and says whether more remains. `Db::flush_only` is
+  the bounded half of `Db::flush`, which is what a snapshot needs (FR-9's 50 ms
+  stall budget cannot include a merge of unbounded size).
+- **[#3](https://github.com/BhaveshThapar/LSM-Tree-Key-Value-Storage-Engine/pull/3) — the injectable filesystem.**
+  `Fs` and `File`, with `StdFs` doing exactly what the engine did before.
+  Neither trait requires `Send` or `Sync`: `Db<StdFs>` is still both and still
+  spawns threads, while `Db::open_manual` takes an `Rc<RefCell<_>>` filesystem
+  and gives back a handle that is neither — which is what the simulator needs,
+  and why the thread bounds sit on the constructor rather than on the trait.
+  This is the commitment this file made and it is kept.
+- **[#4](https://github.com/BhaveshThapar/LSM-Tree-Key-Value-Storage-Engine/pull/4) — file headers, and a refusal.**
+  Magic and version on the WAL and the manifest, so a later format change cannot
+  be mistaken for corruption. The header alone would not have been enough: a
+  manifest that holds bytes and not one readable frame is now *refused*, because
+  reading it as empty is not a failed open but a successful one that reclaims
+  every SSTable in the directory.
+- **[#5](https://github.com/BhaveshThapar/LSM-Tree-Key-Value-Storage-Engine/pull/5) — `write_batch`, and `SyncMode`.**
+  FR-6's atomicity: one frame, one CRC, so a crash takes all of a batch or none
+  of it. `Options::sync_wal` becomes a `SyncMode` — the old `bool` promised
+  durability that macOS `fsync` does not provide, and `Durable` is now
+  `F_FULLFSYNC` there, matching Keel's own ADR-013.
+- **[#6](https://github.com/BhaveshThapar/LSM-Tree-Key-Value-Storage-Engine/pull/6) — range scans and a multi-version MemTable.**
+  `Db::scan`, and the MemTable fix that had to come first: it kept only the
+  newest version per key, so a read through a snapshot returned `None` for a key
+  rewritten while both versions were buffered. A checkpoint built by reading
+  through a snapshot is now correct without a full flush in front of it, which
+  is what M2 depends on.
+- **[#7](https://github.com/BhaveshThapar/LSM-Tree-Key-Value-Storage-Engine/pull/7) — CRC32C, gated on the file's version.**
+  Both stacks checksum with the same polynomial now. The gate is the point:
+  changing the checksum alone would have made every existing frame fail, which
+  for the manifest means the reclamation above.
 
-**Group commit (FR-4).** One `fsync` per single-key write, serialised on the WAL
-mutex. Batched `fdatasync` is the difference between a usable write path and an
-unusable one.
+**One thing this file asked for did not land here, deliberately.** A key
+namespace keeping `applied_index` and the session table away from user keys is
+not the engine's business: `lsm_kv` is a general-purpose store, and the mapping
+from client keys to engine keys belongs to whatever owns that mapping. It lands
+in `keel-sm` at M1 Phase 4, where preventing the collision is a local matter
+rather than a reserved prefix imposed on every user of the engine.
 
-**Range scans (FR-6, FR-7).** No iterator at any layer; `SsTableReader` has no
-seek, and `iter_all` materialises a whole table. Needed for `scan`, and also for
-enumerating the session table to expire it.
+## What still has to change before it can be a Raft state machine
 
-**A multi-version memtable.** `MemTable` keeps only the newest version per key,
-so a read through an `lsm_kv::Snapshot` returns `None` for a key that was
-rewritten in the memtable — documented at `memtable.rs`, worked around in the
-model test by flushing first. A checkpoint built by reading through a snapshot is
-therefore wrong unless a full flush precedes it, which M2 depends on.
+Recorded here so the work is visible rather than discovered.
 
 **Checkpoints (FR-9).** No `checkpoint`/`restore`. Every ingredient exists —
 immutable SSTables, an authoritative manifest, atomic rename discipline — but
 `Manifest` is crate-private and `Manifest::open` *mutates*: it rolls the
 generation forward, deletes the old one, and reclaims any SSTable the manifest
 does not name. There is no read-only view to build a checkpoint from.
-
-**A flush that does not drain compaction.** `Db::flush()` also runs every pending
-compaction synchronously, which can take arbitrarily long. FR-9 wants a snapshot
-to stall writes for under 50 ms, so it needs a flush-only path.
-
-**An injectable filesystem.** Keel's simulator drives the real storage stack, so
-the engine's file operations have to go through a seam a seeded fault model can
-sit underneath. This is the largest mechanical diff Keel will carry against
-upstream, and it is why it lands alongside the WAL frame changes rather than
-separately: both rewrite the same I/O paths.
-
-**CRC-32/ISO-HDLC, not CRC32C.** Keel's log uses CRC32C and the two should agree.
-Cosmetic, and more dangerous than it looks: changing the checksum alone makes
-every existing frame fail its CRC, so the manifest replays to an empty state and
-`Db::open_with` deletes every SSTable in the directory. It ships with a file
-magic and version, validated before reclamation runs, or it does not ship.
 
 ### A naming collision to keep in mind
 

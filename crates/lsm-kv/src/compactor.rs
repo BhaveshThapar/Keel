@@ -8,10 +8,11 @@
 //! It holds only a `Weak` reference to the engine state, so it never keeps the
 //! database alive on its own.
 
-use std::sync::mpsc::Receiver;
 use std::sync::Weak;
+use std::sync::mpsc::Receiver;
 
 use crate::db::DbInner;
+use crate::fs::Fs;
 
 /// A message to the compaction thread.
 pub(crate) enum CompactMsg {
@@ -22,7 +23,7 @@ pub(crate) enum CompactMsg {
 }
 
 /// The compaction thread's main loop: drains triggers until shutdown.
-pub(crate) fn compaction_loop(rx: Receiver<CompactMsg>, inner: Weak<DbInner>) {
+pub(crate) fn compaction_loop<F: Fs>(rx: Receiver<CompactMsg>, inner: Weak<DbInner<F>>) {
     while let Ok(msg) = rx.recv() {
         match msg {
             CompactMsg::Shutdown => break,
