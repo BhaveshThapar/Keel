@@ -82,6 +82,19 @@ jobs:
           KEEL_SM_KILL_CYCLES: "1000"
         run: cargo test --release -p keel-sm --test kill_during_apply
 
+  # Three real processes over real sockets, killed and restarted. Its own job
+  # because it builds two binaries and spends most of its time waiting for
+  # elections, neither of which belongs in the unit-test job's budget.
+  cluster:
+    name: three real nodes serve traffic
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p keel-client --test cluster -- --test-threads=1
+
   determinism:
     name: the core replays identically
     runs-on: ubuntu-latest

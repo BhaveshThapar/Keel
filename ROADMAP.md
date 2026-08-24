@@ -20,7 +20,7 @@ low by about three times — and `scripts/check-docs.sh` and
 and committed result to what the tree actually contains. The second found three
 artifacts with no provenance header on the day it was written.
 
-**P2 through P9 are done.** `keel-rand`, `keel-api` and `keel-net` are in, `keel-raft` has
+**P2 through P10 are done.** `keel-rand`, `keel-api` and `keel-net` are in, `keel-raft` has
 `Input::StepDown`, `RaftCore::restore(cfg, Restored { .. })` and lease reads
 resolved inside the core, and the decisions are ADR-017 through ADR-019. The
 exit criterion holds: a `Message` round-trips identically through `TcpTransport`
@@ -78,7 +78,7 @@ One remains, and it is hard for the same reason:
 | ~~P7~~ | ~~`keel-server`: daemon, `/status`, `/metrics`, admin~~ | **Done** for the read-only surface: over a real socket, `/status` reports `sync_mode: "durable"`, `/metrics` parses the way a scraper parses it, and the ready file is published by rename. The admin *verbs* are still owed — see P10's deferred decision |
 | ~~P8~~ | ~~**The simulator drives the real stack**~~ | **Done.** Every profile sweeps clean over the real log and the real state machine; every artifact regenerated, the pinned fingerprints moved, and the CI budget re-derived from the new cost |
 | ~~P9~~ | ~~Model oracles, three demonstrations they have teeth~~ | **Done.** A reference state machine fed the committed log in order; five demonstrations, every control clean and every experiment dirty on the same seeds; the session, refusal and model counters all asserted non-zero |
-| P10 | `keel-client`, the `kv` CLI, history recorder, 3-node cluster in CI | The M1 exit criterion runs as a Rust integration test against real processes |
+| ~~P10~~ | ~~`keel-client`, the `kv` CLI, history recorder, 3-node cluster in CI~~ | **Done.** Three real processes, a client that finds the leader by itself, writes that survive the leader being killed, and a recorded history |
 | P11 | Maelstrom `lin-kv` without a nemesis; M1 reconciliation | The full M1 gate set green in one run, plus a committed `results/maelstrom/` artifact |
 
 **Sequencing that is not optional:** P2 before everything (leaf crates); P3
@@ -161,13 +161,11 @@ the right phase rather than at the last moment:
 |---|---|
 | Linux hardware: bare metal, or cloud in one placement group (which yields Exploratory tier only, and therefore no headline number) | P26 |
 | TR-3's "≥ 2,000 seeds": distinct seeds (P19 required) or seed-runs (already met) | P19 |
-| `keel-client` blocking or async | P10 |
 | Commit the fuzz corpus and `.hlog` interval logs, or CI-cache them | P22 / P25 |
 | A nightly toolchain for `cargo-fuzz`, or drop coverage guidance and ASan | P22 |
 | Maelstrom pinned by tarball + sha256, or an operator-provided `MAELSTROM_HOME` | P11 |
 | Publish the crates to crates.io at the tag, or keep the dry-run as a hygiene check | P28 |
 | `v1.0.0` waits on a multi-day soak, or the 4-hour nightly is enough and the gap goes in "Not claimed" | P28 |
-| Ship the admin verbs in M1's CLI, or defer FR-13's admin half to M3 | P10 |
 
 Two were taken in M1 Phase 2 and are recorded here so they are not re-opened.
 The log frame gains no self-identifying `(seq, offset)`, so the format stays at
