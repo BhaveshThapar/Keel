@@ -20,7 +20,7 @@ low by about three times — and `scripts/check-docs.sh` and
 and committed result to what the tree actually contains. The second found three
 artifacts with no provenance header on the day it was written.
 
-**P2 through P7 are done.** `keel-rand`, `keel-api` and `keel-net` are in, `keel-raft` has
+**P2 through P8 are done.** `keel-rand`, `keel-api` and `keel-net` are in, `keel-raft` has
 `Input::StepDown`, `RaftCore::restore(cfg, Restored { .. })` and lease reads
 resolved inside the core, and the decisions are ADR-017 through ADR-019. The
 exit criterion holds: a `Message` round-trips identically through `TcpTransport`
@@ -49,20 +49,22 @@ Twenty-seven phases, after the one just landed. Each is a milestone's worth of c
 a commit. The sequencing constraint is stated where it exists; where it is not
 stated, the order is preference rather than requirement.
 
-**Two of the phases ahead are the hard ones**, and they are hard for the same
-reason M1 Phase 2 was — each changes what every existing seed means, so every
-committed artifact goes stale in the same commit or a real regression becomes
-indistinguishable from a schedule change:
+**One of the two hard phases is behind us.** P8 changed what every existing seed
+means, and the discipline held: all fifteen pinned fingerprints moved in the same
+commit as the code, every artifact was re-recorded, the README's quoted sweep was
+rewritten, and the CI budget was re-derived because a committed entry costs more
+to apply than to count. Turning it on found two real defects, both recorded in
+that commit.
 
-1. **P8** (the simulator on the real stack). Every committed artifact and both
-   quoted README/CORRECTNESS blocks must be regenerated **in the same commit**,
-   or a real regression is indistinguishable from a schedule change in the diff.
-2. **P16** (snapshots in the simulator). A predicted false positive —
+One remains, and it is hard for the same reason:
+
+1. **P16** (snapshots in the simulator). A predicted false positive —
    `LogDigest` rebasing to `(snap, 0)` on the install path *and* on the far more
    common restart path ([digest.rs:84](crates/keel-sim/src/digest.rs#L84),
    [world.rs:527](crates/keel-sim/src/world.rs#L527)) — presents as a State
    Machine Safety violation **on correct code**. Fix it before the first profile
-   takes a snapshot, or the whole sweep goes red for a day.
+   takes a snapshot, or the whole sweep goes red for a day. Every artifact and
+   the pinned fingerprint table move again in that commit.
 
 ### M1 — a cluster that serves traffic
 
@@ -74,7 +76,7 @@ indistinguishable from a schedule change:
 | ~~P5~~ | ~~Kill a node mid-apply~~ | **Done.** 1,000 kill cycles clean; the split-batch build is caught at cycle one, the window being aimed at rather than waited for |
 | ~~P6~~ | ~~`keel-node`: the `Ready` loop, group commit, reads~~ | **Done.** Measured from the log's own counters: a hundred queued cost one append and one sync, a hundred singly cost a hundred of each |
 | ~~P7~~ | ~~`keel-server`: daemon, `/status`, `/metrics`, admin~~ | **Done** for the read-only surface: over a real socket, `/status` reports `sync_mode: "durable"`, `/metrics` parses the way a scraper parses it, and the ready file is published by rename. The admin *verbs* are still owed — see P10's deferred decision |
-| P8 | **The simulator drives the real stack** | Every profile sweeps clean over the real log *and* the real state machine; every committed artifact was regenerated in this commit |
+| ~~P8~~ | ~~**The simulator drives the real stack**~~ | **Done.** Every profile sweeps clean over the real log and the real state machine; every artifact regenerated, the pinned fingerprints moved, and the CI budget re-derived from the new cost |
 | P9 | Model oracles, three demonstrations they have teeth | All three experiments fail, all three controls pass, on the same seeds; every coverage counter non-zero |
 | P10 | `keel-client`, the `kv` CLI, history recorder, 3-node cluster in CI | The M1 exit criterion runs as a Rust integration test against real processes |
 | P11 | Maelstrom `lin-kv` without a nemesis; M1 reconciliation | The full M1 gate set green in one run, plus a committed `results/maelstrom/` artifact |
