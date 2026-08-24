@@ -437,6 +437,13 @@ impl Ord for Scheduled {
 struct SimNode {
     id: NodeId,
     core: RaftCore,
+    /// The digest at this node's snapshot floor.
+    ///
+    /// Held on the node rather than in the `LogDigest`, because it has to
+    /// outlive the crash that drops one — the entries below a compacted floor
+    /// are gone, so their cumulative hash cannot be recomputed and has to be
+    /// carried. A real node carries the same thing in its snapshot metadata.
+    snapshot_digest: (Index, u64),
     /// The node's disk. Held here as well as by the `Log`, because it has to
     /// outlive the crash that drops one: cloning gives another handle on the
     /// same bytes.
@@ -655,6 +662,7 @@ impl World {
                     dir,
                     log,
                     digest: LogDigest::new(),
+                    snapshot_digest: (0, 0),
                     alive: true,
                     epoch: 0,
                     tick_period,
@@ -1048,7 +1056,13 @@ impl World {
             },
         );
         node.log = Some(log);
-        node.digest = LogDigest::new();
+        // Rebased at the floor this node had, not at zero. A digest that
+        // started at `(floor, 0)` would compare as different from every peer
+        // that still holds the entries below it — a State Machine Safety
+        // violation reported on correct code, which is the failure this whole
+        // arrangement exists to avoid.
+        let (floor, floor_digest) = node.snapshot_digest;
+        node.digest = LogDigest::rebased(floor, floor_digest);
         // The store is memory, and a crash takes memory. Rebuilt empty, so the
         // log replays into it from the floor.
         node.sm = StateMachine::new(MemStore::new());
@@ -1293,6 +1307,13 @@ impl World {
             return;
         }
         let (changed, discarded) = node.digest.sync(node.core.log());
+        // A floor whose digest nobody carried. Reported rather than papered
+        // over: continuing would compare a made-up number against real ones,
+        // and the comparison would fail on correct code.
+        let orphaned_floor = node.digest.floor_without_a_digest();
+        // Kept in step, so a later restart rebases at the floor this node
+        // actually has rather than at the one it had when it started.
+        node.snapshot_digest = node.digest.base();
         let role = node.core.role();
         let term = node.core.term();
         let last_index = node.core.log().last_index();
@@ -1321,6 +1342,17 @@ impl World {
         }
 
         let mut found: Vec<Violation> = Vec::new();
+
+        if let Some(index) = orphaned_floor {
+            found.push(Violation {
+                property: "a compacted floor carries its digest",
+                detail: format!(
+                    "node {id}'s log floor moved to index {index} and nothing carried the \
+                     cumulative digest there. Comparing this node against its peers from \
+                     here would compare an invented number against real ones"
+                ),
+            });
+        }
 
         if became_leader {
             self.stats.elections += 1;

@@ -38,6 +38,11 @@ pub struct LogDigest {
     base_digest: u64,
     /// `entries[i]` describes index `base_index + 1 + i`.
     entries: Vec<(Term, u64)>,
+    /// Set when the log's floor moved above everything this digest holds and no
+    /// digest for that floor was supplied. Read by the caller, which turns it
+    /// into a violation: continuing would compare a made-up number against real
+    /// ones.
+    floor_without_a_digest: Option<Index>,
 }
 
 impl LogDigest {
@@ -46,7 +51,55 @@ impl LogDigest {
             base_index: 0,
             base_digest: 0,
             entries: Vec::new(),
+            floor_without_a_digest: None,
         }
+    }
+
+    /// A digest that starts above zero, at a floor whose digest is known.
+    ///
+    /// This is what a node holds after a restart from a log that has been
+    /// compacted: the entries below the snapshot are gone, so their cumulative
+    /// hash cannot be recomputed — it has to be carried.
+    ///
+    /// Starting such a node at `(snapshot_index, 0)` instead is the shape of a
+    /// false State Machine Safety violation, and it fires on *correct* code:
+    /// its peers, which never restarted, hold the real cumulative hash at that
+    /// index, and the oracle compares the two and finds them different. Nothing
+    /// is wrong except the bookkeeping.
+    pub fn rebased(base_index: Index, base_digest: u64) -> Self {
+        Self {
+            base_index,
+            base_digest,
+            entries: Vec::new(),
+            floor_without_a_digest: None,
+        }
+    }
+
+    /// Adopt a snapshot installed from a leader: the floor and the digest there.
+    ///
+    /// Unused until a profile installs one, which is P16's second half. Landed
+    /// with the rebase because it is the same fix seen from the other side: a
+    /// floor arrives, and its digest arrives with it rather than being guessed.
+    #[allow(dead_code)]
+    pub fn adopt_snapshot(&mut self, index: Index, digest: u64) {
+        if index < self.base_index {
+            return;
+        }
+        self.entries.clear();
+        self.base_index = index;
+        self.base_digest = digest;
+        self.floor_without_a_digest = None;
+    }
+
+    /// The floor this digest could not account for, if there is one.
+    pub fn floor_without_a_digest(&self) -> Option<Index> {
+        self.floor_without_a_digest
+    }
+
+    /// The digest at the floor: what a node carries across a restart, and what
+    /// a snapshot carries to a follower installing it.
+    pub fn base(&self) -> (Index, u64) {
+        (self.base_index, self.base_digest)
     }
 
     pub fn last_index(&self) -> Index {
@@ -81,14 +134,22 @@ impl LogDigest {
                     let drop = (snap - self.base_index) as usize;
                     self.entries.drain(..drop.min(self.entries.len()));
                     self.base_digest = digest;
+                    self.base_index = snap;
                 }
+                // The floor jumped past everything this digest holds, so the
+                // cumulative hash there cannot be computed from what is left.
+                //
+                // It is not zero, and pretending it is was the bug this branch
+                // used to have: a node whose floor moved that way would compare
+                // as different from every peer that had the entries, on
+                // perfectly correct code. The digest has to be *carried* — by
+                // `rebased` across a restart, by `adopt_snapshot` on an install —
+                // and a caller that has not done so is told rather than quietly
+                // given a wrong answer.
                 None => {
-                    // The snapshot jumped past anything we had; start fresh from it.
-                    self.entries.clear();
-                    self.base_digest = 0;
+                    self.floor_without_a_digest = Some(snap);
                 }
             }
-            self.base_index = snap;
         }
 
         // Drop anything above the log's end, then anything the log rewrote.
@@ -129,5 +190,83 @@ impl LogDigest {
 impl Default for LogDigest {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod rebase_tests {
+    use super::*;
+
+    /// The property P16 turns on, and the reason its order is fixed.
+    ///
+    /// A node whose log has been compacted holds a digest that starts at the
+    /// floor. It must agree, at every index above that floor, with a node that
+    /// never compacted and holds the whole thing. Starting the compacted one at
+    /// `(floor, 0)` instead makes them disagree everywhere — a State Machine
+    /// Safety violation reported on correct code, on every node that ever
+    /// restarts after a snapshot.
+    #[test]
+    fn a_rebased_digest_agrees_with_one_that_was_never_compacted() {
+        let entries: Vec<Entry> = (1..=20)
+            .map(|i| Entry::new(1, i, EntryPayload::Normal(vec![i as u8; 4].into())))
+            .collect();
+
+        let mut whole = LogDigest::new();
+        let full_log = RaftLog::restore(None, entries.clone(), 20);
+        whole.sync(&full_log);
+
+        // The floor, and the digest there — the pair a real node carries in its
+        // snapshot metadata.
+        let (floor, floor_digest) = (10, whole.at(10).expect("a digest at the floor").1);
+
+        let mut rebased = LogDigest::rebased(floor, floor_digest);
+        let compacted = RaftLog::restore(Some((floor, 1)), entries[floor as usize..].to_vec(), 20);
+        rebased.sync(&compacted);
+
+        assert_eq!(rebased.base(), (floor, floor_digest));
+        for index in floor + 1..=20 {
+            assert_eq!(
+                rebased.at(index),
+                whole.at(index),
+                "the two disagree at index {index}, so a node that restarted after \
+                 a snapshot would be reported as violating State Machine Safety"
+            );
+        }
+    }
+
+    /// And the failure it replaces: a floor nobody carried is refused rather
+    /// than answered with a made-up number.
+    #[test]
+    fn a_floor_nobody_carried_is_reported_rather_than_invented() {
+        let entries: Vec<Entry> = (11..=20)
+            .map(|i| Entry::new(1, i, EntryPayload::Normal(vec![i as u8; 4].into())))
+            .collect();
+        let compacted = RaftLog::restore(Some((10, 1)), entries, 20);
+
+        // Started at zero, as a node that forgot to carry its floor would be.
+        let mut orphaned = LogDigest::new();
+        orphaned.sync(&compacted);
+        assert_eq!(
+            orphaned.floor_without_a_digest(),
+            Some(10),
+            "a digest that could not account for its floor said nothing about it"
+        );
+
+        // Carried properly, it says nothing is wrong.
+        let mut carried = LogDigest::rebased(10, 0xabcd);
+        carried.sync(&compacted);
+        assert_eq!(carried.floor_without_a_digest(), None);
+    }
+
+    /// Installing a snapshot adopts the floor and the digest together.
+    #[test]
+    fn adopting_a_snapshot_takes_the_digest_with_the_floor() {
+        let mut digest = LogDigest::new();
+        digest.adopt_snapshot(50, 0x1234_5678);
+        assert_eq!(digest.base(), (50, 0x1234_5678));
+        assert_eq!(digest.at(50), Some((0, 0x1234_5678)));
+        // A snapshot behind the floor is ignored rather than pulling it back.
+        digest.adopt_snapshot(10, 0);
+        assert_eq!(digest.base(), (50, 0x1234_5678));
     }
 }
