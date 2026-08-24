@@ -1,0 +1,25 @@
+[package]
+name = "keel-server"
+description = "The Keel node daemon: an HTTP status and metrics surface over a running Ready loop."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+categories = ["database-implementations"]
+keywords = ["raft", "server", "prometheus", "metrics", "daemon"]
+
+[dependencies]
+keel-api = { workspace = true }
+keel-log = { workspace = true }
+keel-net = { workspace = true, features = ["tcp"] }
+keel-node = { workspace = true, features = ["lsm"] }
+keel-raft = { workspace = true }
+keel-sm = { workspace = true, features = ["lsm"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

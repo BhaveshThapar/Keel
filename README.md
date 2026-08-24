@@ -10,7 +10,7 @@ verified by a deterministic simulator that replays any failure from a seed.
 
 ## What is here today
 
-Eight crates.
+Nine crates.
 
 **[`keel-raft`](crates/keel-raft/)** — a Raft consensus core that does no I/O,
 owns no threads, and reads no clock. You feed it events and it hands back a
@@ -48,6 +48,12 @@ retried command applies exactly once. Two stores, one conformance suite.
 **[`keel-node`](crates/keel-node/)** — the loop that turns a `Ready` into I/O in
 the order the contract requires: persist, then one fsync, then send, then apply.
 Group commit falls out of that rather than being bolted on.
+
+**[`keel-server`](crates/keel-server/)** — what a running node says about
+itself: `/status`, `/metrics` as Prometheus text exposition, and a ready file
+published by rename. The first field of the status is whether this node's fsyncs
+survive a power cut, because a node that quietly does not looks identical to one
+that does until the machine loses power.
 
 The consensus core exists to make the simulator possible. Because the core is a pure function
 of its inputs, a run is a pure function of `(seed, config)`: any failure is

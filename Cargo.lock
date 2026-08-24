@@ -343,6 +343,20 @@ name = "keel-rand"
 version = "0.1.0"
 
 [[package]]
+name = "keel-server"
+version = "0.1.0"
+dependencies = [
+ "keel-api",
+ "keel-log",
+ "keel-net",
+ "keel-node",
+ "keel-raft",
+ "keel-sm",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "keel-sim"
 version = "0.1.0"
 dependencies = [

@@ -63,6 +63,16 @@ row that was never written.
 | A write replicates and both nodes apply the same prefix | `group_commit::a_write_replicates_to_a_peer_before_it_commits` | enforced |
 | The simulator cannot reach a socket or a storage engine | `simulation::the_simulator_cannot_reach_a_socket_or_a_storage_engine` (dependency assertion) | enforced |
 
+## What a node says about itself
+
+| Property | Enforced by | Status |
+|---|---|---|
+| A node reports over a real socket, and answers only `GET` on two paths | `admin_surface::a_node_reports_itself_over_a_real_socket`; `tests::only_get_is_answered` | enforced |
+| `/metrics` parses as Prometheus text exposition | `admin_surface::a_node_reports_itself_over_a_real_socket` parses it the way a scraper does; `metrics::tests::the_output_parses_as_exposition` | enforced |
+| A node that is not power-loss durable says so | `admin_surface::a_node_that_is_not_durable_says_so` — in `/status` and as a metric | enforced |
+| The status is well-formed JSON whatever an operating system put in a failure message | `status::tests::a_failure_message_with_quotes_and_newlines_is_escaped` | enforced |
+| The ready file is whole or absent, never half-written | `admin_surface::the_ready_file_is_written_whole_or_not_at_all` | enforced |
+
 ## The wire
 
 | Property | Enforced by | Status |

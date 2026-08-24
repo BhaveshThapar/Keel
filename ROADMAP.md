@@ -20,7 +20,7 @@ low by about three times — and `scripts/check-docs.sh` and
 and committed result to what the tree actually contains. The second found three
 artifacts with no provenance header on the day it was written.
 
-**P2 through P6 are done.** `keel-rand`, `keel-api` and `keel-net` are in, `keel-raft` has
+**P2 through P7 are done.** `keel-rand`, `keel-api` and `keel-net` are in, `keel-raft` has
 `Input::StepDown`, `RaftCore::restore(cfg, Restored { .. })` and lease reads
 resolved inside the core, and the decisions are ADR-017 through ADR-019. The
 exit criterion holds: a `Message` round-trips identically through `TcpTransport`
@@ -73,7 +73,7 @@ indistinguishable from a schedule change:
 | ~~P4~~ | ~~`keel-sm`: store seam, atomic `applied_index`, sessions~~ | **Done.** `MemStore` and `LsmStore` pass one suite; a retried `(client, seq)` returns the cached response with zero writes; a hundred increments retried once each leave the counter at a hundred |
 | ~~P5~~ | ~~Kill a node mid-apply~~ | **Done.** 1,000 kill cycles clean; the split-batch build is caught at cycle one, the window being aimed at rather than waited for |
 | ~~P6~~ | ~~`keel-node`: the `Ready` loop, group commit, reads~~ | **Done.** Measured from the log's own counters: a hundred queued cost one append and one sync, a hundred singly cost a hundred of each |
-| P7 | `keel-server`: daemon, `/status`, `/metrics`, admin | A node starts, writes its ready file, reports `sync_mode: "durable"`, and `/metrics` parses as Prometheus text exposition |
+| ~~P7~~ | ~~`keel-server`: daemon, `/status`, `/metrics`, admin~~ | **Done** for the read-only surface: over a real socket, `/status` reports `sync_mode: "durable"`, `/metrics` parses the way a scraper parses it, and the ready file is published by rename. The admin *verbs* are still owed — see P10's deferred decision |
 | P8 | **The simulator drives the real stack** | Every profile sweeps clean over the real log *and* the real state machine; every committed artifact was regenerated in this commit |
 | P9 | Model oracles, three demonstrations they have teeth | All three experiments fail, all three controls pass, on the same seeds; every coverage counter non-zero |
 | P10 | `keel-client`, the `kv` CLI, history recorder, 3-node cluster in CI | The M1 exit criterion runs as a Rust integration test against real processes |

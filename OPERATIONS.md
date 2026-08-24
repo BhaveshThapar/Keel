@@ -164,6 +164,34 @@ The second is not redundant. It compiles the safety guard out and asserts the
 bug appears, so a change that accidentally makes the guard unreachable fails
 here instead of passing quietly.
 
+## What a running node says about itself
+
+Two endpoints, both read-only, both answered on the consensus loop's own turn
+rather than from a thread — a scrape pays a few milliseconds of latency and
+replication pays nothing.
+
+```
+GET /status    -> application/json
+GET /metrics   -> text/plain; version=0.0.4
+```
+
+`/status`'s first field is `sync_mode`, and it is first because it is the field
+an operator most needs and least expects to be wrong. `durable` means this
+node's fsyncs survive a power cut — `F_FULLFSYNC` on macOS, `fdatasync` on Linux
+(ADR-013). A node running in `barrier` looks identical to a durable one right up
+until the machine loses power, so it says so, and `keel_sync_durable` exports the
+same fact as a metric for anyone who alerts on it.
+
+There are no histograms yet. A commit-latency histogram is what FR-13 wants and
+it needs the host loop to time its own fsyncs, which is M4's work; exporting a
+made-up bucket layout now would be worse than exporting nothing, because a
+dashboard would be built on it.
+
+The **ready file** is written after recovery, published by rename so a
+supervisor can never read a half-written one. Waiting for the port to open would
+say only that a socket was bound, which happens before a thirty-gigabyte log has
+been replayed.
+
 ## Planned
 
 - `keel server` — running a cluster, the admin CLI, Prometheus metrics, Grafana, Docker Compose (M1–M4).
