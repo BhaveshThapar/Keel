@@ -12,7 +12,7 @@ verified by a deterministic simulator that replays any failure from a seed.
 
 ## What is here today
 
-Twelve crates.
+Thirteen crates.
 
 **[`keel-raft`](crates/keel-raft/)** — a Raft consensus core that does no I/O,
 owns no threads, and reads no clock. You feed it events and it hands back a
@@ -73,6 +73,12 @@ time. A run that injects no fault, or gets no acknowledgement, fails rather than
 reporting a pass. Its kill loop — a thousand cycles, 7,311 acknowledged writes,
 none lost — found [KEEL-9](BUGS.md), a session-identity collision the simulator
 could not have found, because the simulator has no client connections to park.
+
+**[`keel-fuzz`](crates/keel-fuzz/)** — six fuzz targets, one per place a byte
+string arrives from somewhere this process does not control, plus a seeded smoke
+harness that runs them on stable on every commit. A corrupted log record is
+rejected sixty times out of sixty; with the checksum compiled out the same
+corruptions are accepted, which is what makes the first number mean anything.
 
 The consensus core exists to make the simulator possible. Because the core is a pure function
 of its inputs, a run is a pure function of `(seed, config)`: any failure is

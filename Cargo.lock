@@ -324,6 +324,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-fuzz"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "keel-api",
+ "keel-log",
+ "keel-net",
+ "keel-raft",
+ "keel-rand",
+ "keel-sm",
+ "tempfile",
+]
+
+[[package]]
 name = "keel-log"
 version = "0.1.0"
 dependencies = [

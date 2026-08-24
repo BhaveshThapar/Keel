@@ -25,6 +25,7 @@
 // known-good value is a different thing entirely.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+mod audit;
 mod confchange;
 mod log;
 mod message;
@@ -35,6 +36,7 @@ mod rng;
 mod tracker;
 mod types;
 
+pub use audit::{AuditError, ReadyAudit};
 pub use confchange::ConfChangeError;
 pub use log::{AppendOutcome, RaftLog};
 pub use message::{Message, MessageBody};

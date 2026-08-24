@@ -19,6 +19,7 @@ keel-node = { path = "crates/keel-node", version = "0.1.0" }
 keel-server = { path = "crates/keel-server", version = "0.1.0" }
 keel-rand = { path = "crates/keel-rand", version = "0.1.0" }
 keel-chaos = { path = "crates/keel-chaos", version = "0.1.0" }
+keel-fuzz = { path = "crates/keel-fuzz", version = "0.1.0" }
 keel-client = { path = "crates/keel-client", version = "0.1.0" }
 keel-maelstrom = { path = "crates/keel-maelstrom", version = "0.1.0" }
 lsm_kv = { path = "crates/lsm-kv", version = "0.1.0" }

@@ -166,6 +166,23 @@ of these, because it replaces the parts they live in: a scheduler, a TCP stack, 
 | A run that injected no fault, or got no acknowledgement, is refused rather than reported as a pass | `keel-chaos run`, checked in `results/chaos/real-cluster.txt` | enforced |
 | A jump reaches `CLOCK_MONOTONIC`, not just the wall clock | `keel-chaos clock-check`, recorded in `results/chaos/clock-jump.txt` — Linux only, see [ADR-026](DESIGN.md) | recorded, not in CI |
 
+## Parsers, against bytes they did not write
+
+Six targets, one per place a byte string arrives from somewhere this process
+does not control. The contract each is held to is that it does not panic:
+returning an error is correct, refusing to decode is correct, and producing
+nonsense from nonsense is correct — but every one of these is reached from a
+network or a disk, so a panic is a node a stranger can stop with one bad byte.
+
+| Property | Enforced by | Status |
+|---|---|---|
+| Six targets compile and survive a smoke run | `every_target_survives_a_smoke_run` | enforced |
+| …over inputs that have structure, rather than noise no parser gets past | the same test: more than a quarter of inputs must be structured | enforced |
+| A smoke run replays exactly from its seed | `a_smoke_run_is_a_pure_function_of_its_seed` | enforced |
+| A target that is written and never wired up is a failure, not an omission | `every_target_is_named_once` | enforced |
+| A corrupted record is rejected | `a_corrupted_record_is_rejected` — sixty corruptions, none accepted | enforced |
+| …and is accepted once the checksum is compiled out | `the_corruption_is_accepted_without_the_checksum` (`--features negative-demos`) — the half that makes the other half a test of the checksum | enforced |
+
 ## The host loop
 
 | Property | Enforced by | Status |
@@ -175,6 +192,13 @@ of these, because it replaces the parts they live in: a scheduler, a TCP stack, 
 | Batching changes the cost and not the outcome | `group_commit::batching_changes_the_cost_and_not_the_outcome` | enforced |
 | A lone proposal is not held waiting for company | `group_commit::a_single_proposal_is_not_held_waiting_for_company` | enforced |
 | A write replicates and both nodes apply the same prefix | `group_commit::a_write_replicates_to_a_peer_before_it_commits` | enforced |
+| Messages are never sent before the entries and hard state they depend on are durable | `audit::tests::sending_before_persisting_is_caught`, and `ReadyAudit` wired into the in-process cluster | enforced |
+| A `Ready` is not acknowledged before its messages have gone out | `audit::tests::acknowledging_before_sending_is_caught` — the inversion the repository's own test harness was making until P22 | enforced |
+| Committed entries are not applied before the same `Ready`'s messages are sent | `audit::tests::applying_before_sending_is_caught` | enforced |
+| A `Ready` with nothing to persist may send without an fsync | `audit::tests::a_ready_with_nothing_to_persist_may_send_immediately` — or the audit would fail correct hosts on every heartbeat | enforced |
+| Several `Ready`s outstanding at once is permitted, because that is group commit | `audit::tests::several_readys_may_be_outstanding_at_once` | enforced |
+| One `Ready` may be acknowledged twice, by a host whose fsync and apply land separately | `audit::tests::one_ready_may_be_acknowledged_twice` | enforced |
+| The applied watermark never goes backwards | `audit::tests::an_applied_watermark_that_goes_backwards_is_caught` | enforced |
 | The simulator cannot reach a socket or a storage engine | `simulation::the_simulator_cannot_reach_a_socket_or_a_storage_engine` (dependency assertion) | enforced |
 
 ## What a node says about itself

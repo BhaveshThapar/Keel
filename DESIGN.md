@@ -788,6 +788,82 @@ would name its cause rather than reading as a regression.
 
 ---
 
+## ADR-029 — The fuzz targets are ordinary functions, and stable runs them
+
+Six targets, one per place a byte string arrives from somewhere this process
+does not control: a client's request body, a peer's reply, a socket mid-stream,
+a disk after a crash tore a write in half, a snapshot another node sent, and a
+message from a peer that may be running different code. Each is a `pub fn` over
+`&[u8]` in `keel-fuzz`, and the contract is that it does not panic.
+
+**The decision: no nightly toolchain.** `cargo-fuzz` needs nightly for
+`-Z sanitizer=address` and `-C instrument-coverage`, and `rust-toolchain.toml`
+pins stable for everything else. Splitting the toolchain would buy
+coverage-guided fuzzing that in practice runs when somebody remembers to run it;
+plain functions buy a smoke harness that runs the same six targets on every
+commit, on the toolchain everything else already uses. The `fuzz/` directory
+wires them to libFuzzer in eight lines each for anyone who does have nightly,
+and a crash it finds replays on stable as
+`keel_fuzz::<target>(&std::fs::read(path)?)`.
+
+What that gives up is real: a blind generator cannot keep the inputs that
+reached new code and mutate those, and it will not find what a campaign finds.
+It is not claimed to. What it catches is a target that stopped compiling, a
+parser that started panicking, and a checksum that stopped being checked — on
+the day it happens rather than before the next release.
+
+**The generator is not uniform, deliberately.** Uniformly random bytes fail the
+first length check in every parser and reach nothing, which is the standard way
+a fuzzing harness reports millions of executions and no coverage. Most inputs
+are a valid encoding with bytes flipped; the smoke test asserts that more than a
+quarter of them had structure, so a generator that regressed to noise would fail
+rather than quietly stop testing anything.
+
+**The checksum demonstration is a function, not a script.** Both builds run the
+same corruption over the same bytes in the same process, and only the rule
+differs: intact, sixty corrupted segments are all rejected; with
+`unsafe_skip_record_crc` compiled out, they are accepted. A budget of sixty
+rather than one attempt, because a flipped byte can land somewhere a structural
+check rejects for another reason, and the claim is about the checksum rather
+than about one offset.
+
+---
+
+## ADR-030 — The `Ready` contract is audited by the host, because the core cannot see it
+
+`Ready`'s documentation states an order — persist, then send, then apply, then
+`advance` — and calls it the safety contract rather than a suggestion. Nothing
+checked it. Four host loops drive this core, each written by hand, and the only
+runtime assertion anywhere was that an acknowledged `Ready` number had been
+issued.
+
+`ReadyAudit` is a host-side auditor: the host says what it did, in the order it
+did it, and the auditor holds it to the contract.
+
+**Why not an assertion inside the core.** The core cannot see the ordering. It
+hands out a `Ready` and is told a watermark later; whether the host fsynced
+before it sent is invisible from inside, because both look like "time passed".
+Only the host knows, so only the host can be asked.
+
+**It found the repository's own test harness inverted.** The in-process cluster
+in `keel-raft/tests/common` applied committed entries and called `advance`
+*before* sending that `Ready`'s messages. Nothing observable depended on it —
+the harness owns the queue it delivers through, so no test could see the
+difference — which is exactly why it survived review, and why every membership,
+election and read property in the repository rested on a loop that did not run
+the documented order.
+
+**What it deliberately permits.** More than one `Advance` per `Ready`. A host
+whose fsync completes at one moment and whose apply finishes at another has two
+watermarks to report and no reason to hold the first until the second; the
+simulator does exactly this and is correct. An auditor that assumed one
+acknowledgement per `Ready` would have rejected the correct host and been turned
+off. Pipelining is permitted for the same reason: several `Ready`s outstanding
+at once is where group commit comes from. A host that believes it is sequential
+can say so and have that belief checked instead.
+
+---
+
 ## Planned
 
 These are decided but not yet built. They are recorded here so the shape is

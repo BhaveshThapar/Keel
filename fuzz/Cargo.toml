@@ -1,0 +1,70 @@
+# The libFuzzer wiring, for anyone who has a nightly toolchain.
+#
+# Its own [workspace] table on purpose. The root manifest globs
+# members = ["crates/*"] with no exclude, so a package here is unmatched and
+# cargo refuses to build the tree at all ("current package believes it's in a
+# workspace when it's not") unless this directory opts out of the workspace.
+#
+# Nothing in CI builds this. The targets themselves live in crates/keel-fuzz and
+# are exercised on stable by its smoke harness on every commit; these files are
+# eight lines each and exist so that a real campaign is one command away rather
+# than a rewrite. See ADR-029.
+[package]
+name = "keel-fuzz-libfuzzer"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+keel-fuzz = { path = "../crates/keel-fuzz" }
+
+[profile.release]
+debug = true
+
+[[bin]]
+name = "api_proposal"
+path = "fuzz_targets/api_proposal.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "api_response"
+path = "fuzz_targets/api_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "net_frames"
+path = "fuzz_targets/net_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "log_records"
+path = "fuzz_targets/log_records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "store_snapshot"
+path = "fuzz_targets/store_snapshot.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "raft_message"
+path = "fuzz_targets/raft_message.rs"
+test = false
+doc = false
+bench = false

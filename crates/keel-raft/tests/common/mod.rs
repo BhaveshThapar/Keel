@@ -22,6 +22,16 @@ pub struct Node {
     pub applied: Vec<Entry>,
     pub down: bool,
     pub reads: Vec<(u64, Index)>,
+    /// Holds this harness to the order `Ready` documents.
+    ///
+    /// Added at P22, and it found that this loop was inverted: it applied
+    /// committed entries and called `advance` *before* sending the messages of
+    /// the same `Ready`. Nothing observable in these tests depended on the
+    /// inversion, which is exactly why it survived — the in-process cluster
+    /// delivers messages through a queue this loop owns, so nobody could see
+    /// the difference. Every membership property in the repository rested on
+    /// this harness.
+    pub audit: keel_raft::ReadyAudit,
 }
 
 pub struct Cluster {
@@ -53,6 +63,7 @@ impl Cluster {
                         applied: Vec::new(),
                         down: false,
                         reads: Vec::new(),
+                        audit: keel_raft::ReadyAudit::new(),
                     },
                 )
             })
@@ -101,6 +112,7 @@ impl Cluster {
                         applied: Vec::new(),
                         down: false,
                         reads: Vec::new(),
+                        audit: keel_raft::ReadyAudit::new(),
                     },
                 )
             })
@@ -210,28 +222,27 @@ impl Cluster {
             if node.down || !node.core.has_ready() {
                 return;
             }
-            let rd = node.core.ready();
+            let mut rd = node.core.ready();
+            let number = rd.number;
+            node.audit
+                .take(&rd)
+                .unwrap_or_else(|e| panic!("node {id}: {e}"));
 
-            // Persist. This harness has no disk, so an append is durable at once.
+            // 1. Persist. This harness has no disk, so an append is durable at
+            //    once — but the *order* still has to be right, because the order
+            //    is what the contract is about and the next host to copy this
+            //    loop may have a disk.
             let persisted = rd.entries.last().map(|e| (e.index, e.term));
+            node.audit.persisted(number);
 
-            let applied = rd.committed_entries.last().map(|e| e.index);
-            for e in &rd.committed_entries {
-                node.applied.push(e.clone());
-            }
-            for rs in &rd.read_states {
-                node.reads.push((rs.ctx, rs.index));
-            }
+            // 2. Send. Taken out of the node's borrow so the queue can be
+            //    touched, and done before applying rather than after.
+            let messages = std::mem::take(&mut rd.messages);
+            let committed = std::mem::take(&mut rd.committed_entries);
+            let read_states = std::mem::take(&mut rd.read_states);
+            let applied = committed.last().map(|e| e.index);
             let snapshot_installed = rd.snapshot_to_install.clone();
-
-            node.core.advance(Advance {
-                ready_number: rd.number,
-                persisted,
-                applied,
-                snapshot_installed,
-            });
-
-            for m in rd.messages {
+            for m in messages {
                 // Recorded before delivery, so a test can assert on what was
                 // offered rather than on what a follower did with it.
                 if let keel_raft::MessageBody::SnapshotOffer { meta } = &m.body {
@@ -239,6 +250,35 @@ impl Cluster {
                 }
                 self.queue.push_back(m);
             }
+            let Some(node) = self.nodes.get_mut(&id) else {
+                return;
+            };
+            node.audit
+                .sent(number)
+                .unwrap_or_else(|e| panic!("node {id}: {e}"));
+
+            // 3. Apply.
+            for e in &committed {
+                node.applied.push(e.clone());
+            }
+            for rs in &read_states {
+                node.reads.push((rs.ctx, rs.index));
+            }
+            node.audit
+                .applied(number)
+                .unwrap_or_else(|e| panic!("node {id}: {e}"));
+
+            // 4. Acknowledge.
+            let ack = Advance {
+                ready_number: number,
+                persisted,
+                applied,
+                snapshot_installed,
+            };
+            node.core.advance(ack.clone());
+            node.audit
+                .advanced(&ack)
+                .unwrap_or_else(|e| panic!("node {id}: {e}"));
         }
     }
 

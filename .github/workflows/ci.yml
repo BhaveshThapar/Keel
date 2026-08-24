@@ -37,6 +37,11 @@ jobs:
       # Same discipline for the state machine: the build with ADR-010's rule
       # removed has a test that asserts the kill loop catches it.
       - run: cargo test -p keel-sm --features negative-demos
+      # The fuzz targets' checksum demonstration has two arms and only one of
+      # them compiles at a time. Without this the intact build's "a corrupted
+      # record is rejected" is a test that a log rejects something, which a log
+      # that rejected everything would also pass.
+      - run: cargo test -p keel-fuzz --features negative-demos
       # keel-sim forwards the feature to keel-raft. Nothing else compiles that
       # forward, so without this a break in it would surface only inside the
       # negative-demo script, as a confusing failure a long way from its cause.

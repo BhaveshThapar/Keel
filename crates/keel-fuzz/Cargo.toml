@@ -1,0 +1,34 @@
+[package]
+name = "keel-fuzz"
+description = "Fuzz targets for every parser Keel exposes to bytes it did not write, plus a smoke harness that runs them on stable."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+categories = ["development-tools::testing"]
+keywords = ["fuzzing", "parser", "raft", "robustness"]
+
+[dependencies]
+keel-api = { workspace = true }
+keel-log = { workspace = true }
+keel-net = { workspace = true }
+keel-raft = { workspace = true }
+keel-rand = { workspace = true }
+keel-sm = { workspace = true }
+bytes = { workspace = true }
+# A real file, not a mock: the log target covers the segment header, the record
+# framing, the checksum and the tail scan, which means it has to open a log.
+tempfile = { workspace = true }
+
+[features]
+default = []
+# The record checksum removed, so the demonstration can show what it was
+# catching. Forwarded to keel-log, which is where the rule lives.
+negative-demos = ["keel-log/negative-demos"]
+
+[dev-dependencies]
+
+[lints]
+workspace = true

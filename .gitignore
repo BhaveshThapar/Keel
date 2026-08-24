@@ -4,3 +4,7 @@ store/
 *.profraw
 .DS_Store
 target-linux/
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/coverage/
