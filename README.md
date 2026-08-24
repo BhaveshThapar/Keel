@@ -10,7 +10,7 @@ verified by a deterministic simulator that replays any failure from a seed.
 
 ## What is here today
 
-Six crates.
+Eight crates.
 
 **[`keel-raft`](crates/keel-raft/)** — a Raft consensus core that does no I/O,
 owns no threads, and reads no clock. You feed it events and it hands back a
@@ -40,6 +40,14 @@ to. It depends on `thiserror` and nothing else.
 **[`keel-rand`](crates/keel-rand/)** — SplitMix64 with named stream splitting and
 zero dependencies, so that "the run is a pure function of the seed" is a property
 of a thing rather than a habit.
+
+**[`keel-sm`](crates/keel-sm/)** — the replicated state machine. The applied
+index is written in the same atomic batch as the data it describes, and a
+retried command applies exactly once. Two stores, one conformance suite.
+
+**[`keel-node`](crates/keel-node/)** — the loop that turns a `Ready` into I/O in
+the order the contract requires: persist, then one fsync, then send, then apply.
+Group commit falls out of that rather than being bolted on.
 
 The consensus core exists to make the simulator possible. Because the core is a pure function
 of its inputs, a run is a pure function of `(seed, config)`: any failure is

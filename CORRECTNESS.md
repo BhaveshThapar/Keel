@@ -52,6 +52,17 @@ row that was never written.
 | Membership changes do not stall writes | `cluster_behaviour::writes_keep_flowing_during_a_membership_change` | enforced |
 | A far-behind follower catches up from the log, not a snapshot | `cluster_behaviour::a_follower_that_missed_thousands_of_entries_catches_up_without_a_snapshot` | enforced |
 
+## The host loop
+
+| Property | Enforced by | Status |
+|---|---|---|
+| A hundred queued proposals cost one append and one fsync | `group_commit::a_hundred_queued_proposals_cost_one_append_and_one_sync` | enforced |
+| …and the same hundred driven singly cost a hundred of each | `group_commit::the_same_hundred_driven_one_at_a_time_cost_a_hundred_of_each` — the half that makes the other half a measurement | enforced |
+| Batching changes the cost and not the outcome | `group_commit::batching_changes_the_cost_and_not_the_outcome` | enforced |
+| A lone proposal is not held waiting for company | `group_commit::a_single_proposal_is_not_held_waiting_for_company` | enforced |
+| A write replicates and both nodes apply the same prefix | `group_commit::a_write_replicates_to_a_peer_before_it_commits` | enforced |
+| The simulator cannot reach a socket or a storage engine | `simulation::the_simulator_cannot_reach_a_socket_or_a_storage_engine` (dependency assertion) | enforced |
+
 ## The wire
 
 | Property | Enforced by | Status |
@@ -232,9 +243,6 @@ Named here so the gaps are visible rather than discovered:
   in-process cluster: acquiring a lease takes a round of heartbeat
   acknowledgements, and that harness delivers in order, so the no-op is
   acknowledged first. Closed by P9's recency oracle, which reorders.
-- Group commit across concurrent proposals. `keel-log` gives one fsync per
-  `sync()` call; batching several proposals into one belongs to the writer that
-  drives it, which does not exist yet (M1 Phase 5).
 - Exactly-once sessions across a *failover*. The session table survives a
   restart and deduplicates retries, both tested. What is untested is a retry
   storm crossing a leader change, which needs a cluster (M1 Phase 10).

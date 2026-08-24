@@ -1,0 +1,33 @@
+[package]
+name = "keel-node"
+description = "One Keel node: the Ready loop that drives the consensus core, the durable log, the state machine, and a transport."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+categories = ["database-implementations", "network-programming"]
+keywords = ["raft", "consensus", "node", "group-commit", "replication"]
+
+[dependencies]
+keel-api = { workspace = true }
+keel-log = { workspace = true }
+keel-net = { workspace = true }
+keel-raft = { workspace = true }
+keel-sm = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+default = []
+# The LSM-backed store, forwarded. Off by default for the same reason it is off
+# in keel-sm: a consumer that runs on MemStore should not link a storage engine,
+# and `cargo tree` should be able to prove it did not.
+lsm = ["keel-sm/lsm"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
+keel-sm = { workspace = true, features = ["lsm"] }
+
+[lints]
+workspace = true

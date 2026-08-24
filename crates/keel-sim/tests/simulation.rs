@@ -283,3 +283,64 @@ fn the_committed_profiles_still_replay_to_their_pinned_fingerprints() {
         moved.join("\n")
     );
 }
+
+/// Every crate the simulator may depend on, and why each one cannot make its
+/// runs stop reproducing.
+///
+/// An allowlist rather than a denylist, for the reason `keel-raft`'s own gate
+/// gives: a denylist only catches the names somebody thought to write down.
+const ALLOWED_DEPENDENCIES: [&str; 5] = [
+    "keel-raft", // the core under test
+    "keel-log",  // the real log, driven over a fault-injecting filesystem
+    "keel-rand", // seeded generator, no entropy source
+    "bytes",     // byte buffers
+    // argv parsing for `src/main.rs`. It reads no file, opens no socket, and
+    // nothing in the library calls it — but Cargo has no way to say "this
+    // dependency belongs to the binary target", so it is allowlisted here with
+    // the reason rather than silently permitted.
+    "clap",
+];
+
+/// The simulator must not be able to reach a socket or a storage engine.
+///
+/// This is the gate ROADMAP.md's P6 note is about, and it is a manifest check
+/// rather than a `cargo tree` one on purpose. Cargo's resolver computes one
+/// feature set per package per invocation, so `cargo test --workspace` builds
+/// every crate with the union of every feature anything asked for — which means
+/// a `cargo tree` run under those conditions cannot establish that this crate
+/// did not link `tcp` or `lsm`. What it *can* establish is that there is no
+/// edge at all, which is why `Node` moved into `keel-node` rather than living
+/// beside the server.
+///
+/// The consequence if this were allowed to rot is not a slow build. A simulator
+/// that could open a socket would have a run that depends on the network, and
+/// the seed would stop being the whole reproduction.
+#[test]
+fn the_simulator_cannot_reach_a_socket_or_a_storage_engine() {
+    let manifest = include_str!("../Cargo.toml");
+    let Some(deps) = manifest
+        .split("\n[dependencies]\n")
+        .nth(1)
+        .and_then(|s| s.split("\n[").next())
+    else {
+        panic!("Cargo.toml should declare a [dependencies] section");
+    };
+
+    for line in deps.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((name, _)) = line.split_once('=') else {
+            panic!("unparsed line in [dependencies]: {line}");
+        };
+        let name = name.trim();
+        assert!(
+            ALLOWED_DEPENDENCIES.contains(&name),
+            "keel-sim must not depend on `{name}`. A dependency that can open a \
+             socket, spawn a thread, or reach a real disk makes a run depend on \
+             something the seed does not describe. If it genuinely cannot, add it \
+             to ALLOWED_DEPENDENCIES with the reason."
+        );
+    }
+}

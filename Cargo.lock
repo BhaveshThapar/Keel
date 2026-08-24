@@ -316,6 +316,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-node"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "keel-api",
+ "keel-log",
+ "keel-net",
+ "keel-raft",
+ "keel-sm",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "keel-raft"
 version = "0.1.0"
 dependencies = [
