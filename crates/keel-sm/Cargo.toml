@@ -28,9 +28,16 @@ lsm = ["dep:lsm_kv", "dep:tempfile"]
 # The shared Store conformance suite, so every implementation is held to the
 # same assertions rather than to whatever its own tests happened to check.
 conformance = []
+# Writes the applied index in a *separate* commit from the data it describes,
+# which is ADR-010's rule removed. The kill loop must catch it. Never enable
+# outside the negative-demo script.
+negative-demos = []
 
 [dev-dependencies]
 keel-sm = { path = ".", features = ["conformance", "lsm"] }
+# The kill loop configures the engine directly: a small MemTable so a few dozen
+# entries cross a flush and the crash lands in real storage work.
+lsm_kv = { workspace = true }
 
 [lints]
 workspace = true

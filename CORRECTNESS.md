@@ -82,6 +82,8 @@ row that was never written.
 | Sessions expire on the leader's stamp and on nothing else | `state_machine::a_session_expires_on_the_leaders_clock_and_only_on_it` | enforced |
 | A command from an expired session is refused, not applied undeduplicated | `state_machine::a_command_from_an_expired_session_is_refused` | enforced |
 | A client key can never collide with the state machine's own | `conformance::check`'s `the_namespaces_do_not_see_each_other` | enforced |
+| A kill mid-apply never double-applies or regresses the index | `kill_during_apply::a_kill_mid_apply_never_double_applies_or_regresses`, 1,000 cycles in CI | enforced |
+| …and the atomicity is what makes that true | `kill_during_apply::without_the_atomic_index_a_kill_leaves_an_entry_that_will_apply_twice` (`--features negative-demos`); `scripts/negative-demos/split-batch.sh` | enforced |
 | Both stores apply the same log to the same state | `state_machine::both_stores_apply_the_same_log_to_the_same_state`; `keel_sm::conformance::check` run against `MemStore` and `LsmStore` | enforced |
 
 ## The durable log
@@ -233,9 +235,6 @@ Named here so the gaps are visible rather than discovered:
 - Group commit across concurrent proposals. `keel-log` gives one fsync per
   `sync()` call; batching several proposals into one belongs to the writer that
   drives it, which does not exist yet (M1 Phase 5).
-- Crash consistency under `SIGKILL`: the atomicity is enforced by construction
-  and by the conformance suite, but nothing has yet killed a node mid-apply and
-  checked what it lost (M1 Phase 5).
 - Exactly-once sessions across a *failover*. The session table survives a
   restart and deduplicates retries, both tested. What is untested is a retry
   storm crossing a leader change, which needs a cluster (M1 Phase 10).

@@ -120,9 +120,39 @@ impl Store for LsmStore {
             };
         }
         // In the same batch, not after it. This line is the whole reason the
-        // engine grew `write_batch`.
-        write.put(&tagged(Space::Internal, APPLIED_KEY), &index.to_le_bytes());
-        self.db.write_batch(&write).map_err(store_err)?;
+        // engine grew `write_batch` (ADR-010).
+        #[cfg(not(feature = "negative-demos"))]
+        {
+            write.put(&tagged(Space::Internal, APPLIED_KEY), &index.to_le_bytes());
+            self.db.write_batch(&write).map_err(store_err)?;
+        }
+
+        // The rule removed: the data first, then the index, as two writes. Both
+        // are still fsynced, so this is not a durability bug — what is gone is
+        // exactly and only the atomicity between them, which is what makes it a
+        // fair test of what the ADR claims.
+        //
+        // The window is announced and then held open, because a fault has to be
+        // aimed to be reached: the gap between two fsyncs is a small target and
+        // a uniform kill schedule finds it by luck if at all. Same argument
+        // ADR-007 makes for the simulator's nemesis. A correct build prints
+        // nothing here, so the two arms of the demonstration are otherwise
+        // identical.
+        #[cfg(feature = "negative-demos")]
+        {
+            use std::io::Write;
+            self.db.write_batch(&write).map_err(store_err)?;
+            let mut out = std::io::stdout().lock();
+            let _ = writeln!(out, "SPLIT {index}");
+            let _ = out.flush();
+            drop(out);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+
+            let mut index_only = WriteBatch::new();
+            index_only.put(&tagged(Space::Internal, APPLIED_KEY), &index.to_le_bytes());
+            self.db.write_batch(&index_only).map_err(store_err)?;
+        }
+
         self.applied = self.applied.max(index);
         Ok(())
     }

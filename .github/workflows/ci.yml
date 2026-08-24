@@ -34,6 +34,9 @@ jobs:
       - run: cargo test --workspace
       - name: The negative demonstrations must still demonstrate
         run: cargo test -p keel-raft --features negative-demos
+      # Same discipline for the state machine: the build with ADR-010's rule
+      # removed has a test that asserts the kill loop catches it.
+      - run: cargo test -p keel-sm --features negative-demos
       # keel-sim forwards the feature to keel-raft. Nothing else compiles that
       # forward, so without this a break in it would surface only inside the
       # negative-demo script, as a confusing failure a long way from its cause.
@@ -63,6 +66,21 @@ jobs:
         run: shellcheck -x scripts/*.sh scripts/lib/*.sh scripts/negative-demos/*.sh
       - run: scripts/check-docs.sh
       - run: scripts/check-artifacts.sh
+
+  # A thousand kill/restart cycles is the exit criterion, and it takes minutes —
+  # its own job rather than a slow line in the test suite, which runs sixty.
+  kill-loop:
+    name: a thousand kills, no double-apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 1000 kill/restart cycles mid-apply
+        env:
+          KEEL_SM_KILL_CYCLES: "1000"
+        run: cargo test --release -p keel-sm --test kill_during_apply
 
   determinism:
     name: the core replays identically
@@ -170,7 +188,7 @@ jobs:
       # rather than just that one of them did.
       fail-fast: false
       matrix:
-        demo: [figure-8, torn-record, tearing-is-load-bearing]
+        demo: [figure-8, torn-record, tearing-is-load-bearing, split-batch]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

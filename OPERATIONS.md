@@ -113,6 +113,15 @@ it rather than a convention to remember. Exits non-zero if any demonstration
 stopped demonstrating — the artifact still records what happened, because an
 artifact that only exists when the news is good is not evidence.
 
+```
+KEEL_SM_KILL_CYCLES=1000 cargo test --release -p keel-sm --test kill_during_apply
+```
+
+Kills a process mid-apply a thousand times over and checks, after every restart,
+that the applied index and the data still agree. Sixty cycles by default, which
+is what an ordinary `cargo test` runs; the thousand is a CI job of its own
+because it takes minutes.
+
 ## Keeping the documents honest
 
 ```
