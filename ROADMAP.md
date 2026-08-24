@@ -98,7 +98,7 @@ feature set per package per invocation, so `cargo test --workspace` would build
 
 | # | Phase | Exit criterion |
 |---|---|---|
-| P12 | The core learns what a checkpoint is | A leader that snapshots bounds `Status::in_memory_entries`, offers the *checkpointed* conf, and refuses a stale `SnapshotTaken` |
+| ~~P12~~ | ~~The core learns what a checkpoint is~~ | **Done.** `Input::SnapshotTaken` bounds `Status::in_memory_entries`; a checkpoint above `applied` or at or below one already held is refused *and counted*; an offer carries the checkpointed conf |
 | P13 | `lsm-kv` checkpoints; `keel-sm`'s applied-state digest | A 1 GB hard-link checkpoint opens with the same contents and session table, and survives the source compacting the tables it linked |
 | P14 | The chunk stream, staging, publish-rename | A transfer killed at an arbitrary byte offset resumes at the first chunk whose CRC fails and completes with the sender's `state_digest` |
 | P15 | Snapshots end to end in the host loop | A fresh learner is brought up past a compacted log floor, killed mid-stream, and completes without restarting the transfer |
