@@ -252,6 +252,14 @@ const PINNED: &[(&str, u64, u64)] = &[
     ("disk-hunt", 0, 0x5f33_8ea9_2dc7_43b5),
     ("disk-hunt", 7, 0x0b38_a8d8_75ab_1ba0),
     ("disk-hunt", 42, 0xa47f_001d_52a6_eb2c),
+    // Pinned like any other profile. A fingerprint is a claim about
+    // reproducibility, which is a different claim from correctness — this
+    // profile has a seed that does not sweep clean, recorded in BUGS.md, and
+    // pinning it is what makes that seed still reproduce while the question is
+    // open.
+    ("snapshot-hunt", 0, 0x80e2_2a35_a9dc_502b),
+    ("snapshot-hunt", 7, 0xc6bd_36b6_6021_4bb4),
+    ("snapshot-hunt", 42, 0x50af_1a06_ea02_98a0),
 ];
 
 #[test]
@@ -400,4 +408,47 @@ fn the_model_oracle_actually_applies_the_log() {
          against it established almost nothing",
         world.oracle_model_applied()
     );
+}
+
+/// Snapshots move, and the resume path is reached.
+///
+/// A profile in which every transfer completed first time would report a clean
+/// sweep having tested the happy path and nothing else — [KEEL-4](../../BUGS.md)'s
+/// lesson, applied to snapshots. The counters say the stream was interrupted and
+/// resumed, not merely started.
+///
+/// Seeds are chosen to avoid [KEEL-8](../../BUGS.md), which is an open question
+/// about the oracle rather than about the system, and is recorded there rather
+/// than tuned around silently.
+#[test]
+fn snapshots_are_actually_taken_streamed_and_resumed() {
+    let mut checkpoints = 0;
+    let mut started = 0;
+    let mut interrupted = 0;
+    let mut resumed = 0;
+    let mut completed = 0;
+
+    for seed in 0..10 {
+        let outcome = run_seed(seed, 40_000, SimConfig::snapshot_hunt(3));
+        assert!(outcome.passed(), "{}", outcome.report.unwrap_or_default());
+        checkpoints += outcome.stats.checkpoints_taken;
+        started += outcome.stats.streams_started;
+        interrupted += outcome.stats.streams_interrupted;
+        resumed += outcome.stats.streams_resumed;
+        completed += outcome.stats.streams_completed;
+    }
+
+    assert!(checkpoints > 0, "no checkpoint was ever taken");
+    assert!(started > 0, "no snapshot stream ever began");
+    assert!(
+        interrupted > 0,
+        "no stream was ever interrupted, so the resume path went untested and a \
+         clean sweep would mean only that uninterrupted transfers work"
+    );
+    assert!(
+        resumed > 0,
+        "no stream ever continued after making progress, so nothing distinguishes \
+         a resume from a restart"
+    );
+    assert!(completed > 0, "no stream ever finished and installed");
 }

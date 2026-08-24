@@ -77,18 +77,36 @@ impl LogDigest {
 
     /// Adopt a snapshot installed from a leader: the floor and the digest there.
     ///
-    /// Unused until a profile installs one, which is P16's second half. Landed
-    /// with the rebase because it is the same fix seen from the other side: a
-    /// floor arrives, and its digest arrives with it rather than being guessed.
-    #[allow(dead_code)]
-    pub fn adopt_snapshot(&mut self, index: Index, digest: u64) {
+    /// Returns every `(index, digest)` this discards, because adopting is a
+    /// *rewrite* and has to be reported as one.
+    ///
+    /// A node may hold entries above the snapshot's index — an uncommitted,
+    /// divergent tail the leader has not overwritten yet. Those entries survive
+    /// the install, but the prefix beneath them does not: it becomes the
+    /// snapshot's. So their cumulative digests change, and the node reports
+    /// values for indexes it has already reported different values for.
+    ///
+    /// Left unreported, that reads as a Log Matching violation on correct code
+    /// — the same entry at the same index and term with two digests. Reported
+    /// as a discard, it goes through the check that already knows the
+    /// difference: discarding a divergent entry is healthy Raft, and discarding
+    /// one that was actually committed is the violation.
+    pub fn adopt_snapshot(&mut self, index: Index, digest: u64) -> Vec<DiscardedEntry> {
         if index < self.base_index {
-            return;
+            return Vec::new();
         }
+        // Only what the snapshot does *not* cover. Entries between the old
+        // floor and the snapshot's index are subsumed by it, not lost — and
+        // reporting them as discarded says a committed entry went missing when
+        // the snapshot is exactly what preserves it.
+        let discarded: Vec<DiscardedEntry> = (index + 1..=self.last_index())
+            .filter_map(|i| self.at(i).map(|(_, d)| (i, d)))
+            .collect();
         self.entries.clear();
         self.base_index = index;
         self.base_digest = digest;
         self.floor_without_a_digest = None;
+        discarded
     }
 
     /// The floor this digest could not account for, if there is one.
@@ -262,11 +280,11 @@ mod rebase_tests {
     #[test]
     fn adopting_a_snapshot_takes_the_digest_with_the_floor() {
         let mut digest = LogDigest::new();
-        digest.adopt_snapshot(50, 0x1234_5678);
+        assert!(digest.adopt_snapshot(50, 0x1234_5678).is_empty());
         assert_eq!(digest.base(), (50, 0x1234_5678));
         assert_eq!(digest.at(50), Some((0, 0x1234_5678)));
         // A snapshot behind the floor is ignored rather than pulling it back.
-        digest.adopt_snapshot(10, 0);
+        assert!(digest.adopt_snapshot(10, 0).is_empty());
         assert_eq!(digest.base(), (50, 0x1234_5678));
     }
 }

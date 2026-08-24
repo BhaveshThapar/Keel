@@ -207,6 +207,9 @@ comparison, which is what makes per-event checking affordable.
 | A pending allocation is all or nothing | `fault_fs::a_pending_allocation_is_all_or_nothing` | enforced |
 | The disk is inside the replay fingerprint | `fault_fs::two_disks_with_the_same_seed_tear_identically`; `keel-sim determinism --profile disk-hunt` in CI | enforced |
 | A quiet file does not shift the tear stream | `fault_fs::a_file_with_nothing_staged_does_not_shift_the_tear_stream` | enforced |
+| Snapshots are taken, streamed, interrupted and resumed | `simulation::snapshots_are_actually_taken_streamed_and_resumed` — `checkpoints_taken`, `streams_started`, `streams_interrupted`, `streams_resumed` and `streams_completed` all non-zero | enforced |
+| A compacted floor carries its digest rather than inventing one | `digest::rebase_tests::a_rebased_digest_agrees_with_one_that_was_never_compacted`; a floor with no digest is a violation in its own right | enforced |
+| The `snapshot-hunt` profile sweeps clean | — | **not claimed**: 59 of 60 seeds pass; seed 14 is [KEEL-8](BUGS.md) |
 | The profile list cannot drift from the constructor | `simulation::the_profile_list_and_the_named_constructor_cannot_drift` | enforced |
 
 ### Coverage

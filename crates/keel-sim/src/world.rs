@@ -59,6 +59,15 @@ pub struct SimConfig {
     /// but an entry handed to a state machine below its watermark is skipped
     /// and its effect is lost. Requires `--features negative-demos`.
     pub skip_apply_ordering: bool,
+    /// Take a checkpoint every this many applied entries. Zero never
+    /// checkpoints, which is what every profile did before P16.
+    pub entries_between_checkpoints: Index,
+    /// How much of a snapshot goes in one chunk.
+    pub snapshot_chunk_bytes: usize,
+    /// Chance that a snapshot chunk is dropped, so a stream is interrupted and
+    /// has to resume. A transfer that never breaks tests the happy path and
+    /// reports on the rest.
+    pub snapshot_chunk_loss_pct: u32,
     /// What a crash does to bytes no fsync covered.
     ///
     /// The default lands no sectors, so a crash takes every staged write back
@@ -120,6 +129,9 @@ impl Default for SimConfig {
             skip_tail_erase: false,
             skip_record_crc: false,
             skip_apply_ordering: false,
+            entries_between_checkpoints: 0,
+            snapshot_chunk_bytes: 4096,
+            snapshot_chunk_loss_pct: 0,
             tear: TearPolicy::default(),
             segment_bytes: 8 << 10,
             max_record_bytes: 4 << 10,
@@ -257,12 +269,37 @@ impl SimConfig {
         }
     }
 
+    /// Snapshots, and a stream that keeps breaking.
+    ///
+    /// Checkpoints often enough that the log floor really moves, chunks small
+    /// enough that a transfer is many of them, and enough chunk loss that a
+    /// stream is interrupted and has to resume. A profile where every transfer
+    /// completes first time tests the happy path and reports on the rest —
+    /// which is [KEEL-4](BUGS.md)'s lesson applied to snapshots.
+    pub fn snapshot_hunt(nodes: usize) -> Self {
+        Self {
+            entries_between_checkpoints: 40,
+            snapshot_chunk_bytes: 512,
+            snapshot_chunk_loss_pct: 30,
+            // A follower that is cut off long enough falls behind the floor,
+            // which is the only way to be offered a snapshot at all.
+            restart_delay_ns: 200_000_000,
+            ..Self::chaos(nodes)
+        }
+    }
+
     /// Every profile `named` accepts. Kept next to it so an error message
     /// listing the choices cannot drift from the choices themselves, and a
     /// slice rather than a fixed-size array so adding one is a single edit
     /// that cannot leave the length behind.
-    pub const PROFILES: &'static [&'static str] =
-        &["default", "chaos", "fig8-hunt", "disk-chaos", "disk-hunt"];
+    pub const PROFILES: &'static [&'static str] = &[
+        "default",
+        "chaos",
+        "fig8-hunt",
+        "disk-chaos",
+        "disk-hunt",
+        "snapshot-hunt",
+    ];
 
     pub fn named(name: &str, nodes: usize) -> Option<Self> {
         match name {
@@ -274,6 +311,7 @@ impl SimConfig {
             "fig8-hunt" => Some(Self::fig8_hunt(nodes)),
             "disk-chaos" => Some(Self::disk_chaos(nodes)),
             "disk-hunt" => Some(Self::disk_hunt(nodes)),
+            "snapshot-hunt" => Some(Self::snapshot_hunt(nodes)),
             _ => None,
         }
     }
@@ -304,6 +342,33 @@ fn decoded_or_bookkeeping(_entry: &Entry) -> Proposal {
         session: None,
         body: ProposalBody::KeepAlive,
     }
+}
+
+/// A snapshot arriving at a node, chunk by chunk.
+///
+/// Modelled with the same shape a real transfer has — verified position, a
+/// checksum per chunk, a resume that continues rather than restarts — because a
+/// transfer modelled as instantaneous tests nothing about the transfer.
+struct Receiving {
+    from: NodeId,
+    meta: SnapshotMeta,
+    /// The `Ready` the offer arrived in.
+    ///
+    /// Acknowledged when the stream finishes, which may be many events later.
+    /// A core may only be told about a `Ready` it emitted, and out-of-order
+    /// acknowledgements are already expected — fsync latencies vary and several
+    /// can be in flight — so an old number is safe and a made-up one is not.
+    ready_number: u64,
+    /// The digest of the sender's log at the snapshot's index, carried with it.
+    log_digest: u64,
+    /// Bytes verified so far. The resume position, and the only record of
+    /// progress: a chunk that fails its checksum never reaches it.
+    have: Vec<u8>,
+    total: usize,
+    /// The offset a chunk was last lost at, if the stream is currently stalled
+    /// there. A chunk that lands here afterwards is a *resume*: the transfer
+    /// picked up where it broke rather than starting again.
+    stalled_at: Option<usize>,
 }
 
 /// Apply one committed entry to a node's state machine.
@@ -437,6 +502,17 @@ impl Ord for Scheduled {
 struct SimNode {
     id: NodeId,
     core: RaftCore,
+    /// The applied index at this node's last checkpoint, so the next is due a
+    /// fixed distance later rather than at a fixed time.
+    last_checkpoint: Index,
+    /// The bytes of this node's last checkpoint, and the digest at its index.
+    ///
+    /// A real node's checkpoint is a directory of hard links; there is nothing
+    /// to link here, so the equivalent is the serialised store. Held so a
+    /// follower behind the floor can be streamed it.
+    checkpoint: Option<(SnapshotMeta, Vec<u8>, u64)>,
+    /// A snapshot this node is receiving, and how far it has verified.
+    receiving: Option<Receiving>,
     /// The digest at this node's snapshot floor.
     ///
     /// Held on the node rather than in the `LogDigest`, because it has to
@@ -533,6 +609,19 @@ pub struct Stats {
     /// Segments seen by a recovery, summed. More than one restart's worth means
     /// the multi-segment recovery path was actually reached.
     pub segments_recovered: u64,
+    /// Checkpoints taken. Zero on a profile with snapshots on means the log
+    /// never grew far enough, and every snapshot path went untested.
+    pub checkpoints_taken: u64,
+    /// Snapshot streams begun.
+    pub streams_started: u64,
+    /// Chunks lost mid-stream. Zero means every transfer ran to completion
+    /// uninterrupted, so the resume path was never reached.
+    pub streams_interrupted: u64,
+    /// Chunks appended to a stream that had already made progress — a resume
+    /// rather than a restart.
+    pub streams_resumed: u64,
+    /// Streams that decoded and installed.
+    pub streams_completed: u64,
     /// Crashes that tore a node's log while that node was inside a partition.
     ///
     /// The counter the durability claim turns on. It is not enough that tears
@@ -565,13 +654,18 @@ pub struct World {
 /// the batch's first index against what the log already holds. Without that,
 /// `Log::append` refuses with `Discontiguous` the first time a leader overwrites
 /// a divergent tail.
-fn stage(node: &mut SimNode, rd: &Ready) -> Result<(), String> {
+fn stage(node: &mut SimNode, rd: &Ready, streaming: bool) -> Result<(), String> {
     let Some(log) = node.log.as_mut() else {
         return Err("a live node has no open log".into());
     };
     let step = |r: keel_log::Result<keel_log::SyncToken>| r.map(|_| ()).map_err(|e| e.to_string());
 
-    if let Some(meta) = &rd.snapshot_to_install {
+    // Only when the transfer is instantaneous. With snapshots on, the bytes
+    // have to arrive before the floor moves — the log is installed by
+    // `install_snapshot` once the stream completes.
+    if let Some(meta) = &rd.snapshot_to_install
+        && !streaming
+    {
         step(log.install_snapshot(meta))?;
     }
     if let Some(first) = rd.entries.first().map(|e| e.index)
@@ -662,6 +756,9 @@ impl World {
                     dir,
                     log,
                     digest: LogDigest::new(),
+                    last_checkpoint: 0,
+                    checkpoint: None,
+                    receiving: None,
                     snapshot_digest: (0, 0),
                     alive: true,
                     epoch: 0,
@@ -775,6 +872,11 @@ impl World {
     // ------------------------------------------------------------- handlers
 
     fn on_tick(&mut self, id: NodeId) {
+        // One chunk per tick, so a snapshot moves without any one event
+        // carrying the whole of it.
+        if self.nodes.get(&id).is_some_and(|n| n.receiving.is_some()) {
+            self.stream_snapshot(id);
+        }
         let period = self
             .nodes
             .get(&id)
@@ -986,20 +1088,247 @@ impl World {
         self.check(target);
     }
 
+    /// Take a checkpoint if enough has been applied since the last one.
+    ///
+    /// The checkpoint is the serialised store plus the digest at its index —
+    /// the pair a real node keeps in its snapshot metadata, and the pair that
+    /// makes a restarted node's digest comparable with its peers'.
+    fn checkpoint_if_due(&mut self, id: NodeId) {
+        let every = self.cfg.entries_between_checkpoints;
+        if every == 0 {
+            return;
+        }
+        let Some(node) = self.nodes.get_mut(&id) else {
+            return;
+        };
+        // The *log's* applied index, not the state machine's. They track each
+        // other, but the digest and the log are indexed by the first and mixing
+        // the two attaches a cumulative hash to an index the digest never
+        // described.
+        let applied = node.core.log().applied().min(node.sm.applied());
+        if applied == 0 || applied.saturating_sub(node.last_checkpoint) < every {
+            return;
+        }
+        // The digest at the index being checkpointed. Without it the floor is
+        // uncarryable and a restart from this checkpoint would compare an
+        // invented number against its peers'.
+        let Some((_, log_digest)) = node.digest.at(applied) else {
+            return;
+        };
+        let Some(term) = node.core.log().term(applied) else {
+            return;
+        };
+
+        let meta = SnapshotMeta {
+            index: applied,
+            term,
+            conf: node.core.conf().clone(),
+        };
+        node.checkpoint = Some((meta.clone(), node.sm.store().to_bytes(), log_digest));
+        node.last_checkpoint = applied;
+        node.snapshot_digest = (applied, log_digest);
+        let _ = node.core.step(Input::SnapshotTaken { meta });
+        self.stats.checkpoints_taken += 1;
+    }
+
+    /// A follower was offered a snapshot: start receiving one.
+    ///
+    /// The offer names an index; the bytes come from the leader's checkpoint.
+    /// A leader that no longer has one — because it was replaced, or has moved
+    /// on — simply sends nothing, and the follower's request expires like any
+    /// other.
+    fn begin_receiving(
+        &mut self,
+        follower: NodeId,
+        leader: NodeId,
+        offered_meta: SnapshotMeta,
+        ready_number: u64,
+    ) {
+        // The leader's *checkpoint* metadata, not the offer's.
+        //
+        // They can differ: the offer names the core's log floor, and the stored
+        // checkpoint names the index its bytes were taken at. Adopting the
+        // offer's index with the checkpoint's digest attaches a cumulative hash
+        // to the wrong index, and every entry above it then chains from a base
+        // nobody else agrees with — which surfaces as a Log Matching violation
+        // on correct code, several hundred events later.
+        let Some((meta, bytes, log_digest)) =
+            self.nodes.get(&leader).and_then(|n| n.checkpoint.clone())
+        else {
+            return;
+        };
+        let _ = offered_meta;
+        let total = bytes.len();
+        if let Some(node) = self.nodes.get_mut(&follower) {
+            // A transfer already in flight from the same leader at the same
+            // index continues; anything else starts again, because a staging
+            // area holding part of a different snapshot is two snapshots
+            // spliced together.
+            let resume = node
+                .receiving
+                .as_ref()
+                .is_some_and(|r| r.from == leader && r.meta.index == meta.index);
+            if !resume {
+                node.receiving = Some(Receiving {
+                    from: leader,
+                    meta,
+                    ready_number,
+                    log_digest,
+                    have: Vec::new(),
+                    total,
+                    stalled_at: None,
+                });
+                self.stats.streams_started += 1;
+            }
+        }
+    }
+
+    /// Move one snapshot stream forward by a chunk.
+    ///
+    /// One chunk per turn rather than a loop, for the same reason a real leader
+    /// does it that way: streaming a whole snapshot inside one event would stop
+    /// the node answering anything else for the duration.
+    fn stream_snapshot(&mut self, follower: NodeId) {
+        let chunk_bytes = self.cfg.snapshot_chunk_bytes.max(1);
+        let loss_pct = self.cfg.snapshot_chunk_loss_pct;
+        let Some(node) = self.nodes.get_mut(&follower) else {
+            return;
+        };
+        let Some(receiving) = node.receiving.as_mut() else {
+            return;
+        };
+        if receiving.have.len() >= receiving.total {
+            return;
+        }
+        let leader = receiving.from;
+        let offset = receiving.have.len();
+        let take = chunk_bytes.min(receiving.total - offset);
+
+        // The chunk is drawn from the leader's checkpoint, which is where it
+        // would come from. A leader that has replaced its checkpoint since the
+        // stream began cannot serve it, and the stream stalls until the
+        // follower is offered a new one.
+        let dropped = node.fsync_rng.chance(loss_pct);
+        let Some((_, bytes, _)) = self.nodes.get(&leader).and_then(|n| n.checkpoint.as_ref())
+        else {
+            return;
+        };
+        if bytes.len() != {
+            let Some(node) = self.nodes.get(&follower) else {
+                return;
+            };
+            node.receiving.as_ref().map_or(0, |r| r.total)
+        } {
+            return;
+        }
+        let chunk: Vec<u8> = bytes[offset..offset + take].to_vec();
+
+        let Some(node) = self.nodes.get_mut(&follower) else {
+            return;
+        };
+        let Some(receiving) = node.receiving.as_mut() else {
+            return;
+        };
+        if dropped {
+            // Not appended, so the position does not move and the next attempt
+            // sends this same chunk again.
+            receiving.stalled_at = Some(offset);
+            self.stats.streams_interrupted += 1;
+            return;
+        }
+        // A chunk landing exactly where one was lost is the resume: the
+        // transfer continued from the break rather than starting over.
+        if receiving.stalled_at == Some(offset) {
+            receiving.stalled_at = None;
+            self.stats.streams_resumed += 1;
+        }
+        receiving.have.extend_from_slice(&chunk);
+
+        if receiving.have.len() >= receiving.total {
+            self.install_snapshot(follower);
+        }
+    }
+
+    /// A stream finished. Decode it, adopt it, and tell the core.
+    fn install_snapshot(&mut self, follower: NodeId) {
+        let Some(node) = self.nodes.get_mut(&follower) else {
+            return;
+        };
+        let Some(receiving) = node.receiving.take() else {
+            return;
+        };
+        let store = match MemStore::from_bytes(&receiving.have) {
+            Ok(store) => store,
+            Err(why) => {
+                // Every chunk arrived and the whole does not decode: the set was
+                // wrong rather than the bytes. A violation, because the transfer
+                // said it was complete.
+                self.violations.push(Violation {
+                    property: "an installed snapshot decodes",
+                    detail: format!("node {follower}: {why}"),
+                });
+                return;
+            }
+        };
+
+        // The installed snapshot *is* this node's checkpoint from now on. A
+        // node that treated it as transient would restart into an empty store
+        // with a compacted log, and the entries that built the state below the
+        // floor are gone — so there would be nothing to replay it back from.
+        node.checkpoint = Some((
+            receiving.meta.clone(),
+            receiving.have.clone(),
+            receiving.log_digest,
+        ));
+        node.sm = StateMachine::new(store);
+        node.pending_apply.clear();
+        // The floor and its digest together, which is the whole of P16's first
+        // half seen from the install side.
+        // Adopting is a rewrite: the prefix beneath any retained tail becomes
+        // the snapshot's, so those entries' digests change and the old ones
+        // have to be retired through the check that knows the difference
+        // between discarding a divergent entry and discarding a committed one.
+        let discarded = node
+            .digest
+            .adopt_snapshot(receiving.meta.index, receiving.log_digest);
+        node.snapshot_digest = (receiving.meta.index, receiving.log_digest);
+        node.last_checkpoint = receiving.meta.index;
+        if !discarded.is_empty()
+            && let Some(v) = self.oracle.check_rewrite(follower, &discarded)
+        {
+            self.violations.push(v);
+        }
+
+        if let Some(log) = node.log.as_mut() {
+            let _ = log.install_snapshot(&receiving.meta);
+        }
+        node.core.advance(Advance {
+            ready_number: receiving.ready_number,
+            persisted: None,
+            applied: None,
+            snapshot_installed: Some(receiving.meta),
+        });
+        self.stats.streams_completed += 1;
+    }
+
     fn on_restart(&mut self, id: NodeId) {
         let opts = self.cfg.log_options();
         // Everything the reopen needs, taken before the borrow is dropped, so
         // that recording a violation below does not fight the borrow checker.
-        let Some((cfg, conf, fs, dir)) = self.nodes.get(&id).filter(|n| !n.alive).map(|n| {
-            (
-                n.core.config().clone(),
-                n.core.conf().clone(),
-                n.fs.clone(),
-                n.dir.clone(),
-            )
-        }) else {
+        let Some((cfg, conf, fs, dir, checkpoint)) =
+            self.nodes.get(&id).filter(|n| !n.alive).map(|n| {
+                (
+                    n.core.config().clone(),
+                    n.core.conf().clone(),
+                    n.fs.clone(),
+                    n.dir.clone(),
+                    n.checkpoint.clone(),
+                )
+            })
+        else {
             return;
         };
+        let checkpoint_index = checkpoint.as_ref().map_or(0, |(meta, _, _)| meta.index);
         // Through the real recovery parser, over whatever the crash left: the
         // torn tail, the erase, the clamped commit, all of it.
         let (log, recovered) = match Log::open(fs, &dir, opts) {
@@ -1035,24 +1364,24 @@ impl World {
                 hard_state: recovered.hard_state,
                 snapshot: recovered.snapshot,
                 entries: recovered.entries,
-                // Zero, and the state machine below is rebuilt empty, because
-                // this state machine's store is memory and a crash takes it.
-                // The log is then the whole source of truth and every restart
-                // replays it — which is more work per restart and a stronger
-                // exercise of the apply path than a store that survived.
+                // What the *checkpoint* says, which is what survives a crash.
                 //
-                // Carrying the old store over was tried and is unsound here: it
-                // survives a crash the log does not, so its applied index can
-                // outrun what the recovered log can prove was committed. The
-                // core clamps its own floor to the recovered commit index and
-                // the state machine does not, so the entries between the two
-                // are handed back, skipped as already-applied, and their effect
-                // is lost. That is not a bug in either component — it is a bug
-                // in pairing a volatile store with a durable log, and the model
-                // has to pick one. It picks volatile, and CORRECTNESS.md records
-                // that the disk fault model reaches the Raft log and stops
-                // there.
-                applied: 0,
+                // Nothing else does: the store is memory and everything written
+                // since the last checkpoint went with it. So a restart restores
+                // the checkpoint and replays the log from its index, which is
+                // exactly what a real node does — and, once the log is being
+                // compacted, is the only thing that can work. Replaying from
+                // zero into a fresh store would lose everything below the
+                // floor, because the entries that built it are gone.
+                //
+                // Carrying the *live* store across a crash was tried and is
+                // unsound: it survives a crash the log does not, so its applied
+                // index can outrun what the recovered log proves was committed,
+                // and the entries between the two are handed back, skipped as
+                // already-applied, and lost. A checkpoint has no such problem —
+                // it is durable by construction and its index is one the log
+                // agrees about.
+                applied: checkpoint_index,
             },
         );
         node.log = Some(log);
@@ -1063,9 +1392,23 @@ impl World {
         // arrangement exists to avoid.
         let (floor, floor_digest) = node.snapshot_digest;
         node.digest = LogDigest::rebased(floor, floor_digest);
-        // The store is memory, and a crash takes memory. Rebuilt empty, so the
-        // log replays into it from the floor.
-        node.sm = StateMachine::new(MemStore::new());
+        // Restored from the checkpoint, which is what survived. Everything
+        // written since is gone with the memory that held it, and the log
+        // replays it back from the checkpoint's index.
+        node.sm = match &checkpoint {
+            Some((_, bytes, _)) => match MemStore::from_bytes(bytes) {
+                Ok(store) => StateMachine::new(store),
+                Err(why) => {
+                    self.violations.push(Violation {
+                        property: "a checkpoint decodes",
+                        detail: format!("node {id}: {why}"),
+                    });
+                    return;
+                }
+            },
+            None => StateMachine::new(MemStore::new()),
+        };
+        node.last_checkpoint = checkpoint_index;
         // Entries buffered behind an fsync that never fired are gone with it.
         node.pending_apply.clear();
         node.alive = true;
@@ -1249,11 +1592,26 @@ impl World {
             }
             let rd: Ready = node.core.ready();
 
+            // With snapshots on, an offer starts a stream and the floor does
+            // not move until the bytes have arrived. Without them, the transfer
+            // is instantaneous and the log takes the snapshot here — which is
+            // what every profile did before P16, and is why their fingerprints
+            // are unmoved by it.
+            let streaming = self.cfg.entries_between_checkpoints > 0;
+            let rd_number = rd.number;
+            let offered = if streaming {
+                rd.snapshot_to_install
+                    .clone()
+                    .map(|meta| (node.core.status().leader, meta))
+            } else {
+                None
+            };
+
             let persisted = rd.entries.last().map(|e| (e.index, e.term));
             let needs_sync = !rd.entries.is_empty()
                 || rd.hard_state.is_some()
-                || rd.snapshot_to_install.is_some();
-            if let Err(detail) = stage(node, &rd) {
+                || (rd.snapshot_to_install.is_some() && !streaming);
+            if let Err(detail) = stage(node, &rd, streaming) {
                 self.violations.push(Violation {
                     property: "the log accepts what the core hands it",
                     detail: format!("node {id}: {detail}"),
@@ -1275,12 +1633,21 @@ impl World {
                     batch: Box::new(FsyncBatch {
                         ready_number: rd.number,
                         persisted,
-                        snapshot: rd.snapshot_to_install,
+                        snapshot: if streaming {
+                            None
+                        } else {
+                            rd.snapshot_to_install
+                        },
                         messages: rd.messages,
                         committed: rd.committed_entries,
                     }),
                 },
             );
+            if let Some((leader, meta)) = offered
+                && let Some(leader) = leader
+            {
+                self.begin_receiving(id, leader, meta, rd_number);
+            }
         }
     }
 
@@ -1314,6 +1681,12 @@ impl World {
         // Kept in step, so a later restart rebases at the floor this node
         // actually has rather than at the one it had when it started.
         node.snapshot_digest = node.digest.base();
+        // A checkpoint is taken here, after the digest has been brought in line
+        // with the log, and nowhere else. Taking one earlier reads a digest that
+        // may still describe entries a truncation has since replaced — and the
+        // checkpoint would then carry a floor digest nobody else agrees with,
+        // which surfaces later as a Log Matching violation on correct code.
+        let take_checkpoint = self.cfg.entries_between_checkpoints > 0;
         let role = node.core.role();
         let term = node.core.term();
         let last_index = node.core.log().last_index();
@@ -1339,6 +1712,10 @@ impl World {
         }
         if old_term_window {
             self.stats.old_term_commit_windows += 1;
+        }
+
+        if take_checkpoint {
+            self.checkpoint_if_due(id);
         }
 
         let mut found: Vec<Violation> = Vec::new();

@@ -296,3 +296,49 @@ crashes a real log over a disk that cuts at sector boundaries, and against the
 old erase condition it recovers an entry from before the crash still carrying
 the term it had then. The gap is closed rather than merely described: the state
 that hid this is one the simulator can now produce on demand.
+
+## KEEL-8 — a snapshot install changes the digest of a divergent tail, and the oracle calls it a Log Matching violation
+
+**Status: open.** Recorded here rather than tuned around, because the honest
+statement about `snapshot-hunt` today is "fifty-nine of sixty seeds sweep clean
+and one raises a question I have not answered", and a profile quietly excluded
+from a sweep is a profile nobody remembers is excluded.
+
+**Reproduce with** `keel-sim repro --seed 14 --steps 40000 --nodes 3 --profile
+snapshot-hunt`.
+
+**Symptom.** `Log Matching: node 3 has a different prefix at index 124 term 5
+than another node did`. Node 3 reports the digest of the *same* entry — index
+124, term 5 — twice, with two different values: once while its floor was at
+index 80, and again after installing a snapshot at index 123.
+
+**What is actually happening.** Installing a snapshot replaces the prefix
+beneath whatever the node has retained above it. A node may legitimately hold an
+uncommitted, divergent tail that the install does not remove, and those entries'
+cumulative digests are computed from the new floor rather than the old one — so
+they change, for entries whose own content did not. The oracle keys Log Matching
+on `(index, term)` and has no way to know that one of the two observations was
+made on a prefix that has since been replaced.
+
+**What was tried.** Reporting the adopt as a rewrite, so the discarded digests go
+through `check_rewrite` — which already distinguishes discarding a divergent
+entry (healthy) from discarding a committed one (a violation). That was necessary
+and is kept: without it the same install reports *every* entry above the old
+floor as lost. It is not sufficient, because `check_rewrite` retires entries from
+the committed map and Log Matching reads a separate `(index, term)` map that is
+never retired.
+
+**Why it is not being forced green.** The remaining fix is either to retire that
+node's contributions to the Log Matching map on an install, or to establish that
+the retained tail cannot have the same `(index, term)` on two different prefixes
+— which, if true, would make this a real defect rather than an oracle artifact.
+Three of the eight entries in this file were bugs in the harness, so "the oracle
+is wrong" is a hypothesis to test rather than a conclusion to act on. Weakening a
+Log Matching check to make a sweep green is exactly the trade this project is
+supposed to refuse.
+
+**What it blocks.** `snapshot-hunt` is not in `scripts/sweep.sh` and not in CI's
+matrix. Its coverage counters are asserted by
+`simulation::snapshots_are_actually_taken_streamed_and_resumed` over seeds that
+do not hit this, so the snapshot paths are exercised on every run; what is not
+claimed is a clean sweep of the profile.

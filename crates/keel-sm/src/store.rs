@@ -159,6 +159,87 @@ impl MemStore {
         Self::default()
     }
 
+    /// Everything this store holds, as bytes.
+    ///
+    /// The simulator's stand-in for a checkpoint directory. A real node
+    /// hard-links SSTables and streams files; there is nothing to link here, so
+    /// the equivalent is the whole map — and the point of having it is that the
+    /// simulator can then stream a snapshot through the same chunking, the same
+    /// checksums and the same resume logic as a real one, rather than modelling
+    /// the transfer as instantaneous and testing nothing about it.
+    ///
+    /// Length-prefixed rather than delimited, because a key or a value may
+    /// contain any byte including whatever delimiter looked safe.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend((self.applied).to_le_bytes());
+        out.extend((self.data.len() as u64).to_le_bytes());
+        for (key, value) in &self.data {
+            out.extend((key.len() as u64).to_le_bytes());
+            out.extend(key);
+            out.extend((value.len() as u64).to_le_bytes());
+            out.extend(value);
+        }
+        out
+    }
+
+    /// Rebuild a store from [`MemStore::to_bytes`].
+    ///
+    /// Refuses anything malformed rather than reconstructing what it can: a
+    /// partially decoded snapshot is a state machine that silently disagrees
+    /// with the node that sent it.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, StateMachineError> {
+        struct Cursor<'a> {
+            bytes: &'a [u8],
+            at: usize,
+        }
+
+        impl<'a> Cursor<'a> {
+            fn take(&mut self, n: usize) -> Result<&'a [u8], StateMachineError> {
+                let end = self
+                    .at
+                    .checked_add(n)
+                    .filter(|e| *e <= self.bytes.len())
+                    .ok_or_else(|| {
+                        StateMachineError::Malformed(format!(
+                            "a snapshot ended after {} bytes with {n} more expected",
+                            self.at
+                        ))
+                    })?;
+                let slice = &self.bytes[self.at..end];
+                self.at = end;
+                Ok(slice)
+            }
+
+            fn take_u64(&mut self) -> Result<u64, StateMachineError> {
+                self.take(8).and_then(|b| {
+                    b.try_into()
+                        .map(u64::from_le_bytes)
+                        .map_err(|_| StateMachineError::Malformed("a truncated length".into()))
+                })
+            }
+        }
+
+        let mut cursor = Cursor { bytes, at: 0 };
+        let applied = cursor.take_u64()?;
+        let count = cursor.take_u64()?;
+        let mut data = BTreeMap::new();
+        for _ in 0..count {
+            let key_len = cursor.take_u64()? as usize;
+            let key = cursor.take(key_len)?.to_vec();
+            let value_len = cursor.take_u64()? as usize;
+            let value = Bytes::copy_from_slice(cursor.take(value_len)?);
+            data.insert(key, value);
+        }
+        if cursor.at != bytes.len() {
+            return Err(StateMachineError::Malformed(format!(
+                "{} bytes left over after a complete snapshot",
+                bytes.len() - cursor.at
+            )));
+        }
+        Ok(Self { data, applied })
+    }
+
     /// How many keys are stored, across both namespaces. For tests that want to
     /// assert a write did not happen.
     pub fn len(&self) -> usize {
@@ -217,5 +298,95 @@ impl Store for MemStore {
 
     fn applied(&self) -> Index {
         self.applied
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn populated() -> MemStore {
+        let mut store = MemStore::new();
+        let mut batch = Batch::new();
+        for i in 0..50u32 {
+            batch.put(
+                Space::User,
+                format!("k{i:03}").as_bytes(),
+                Bytes::from(format!("v{i}")),
+            );
+        }
+        batch.put(Space::Internal, b"session/1", Bytes::from_static(b"s"));
+        // A key and a value with every awkward byte in them, because a snapshot
+        // that mangled one would be a snapshot that silently disagreed.
+        batch.put(
+            Space::User,
+            &[0u8, 0xff, b'\n'],
+            Bytes::from_static(&[0, 1, 2]),
+        );
+        store.commit(77, batch).unwrap();
+        store
+    }
+
+    #[test]
+    fn a_store_round_trips_through_its_bytes() {
+        let store = populated();
+        let restored = MemStore::from_bytes(&store.to_bytes()).unwrap();
+
+        assert_eq!(restored.applied(), store.applied());
+        assert_eq!(restored.len(), store.len());
+        for i in 0..50u32 {
+            assert_eq!(
+                restored
+                    .get(Space::User, format!("k{i:03}").as_bytes())
+                    .unwrap(),
+                store
+                    .get(Space::User, format!("k{i:03}").as_bytes())
+                    .unwrap()
+            );
+        }
+        assert_eq!(
+            restored.get(Space::Internal, b"session/1").unwrap(),
+            Some(Bytes::from_static(b"s")),
+            "the internal namespace did not survive, so a snapshot would lose \
+             the session table"
+        );
+        assert_eq!(
+            restored.get(Space::User, &[0u8, 0xff, b'\n']).unwrap(),
+            Some(Bytes::from_static(&[0, 1, 2]))
+        );
+    }
+
+    /// Every prefix of a snapshot is refused. A partially decoded one is a state
+    /// machine that silently disagrees with the node that sent it, which is
+    /// worse than one that will not open.
+    #[test]
+    fn every_truncation_of_a_snapshot_is_refused() {
+        let bytes = populated().to_bytes();
+        for cut in 0..bytes.len() {
+            assert!(
+                MemStore::from_bytes(&bytes[..cut]).is_err(),
+                "a snapshot truncated to {cut} of {} bytes decoded",
+                bytes.len()
+            );
+        }
+        assert!(MemStore::from_bytes(&bytes).is_ok());
+    }
+
+    #[test]
+    fn trailing_bytes_after_a_snapshot_are_refused() {
+        let mut bytes = populated().to_bytes();
+        bytes.push(0);
+        assert!(
+            MemStore::from_bytes(&bytes).is_err(),
+            "a snapshot with something appended was accepted"
+        );
+    }
+
+    #[test]
+    fn an_empty_store_round_trips() {
+        let store = MemStore::new();
+        let restored = MemStore::from_bytes(&store.to_bytes()).unwrap();
+        assert!(restored.is_empty());
+        assert_eq!(restored.applied(), 0);
     }
 }
