@@ -76,23 +76,28 @@ prefix — which is what makes per-event checking affordable at this scale.
 
 ```
 $ scripts/sweep.sh
-200 seeds x 40000 steps, 3 nodes, default    profile: 200 passed, 0 failed
-200 seeds x 40000 steps, 5 nodes, default    profile: 200 passed, 0 failed
-200 seeds x 40000 steps, 3 nodes, chaos      profile: 200 passed, 0 failed
-200 seeds x 40000 steps, 5 nodes, chaos      profile: 200 passed, 0 failed
-200 seeds x 60000 steps, 3 nodes, fig8-hunt  profile: 200 passed, 0 failed
- 60 seeds x 40000 steps, 3 nodes, disk-chaos profile:  60 passed, 0 failed
- 60 seeds x 40000 steps, 5 nodes, disk-chaos profile:  60 passed, 0 failed
- 60 seeds x 40000 steps, 3 nodes, disk-hunt  profile:  60 passed, 0 failed
- 60 seeds x 40000 steps, 5 nodes, disk-hunt  profile:  60 passed, 0 failed
+500 seeds x 60000 steps, 3 nodes, default    profile: 500 passed, 0 failed
+500 seeds x 60000 steps, 5 nodes, default    profile: 500 passed, 0 failed
+500 seeds x 60000 steps, 3 nodes, chaos      profile: 500 passed, 0 failed
+500 seeds x 60000 steps, 5 nodes, chaos      profile: 500 passed, 0 failed
+500 seeds x 80000 steps, 3 nodes, fig8-hunt  profile: 500 passed, 0 failed
+100 seeds x 60000 steps, 3 nodes, disk-chaos profile: 100 passed, 0 failed
+100 seeds x 60000 steps, 5 nodes, disk-chaos profile: 100 passed, 0 failed
+100 seeds x 60000 steps, 3 nodes, disk-hunt  profile: 100 passed, 0 failed
+100 seeds x 60000 steps, 5 nodes, disk-hunt  profile: 100 passed, 0 failed
 100 seeds replayed identically
  60 seeds replayed identically, disk in the fingerprint
 ```
 
-The `disk-*` profiles are the ones running the real log over a disk that tears:
-every record really encoded, checksummed, written and parsed, and every restart
-going through the real recovery parser. They cost more per event, so they sweep
-fewer seeds.
+Every one of those runs drives the real stack: the real consensus core, the real
+log, and the real state machine. A committed entry is decoded, deduplicated
+against a session table and written into a store — so two nodes that have applied
+to the same index are compared on what applying produced, not only on which
+entries they applied.
+
+The `disk-*` profiles additionally put a tearing disk under the log: every record
+really encoded, checksummed, written and parsed, and every restart going through
+the real recovery parser. They cost more per event, so they sweep fewer seeds.
 
 > Safety only. The simulator runs on a virtual clock, so nothing here is a
 > statement about speed. Full output, with the host it ran on, is in
