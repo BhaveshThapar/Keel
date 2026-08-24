@@ -4,8 +4,8 @@ Tearing: does the fault model earn its cost?
   3 nodes, 25 seeds x 40000 steps
 ==============================================================
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
-commit: c79a337
-date:   2026-08-23T17:12:13Z
+commit: d4836ba
+date:   2026-08-24T02:43:02Z
 
 --- WITH TEARS (disk-hunt): the broken build. Expect seeds to fail.
 
