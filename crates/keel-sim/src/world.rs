@@ -5,8 +5,9 @@ use std::path::PathBuf;
 use bytes::Bytes;
 use keel_log::{Log, LogOptions, SyncMode};
 use keel_raft::{
-    Advance, ConfState, Config, Entry, EntryPayload, Index, Input, Message, NodeId, RaftCore,
-    ReadOnlyOption, Ready, Restored, Role, SnapshotMeta, Term,
+    Advance, ChangeKind, ConfChangeSingle, ConfChangeV2, ConfState, Config, Entry, EntryPayload,
+    Index, Input, Message, NodeId, RaftCore, ReadOnlyOption, Ready, Restored, Role, SnapshotMeta,
+    Term,
 };
 
 use keel_api::{Command, Proposal, ProposalBody, Response, decode, encode};
@@ -215,6 +216,20 @@ pub struct SimConfig {
     /// Zero draws nothing at all, which is what keeps the committed profiles'
     /// fingerprints where they are.
     pub clock_drift_pct: u64,
+    /// How many of the cluster's nodes start as voters. The rest start as
+    /// learners, and a membership change is what promotes them.
+    ///
+    /// Zero means every node is a voter, which is what every profile before
+    /// P23 did. A membership change needs somewhere to change *to*, and the
+    /// simulator has no way to conjure a process that was not there at boot —
+    /// so the spare capacity has to exist from the start, sitting as learners.
+    pub initial_voters: usize,
+    /// How often a client event proposes a membership change instead of a
+    /// command. Zero draws nothing.
+    pub conf_change_pct: u32,
+    /// How often a client event asks the leader to hand leadership to somebody
+    /// else. Zero draws nothing.
+    pub transfer_pct: u32,
     /// Give node 1 the slowest clock in the cluster and everybody else the
     /// fastest, instead of drawing each node's skew independently.
     ///
@@ -291,6 +306,9 @@ impl Default for SimConfig {
             read_pct: 0,
             lease_read_drift_bound: None,
             slowest_node_first: false,
+            initial_voters: 0,
+            conf_change_pct: 0,
+            transfer_pct: 0,
         }
     }
 }
@@ -516,6 +534,42 @@ impl SimConfig {
         }
     }
 
+    /// Membership changes and leader transfers under a fault schedule.
+    ///
+    /// Closes a gap that was real and stated: `Input::ProposeConfChange` and
+    /// `Input::TransferLeader` existed in the core and appeared nowhere in the
+    /// simulator, so every membership property rested on an in-process cluster
+    /// whose own doc comment admits FIFO messages, instantaneous persistence
+    /// and no clock. Joint consensus is the one place where getting a quorum
+    /// wrong elects two leaders, and it was the one place the simulator had
+    /// never been.
+    ///
+    /// Two of the three voters start as learners so there is somewhere to
+    /// change *to*. A simulated cluster cannot start a process that was not in
+    /// the seed, so the spare capacity has to exist at boot and sit unpromoted.
+    ///
+    /// Calmer than `chaos` on purpose. A membership change needs to commit for
+    /// the configuration to move, and a cluster that never commits stays in the
+    /// configuration it booted with however many changes are proposed at it.
+    pub fn membership_hunt(nodes: usize) -> Self {
+        Self {
+            initial_voters: 3,
+            conf_change_pct: 12,
+            transfer_pct: 4,
+            nemesis_period_ns: 250_000_000,
+            nemesis_weights: NemesisWeights {
+                split: 10,
+                one_way: 5,
+                isolate: 15,
+                heal: 45,
+                crash: 15,
+                restart: 10,
+            },
+            nodes,
+            ..Self::default()
+        }
+    }
+
     /// Every profile `named` accepts. Kept next to it so an error message
     /// listing the choices cannot drift from the choices themselves, and a
     /// slice rather than a fixed-size array so adding one is a single edit
@@ -528,6 +582,7 @@ impl SimConfig {
         "disk-hunt",
         "read-hunt",
         "lease-drift",
+        "membership-hunt",
         "snapshot-hunt",
     ];
 
@@ -544,6 +599,7 @@ impl SimConfig {
             "snapshot-hunt" => Some(Self::snapshot_hunt(nodes)),
             "read-hunt" => Some(Self::read_hunt(nodes)),
             "lease-drift" => Some(Self::lease_drift(nodes)),
+            "membership-hunt" => Some(Self::membership_hunt(nodes)),
             _ => None,
         }
     }
@@ -835,6 +891,23 @@ pub struct Stats {
     /// reconnects. With pre-vote the two numbers track each other; without it
     /// the gap is the disruption.
     pub highest_term: Term,
+    /// Observations of a node sitting in a joint configuration.
+    ///
+    /// The window joint consensus exists to make safe, counted rather than
+    /// assumed. A membership profile whose changes all committed instantly
+    /// never had `C_old,new` open while anything else was happening, so it has
+    /// exercised the code path and not the hazard — which is
+    /// [KEEL-4](BUGS.md)'s lesson for the third time.
+    pub joint_config_windows: u64,
+    /// Membership changes proposed, and the ones the core refused because one
+    /// was already in flight.
+    pub conf_changes_proposed: u64,
+    pub conf_changes_refused: u64,
+    /// Configurations the cluster actually finished moving to, counted by the
+    /// distinct voter sets any node has been observed in.
+    pub distinct_configurations: u64,
+    /// Leader transfers asked for.
+    pub transfers_requested: u64,
     /// Leaders that stopped leading while they could still reach a majority.
     ///
     /// What pre-vote exists to prevent (TR-8a). A node that was partitioned
@@ -959,6 +1032,10 @@ pub struct World {
     nemesis_rng: Rng,
     workload_rng: Rng,
     read_rng: Rng,
+    membership_rng: Rng,
+    /// Every voter set any node has been seen in, so a run can say whether the
+    /// membership actually moved rather than only that a change was proposed.
+    configurations_seen: std::collections::BTreeSet<(Vec<NodeId>, Vec<NodeId>)>,
     /// Reads issued and not yet answered, by context.
     reads: BTreeMap<u64, PendingRead>,
     oracle: Oracle,
@@ -1039,9 +1116,24 @@ impl World {
         // is why the six committed profiles' fingerprints are unmoved.
         let mut clock_rng = root.split("clocks");
         let read_rng = root.split("reads");
+        // Last again, and for the same reason. Membership changes and leader
+        // transfers draw nothing on any profile that does not ask for them.
+        let membership_rng = root.split("membership");
 
         let ids: Vec<NodeId> = (1..=cfg.nodes as NodeId).collect();
-        let conf = ConfState::single(ids.iter().copied());
+        // Learners are just voters that have not been promoted yet, and they
+        // have to exist at boot: nothing in a simulated cluster can start a
+        // process that was not in the seed.
+        let conf = if cfg.initial_voters == 0 || cfg.initial_voters >= ids.len() {
+            ConfState::single(ids.iter().copied())
+        } else {
+            let (voters, learners) = ids.split_at(cfg.initial_voters);
+            ConfState {
+                voters: voters.to_vec(),
+                learners: learners.to_vec(),
+                ..Default::default()
+            }
+        };
 
         let mut nodes = BTreeMap::new();
         let mut violations = Vec::new();
@@ -1131,6 +1223,8 @@ impl World {
             nemesis_rng,
             workload_rng,
             read_rng,
+            membership_rng,
+            configurations_seen: std::collections::BTreeSet::new(),
             reads: BTreeMap::new(),
             oracle: Oracle::new(),
             trace: VecDeque::new(),
@@ -1411,6 +1505,16 @@ impl World {
             self.issue_read(target, ctx, client);
             return;
         }
+        // A membership change or a leader transfer, sometimes. Same rule: a
+        // profile that asks for neither draws from neither stream.
+        if self.cfg.conf_change_pct > 0 && self.membership_rng.chance(self.cfg.conf_change_pct) {
+            self.propose_conf_change(target, ctx);
+            return;
+        }
+        if self.cfg.transfer_pct > 0 && self.membership_rng.chance(self.cfg.transfer_pct) {
+            self.request_transfer(target);
+            return;
+        }
 
         // A real proposal, encoded the way a real client's would be, because
         // the state machine on the other end is the real one. The sequence
@@ -1457,6 +1561,95 @@ impl World {
                 data: Bytes::from(encoded),
             });
             self.stats.proposals += 1;
+        }
+        self.pump(target);
+        self.check(target);
+    }
+
+    /// Propose one membership change: promote a learner, or demote a voter.
+    ///
+    /// Promote and demote rather than add and remove, because a simulated
+    /// cluster cannot start a process that was not in the seed — every node
+    /// exists from boot and membership decides which of them vote. That is a
+    /// real restriction and it is the *interesting* half either way: adding a
+    /// node that nobody has heard of is a catch-up problem, while moving a node
+    /// in or out of the voter set is what opens a joint configuration and what
+    /// can split a quorum.
+    ///
+    /// The voter set is never allowed below three. A cluster of two has a
+    /// quorum of two, so a single crash stops it, and a run that stops making
+    /// progress checks nothing — the same argument the crash nemesis makes.
+    fn propose_conf_change(&mut self, target: NodeId, ctx: u64) {
+        let Some(conf) = self.nodes.get(&target).map(|n| n.core.conf().clone()) else {
+            return;
+        };
+        // A change proposed while one is in flight is refused by the core, which
+        // is correct and is counted rather than avoided: the refusal path is
+        // part of what P23 is here to exercise.
+        let promote =
+            conf.voters.len() < 3 || (!conf.learners.is_empty() && self.membership_rng.chance(50));
+        let change = if promote {
+            let learners = conf.learners.clone();
+            let Some(node) = self.membership_rng.pick(&learners).copied() else {
+                return;
+            };
+            ConfChangeSingle {
+                kind: ChangeKind::AddVoter,
+                node,
+            }
+        } else {
+            // Never the leader itself: a leader that removes itself steps down,
+            // which is correct behaviour and well covered by the in-process
+            // tests, and doing it here would spend most of the run in elections
+            // rather than in joint configurations.
+            let demotable: Vec<NodeId> = conf
+                .voters
+                .iter()
+                .copied()
+                .filter(|id| *id != target)
+                .collect();
+            if conf.voters.len() <= 3 {
+                return;
+            }
+            let Some(node) = self.membership_rng.pick(&demotable).copied() else {
+                return;
+            };
+            ConfChangeSingle {
+                kind: ChangeKind::AddLearner,
+                node,
+            }
+        };
+
+        if let Some(node) = self.nodes.get_mut(&target) {
+            let cc = ConfChangeV2 {
+                changes: vec![change],
+            };
+            match node.core.step(Input::ProposeConfChange { ctx, cc }) {
+                Ok(()) => self.stats.conf_changes_proposed += 1,
+                Err(_) => self.stats.conf_changes_refused += 1,
+            }
+        }
+        self.pump(target);
+        self.check(target);
+    }
+
+    /// Ask the leader to hand leadership to one of its voters.
+    fn request_transfer(&mut self, target: NodeId) {
+        let Some(conf) = self.nodes.get(&target).map(|n| n.core.conf().clone()) else {
+            return;
+        };
+        let candidates: Vec<NodeId> = conf
+            .voters
+            .iter()
+            .copied()
+            .filter(|id| *id != target && self.nodes.get(id).is_some_and(|n| n.alive))
+            .collect();
+        let Some(to) = self.membership_rng.pick(&candidates).copied() else {
+            return;
+        };
+        if let Some(node) = self.nodes.get_mut(&target) {
+            let _ = node.core.step(Input::TransferLeader { to });
+            self.stats.transfers_requested += 1;
         }
         self.pump(target);
         self.check(target);
@@ -2015,7 +2208,26 @@ impl World {
         if ids.len() < 2 {
             return;
         }
-        let quorum = ids.len() / 2 + 1;
+        // A majority of the *voters*, not of every node that exists. Under a
+        // joint configuration it is a majority of both halves, and the smaller
+        // half is the one that binds — a crash budget computed over the whole
+        // node map would happily kill enough of `C_old` to stop the cluster
+        // while the arithmetic still said a quorum survived. Learners never
+        // count: they do not vote, so killing one cannot cost a quorum.
+        let quorum = self
+            .nodes
+            .values()
+            .map(|n| n.core.conf())
+            .map(|conf| {
+                let incoming = conf.voters.len() / 2 + 1;
+                if conf.is_joint() {
+                    incoming.max(conf.voters_outgoing.len() / 2 + 1)
+                } else {
+                    incoming
+                }
+            })
+            .max()
+            .unwrap_or(ids.len() / 2 + 1);
 
         // One draw, compared against the table's running totals. It is one draw
         // rather than several because the number of draws a decision costs is
@@ -2295,6 +2507,19 @@ impl World {
             }
         }
         self.stats.highest_term = self.stats.highest_term.max(term);
+        // Membership, observed on the node rather than tracked by the harness:
+        // the configuration is a function of the applied log, so the node is
+        // the only thing that knows what it currently is.
+        if let Some(node) = self.nodes.get(&id) {
+            let conf = node.core.conf();
+            if conf.is_joint() {
+                self.stats.joint_config_windows += 1;
+            }
+            let shape = (conf.voters.clone(), conf.voters_outgoing.clone());
+            if self.configurations_seen.insert(shape) {
+                self.stats.distinct_configurations = self.configurations_seen.len() as u64;
+            }
+        }
         if became_leader {
             self.stats.elections += 1;
             let digest = &self.nodes[&id].digest;

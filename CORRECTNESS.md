@@ -121,6 +121,24 @@ node answered and when.
 | Pre-vote stops a partitioned node burning terms nobody can hear | `pre_vote_stops_a_partitioned_node_from_burning_terms`; `scripts/negative-demos/pre-vote.sh` — a margin, because what pre-vote costs is availability rather than safety | enforced |
 | A client's read observed under a real cluster's faults | `scripts/porcupine.sh` — see [Checked by somebody else's checker](#checked-by-somebody-elses-checker) | enforced |
 
+## Membership, under the fault schedule
+
+Until P23 these rested entirely on an in-process cluster whose own doc comment
+admits FIFO messages, instantaneous persistence and no clock. `keel-sim` issued
+neither `Input::ProposeConfChange` nor `Input::TransferLeader`, so joint
+consensus — the one place where getting a quorum wrong elects two leaders — was
+the one place the simulator had never been.
+
+| Property | Enforced by | Status |
+|---|---|---|
+| Membership changes commit under partitions, crashes and leadership churn | the `membership-hunt` profile in the sweep; every Raft safety oracle applies unchanged | enforced |
+| The joint configuration is genuinely open while other things happen | `membership_actually_changes_and_the_joint_configuration_is_actually_open` — `joint_config_windows` non-zero | enforced |
+| The cluster actually reaches configurations it did not boot with | the same test: `distinct_configurations > 1` | enforced |
+| A second change while one is in flight is refused, and that refusal happens | the same test: `conf_changes_refused > 0` | enforced |
+| Leader transfers are requested under faults | the same test: `transfers_requested > 0` | enforced |
+| The crash nemesis's quorum is a majority of the *voters*, and of both halves when joint | `World::on_nemesis` — a budget computed over every node that exists would kill enough of `C_old` to stop the cluster while the arithmetic still said a quorum survived | enforced |
+| The profiles that predate membership changes propose none | `the_profiles_that_predate_membership_changes_propose_none` | enforced |
+
 ## A cluster under chaos
 
 Faults injected into real processes, from a seed. The simulator cannot reach any

@@ -136,7 +136,7 @@ jobs:
       matrix:
         shard: [0, 1]
         nodes: [3, 5]
-        profile: [default, chaos, fig8-hunt, read-hunt, lease-drift]
+        profile: [default, chaos, fig8-hunt, read-hunt, lease-drift, membership-hunt]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

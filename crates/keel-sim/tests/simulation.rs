@@ -266,6 +266,9 @@ const PINNED: &[(&str, u64, u64)] = &[
     ("lease-drift", 0, 0xe454_41a7_ceaa_13e5),
     ("lease-drift", 7, 0x92b3_606e_4e93_f6be),
     ("lease-drift", 42, 0x7a5f_1f9c_2e46_0e6f),
+    ("membership-hunt", 0, 0xdad4_dca8_43d3_88f5),
+    ("membership-hunt", 7, 0xd6b8_cabf_427f_3760),
+    ("membership-hunt", 42, 0xde69_14f9_cc4f_c8e9),
 ];
 
 #[test]
@@ -724,4 +727,80 @@ fn pre_vote_stops_a_partitioned_node_from_burning_terms() {
         "only {without} terms were burned without pre-vote across {seeds} seeds, \
          which is too few to be a margin rather than noise"
     );
+}
+
+/// P23's exit criterion. Membership changes have to actually happen, and the
+/// joint configuration has to actually be open while other things are going on.
+///
+/// Four counters, and each of them is a different way the profile could look
+/// like it was testing membership without doing so. Changes proposed but never
+/// committed leaves the cluster in the configuration it booted with; a
+/// configuration that moves but never through `C_old,new` would mean joint
+/// consensus was being skipped; and refusals matter because the one-change-in-
+/// flight rule is itself a safety property and a run that never triggered it
+/// never checked it.
+#[test]
+fn membership_actually_changes_and_the_joint_configuration_is_actually_open() {
+    let mut proposed = 0;
+    let mut refused = 0;
+    let mut configurations = 0;
+    let mut joint = 0;
+    let mut transfers = 0;
+    for seed in 0..8 {
+        let cfg = SimConfig::named("membership-hunt", 5).expect("membership-hunt exists");
+        let mut world = World::new(seed, cfg);
+        world.run(40_000);
+        assert!(
+            !world.is_broken(),
+            "membership-hunt seed {seed} failed:\n{}",
+            world.failure_report()
+        );
+        proposed += world.stats.conf_changes_proposed;
+        refused += world.stats.conf_changes_refused;
+        configurations = configurations.max(world.stats.distinct_configurations);
+        joint += world.stats.joint_config_windows;
+        transfers += world.stats.transfers_requested;
+    }
+    assert!(proposed > 0, "no membership change was ever proposed");
+    assert!(
+        refused > 0,
+        "no membership change was ever refused, so the one-in-flight rule was \
+         never exercised"
+    );
+    assert!(
+        configurations > 1,
+        "the cluster never left the configuration it booted with, so nothing \
+         about membership was tested"
+    );
+    assert!(
+        joint > 0,
+        "the joint configuration was never observed open, so joint consensus \
+         was exercised only as a code path and never as a hazard"
+    );
+    assert!(transfers > 0, "no leader transfer was ever requested");
+}
+
+/// The profiles that predate membership changes still propose none.
+///
+/// The other half of "their fingerprints did not move", named here so that the
+/// pinned table going red would say why.
+#[test]
+fn the_profiles_that_predate_membership_changes_propose_none() {
+    for profile in ["default", "chaos", "fig8-hunt", "read-hunt"] {
+        let cfg = SimConfig::named(profile, 3).expect("profile exists");
+        assert_eq!(cfg.conf_change_pct, 0, "{profile}");
+        assert_eq!(cfg.transfer_pct, 0, "{profile}");
+        assert_eq!(cfg.initial_voters, 0, "{profile}");
+        let mut world = World::new(3, SimConfig::named(profile, 3).expect("profile"));
+        world.run(20_000);
+        assert_eq!(
+            world.stats.conf_changes_proposed + world.stats.transfers_requested,
+            0,
+            "{profile} touched the membership stream"
+        );
+        assert_eq!(
+            world.stats.joint_config_windows, 0,
+            "{profile} entered a joint configuration without proposing anything"
+        );
+    }
 }

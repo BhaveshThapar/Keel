@@ -339,6 +339,13 @@ fn main() -> ExitCode {
             println!("  committed index  {}", s.committed);
             println!("  applied index    {}", s.applied);
             println!("  live nodes       {}/{nodes}", world.live_nodes());
+            println!(
+                "  conf changes proposed/refused {}/{}",
+                s.conf_changes_proposed, s.conf_changes_refused
+            );
+            println!("  distinct configurations {}", s.distinct_configurations);
+            println!("  joint config windows {}", s.joint_config_windows);
+            println!("  transfers requested {}", s.transfers_requested);
             println!("  terms led        {}", s.terms_with_leaders);
             println!("  highest term     {}", s.highest_term);
             println!(
