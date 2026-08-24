@@ -20,7 +20,7 @@ low by about three times — and `scripts/check-docs.sh` and
 and committed result to what the tree actually contains. The second found three
 artifacts with no provenance header on the day it was written.
 
-**P2 through P10 are done.** `keel-rand`, `keel-api` and `keel-net` are in, `keel-raft` has
+**M1 is done: P2 through P11.** `keel-rand`, `keel-api` and `keel-net` are in, `keel-raft` has
 `Input::StepDown`, `RaftCore::restore(cfg, Restored { .. })` and lease reads
 resolved inside the core, and the decisions are ADR-017 through ADR-019. The
 exit criterion holds: a `Message` round-trips identically through `TcpTransport`
@@ -66,7 +66,7 @@ One remains, and it is hard for the same reason:
    takes a snapshot, or the whole sweep goes red for a day. Every artifact and
    the pinned fingerprint table move again in that commit.
 
-### M1 — a cluster that serves traffic
+### M1 — a cluster that serves traffic *(complete)*
 
 | # | Phase | Exit criterion |
 |---|---|---|
@@ -79,7 +79,7 @@ One remains, and it is hard for the same reason:
 | ~~P8~~ | ~~**The simulator drives the real stack**~~ | **Done.** Every profile sweeps clean over the real log and the real state machine; every artifact regenerated, the pinned fingerprints moved, and the CI budget re-derived from the new cost |
 | ~~P9~~ | ~~Model oracles, three demonstrations they have teeth~~ | **Done.** A reference state machine fed the committed log in order; five demonstrations, every control clean and every experiment dirty on the same seeds; the session, refusal and model counters all asserted non-zero |
 | ~~P10~~ | ~~`keel-client`, the `kv` CLI, history recorder, 3-node cluster in CI~~ | **Done.** Three real processes, a client that finds the leader by itself, writes that survive the leader being killed, and a recorded history |
-| P11 | Maelstrom `lin-kv` without a nemesis; M1 reconciliation | The full M1 gate set green in one run, plus a committed `results/maelstrom/` artifact |
+| ~~P11~~ | ~~Maelstrom `lin-kv` without a nemesis; M1 reconciliation~~ | **Done.** Knossos finds a 60-second, 30-op/s three-node history linearizable; the artifact is in `results/maelstrom/` |
 
 **Sequencing that is not optional:** P2 before everything (leaf crates); P3
 before P4 (`LsmStore` needs the batch); P4 before P5 and P6; P6 before P7 and
@@ -163,7 +163,6 @@ the right phase rather than at the last moment:
 | TR-3's "≥ 2,000 seeds": distinct seeds (P19 required) or seed-runs (already met) | P19 |
 | Commit the fuzz corpus and `.hlog` interval logs, or CI-cache them | P22 / P25 |
 | A nightly toolchain for `cargo-fuzz`, or drop coverage guidance and ASan | P22 |
-| Maelstrom pinned by tarball + sha256, or an operator-provided `MAELSTROM_HOME` | P11 |
 | Publish the crates to crates.io at the tag, or keep the dry-run as a hygiene check | P28 |
 | `v1.0.0` waits on a multi-day soak, or the 4-hour nightly is enough and the gap goes in "Not claimed" | P28 |
 

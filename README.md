@@ -193,9 +193,13 @@ hardware and no commit behind it. Both run in CI.
 - **No performance number.** Nothing has been benchmarked. The throughput,
   latency, and etcd-comparison figures this project intends to publish will be
   measured on stated Linux hardware with fsync on, or they will not be published.
-- **Not Jepsen-tested.** The plan is Jepsen-*style* checking via Maelstrom and
-  Porcupine. A real Jepsen run is a different artifact, and the distinction
-  matters.
+- **Not Jepsen-tested.** Jepsen's *Maelstrom* drives a three-node cluster on the
+  `lin-kv` workload and Knossos finds the history linearizable
+  ([`results/maelstrom/`](results/maelstrom/)) — but with no nemesis, so it is a
+  floor rather than a result. A real Jepsen run is a different artifact again,
+  and the distinction matters. Partitions, crashes and clock skew are M2.
+- **No Porcupine yet.** The client records a history in the shape a checker
+  wants, including the indeterminate outcome; nothing has checked one (M2).
 - **Durability is not proven end to end under a real nemesis.** A node has been
   killed a thousand times mid-apply and a leader killed under a live client, both
   with nothing lost. What has not happened is a partition proxy, a clock jump, or
