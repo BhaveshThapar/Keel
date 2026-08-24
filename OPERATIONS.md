@@ -122,6 +122,22 @@ that the applied index and the data still agree. Sixty cycles by default, which
 is what an ordinary `cargo test` runs; the thousand is a CI job of its own
 because it takes minutes.
 
+## The external checker
+
+```
+scripts/maelstrom.sh [seconds] [ops-per-second]
+```
+
+Runs Jepsen's Maelstrom against a three-node cluster on the `lin-kv` workload
+and lets Knossos decide whether the history is linearizable. Maelstrom is pinned
+by tarball and SHA-256 and cached outside the repository; set `MAELSTROM_HOME` to
+point at a copy you already have.
+
+Needs a JVM and **gnuplot**. Without gnuplot, Maelstrom's plot checkers return
+`:unknown` and the whole run reports `:unknown` while every correctness check
+passed — an inconclusive result that looks like a real one, so the script refuses
+to start rather than producing it.
+
 ## Keeping the documents honest
 
 ```

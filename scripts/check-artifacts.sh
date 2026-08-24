@@ -67,6 +67,9 @@ fi
 
 # ------------------------------------------- 4. demonstrations and recordings
 
+# The Maelstrom run is not a demonstration and has no control arm, so it is
+# checked for provenance like any other artifact and exempted from the PASS
+# rule below only by living outside results/negative-demos/.
 for demo in scripts/negative-demos/*.sh; do
     name="$(basename "$demo" .sh)"
     [[ -f "results/negative-demos/$name.txt" ]] ||

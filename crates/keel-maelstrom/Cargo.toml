@@ -1,0 +1,29 @@
+[package]
+name = "keel-maelstrom"
+description = "Drives the same Keel consensus core under Jepsen's Maelstrom, over line-delimited JSON on stdin and stdout."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+categories = ["development-tools::testing"]
+keywords = ["raft", "maelstrom", "jepsen", "linearizability", "testing"]
+
+[[bin]]
+name = "keel-maelstrom"
+path = "src/main.rs"
+
+[dependencies]
+keel-api = { workspace = true }
+keel-raft = { workspace = true }
+keel-sm = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+# The one crate in the workspace that needs a JSON parser, because Maelstrom's
+# protocol is JSON and hand-rolling a parser for somebody else's format is how
+# an adapter becomes the thing under test.
+serde_json = "1"
+
+[lints]
+workspace = true

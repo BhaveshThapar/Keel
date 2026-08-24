@@ -52,6 +52,28 @@ row that was never written.
 | Membership changes do not stall writes | `cluster_behaviour::writes_keep_flowing_during_a_membership_change` | enforced |
 | A far-behind follower catches up from the log, not a snapshot | `cluster_behaviour::a_follower_that_missed_thousands_of_entries_catches_up_without_a_snapshot` | enforced |
 
+## Checked by somebody else's checker
+
+| Property | Enforced by | Status |
+|---|---|---|
+| A three-node cluster's history is linearizable, without a nemesis | `scripts/maelstrom.sh` — Jepsen's Maelstrom driving `lin-kv`, checked by Knossos; committed output in [`results/maelstrom/`](results/maelstrom/) | enforced |
+| The same core runs under a third transport with no conditional compilation | the adapter in `keel-maelstrom` constructs the same `RaftCore` (FR-12) | enforced |
+| Under partition, crash and clock skew | — | planned (M2 Phase 18) |
+| A real cluster's history, checked by Porcupine | — | planned (M2 Phase 18) |
+
+The distinction that makes this worth having: every other check in this file is
+one we wrote, against a property we chose. Knossos applies a definition of
+linearizability nobody here chose to a history it recorded itself, and it does
+not care what anyone here believes about the code.
+
+Two things the run does not establish, stated because a passing external checker
+invites more confidence than it has earned. There is **no nemesis** — no
+partitions, no crashes, no clock skew — so it is a floor rather than a result: a
+system that cannot pass without faults will not pass with them. And the adapter
+**does not persist**, because Maelstrom does not restart nodes with their storage
+intact; crash recovery is what the simulator's disk profiles and the kill loop
+are for.
+
 ## A cluster of real processes
 
 | Property | Enforced by | Status |

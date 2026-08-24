@@ -1,0 +1,59 @@
+==============================================================
+Maelstrom lin-kv, no nemesis
+  3 nodes, 30s at 20 ops/s, Maelstrom v0.2.4
+==============================================================
+host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
+commit: b7fd664 (working tree modified)
+date:   2026-08-24T13:48:47Z
+
+The checker is Knossos, inside Maelstrom. It applies a definition of
+linearizability nobody here chose to a history it recorded itself.
+
+No nemesis in this run: no partitions, no crashes, no clock skew.
+That is deliberate and it is a floor rather than a result — a system
+that cannot pass without faults will not pass with them. The nemesis
+run is M2's.
+
+                                                              :f :cas,
+                                                              :value [3
+                                                                      3],
+                                                              :index 969,
+                                                              :time 26166147667}
+                                                             {:process 147,
+                                                              :type :invoke,
+                                                              :f :cas,
+                                                              :value [4
+                                                                      3],
+                                                              :index 1010,
+                                                              :time 27383793042}
+                                                             {:process 148,
+                                                              :type :invoke,
+                                                              :f :write,
+                                                              :value 1,
+                                                              :index 1013,
+                                                              :time 27493543958}
+                                                             {:process 153,
+                                                              :type :invoke,
+                                                              :f :cas,
+                                                              :value [3
+                                                                      3],
+                                                              :index 1052,
+                                                              :time 28388877583}
+                                                             {:process 160,
+                                                              :type :invoke,
+                                                              :f :cas,
+                                                              :value [3
+                                                                      1],
+                                                              :index 1107,
+                                                              :time 29785575583}]}),
+                                        :final-paths ()},
+                         :timeline {:valid? true},
+                         :valid? true}},
+            :failures []},
+ :valid? true}
+
+
+Everything looks good! ヽ(‘ー`)ノ
+
+==============================================================
+PASS: Knossos found the history linearizable.
