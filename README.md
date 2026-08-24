@@ -3,16 +3,17 @@
 A Raft-replicated key-value store in Rust, built on an LSM storage engine, and
 verified by a deterministic simulator that replays any failure from a seed.
 
-> **Status: in development (M2).** A three-node cluster of real processes serves
+> **Status: in development (M4).** A three-node cluster of real processes serves
 > traffic, takes and streams snapshots, and survives being partitioned, paused,
-> killed a thousand times and clock-jumped — with the history it produced checked
-> by Porcupine and by Knossos, and by a control arm that proves those checkers
-> reject a corrupted one. No performance number is claimed, because none has been
-> measured. See [Not claimed](#not-claimed).
+> killed a thousand times and clock-jumped — with the histories it produced
+> checked by Porcupine and by Knossos, and by control arms that prove those
+> checkers reject a corrupted one. Performance numbers exist and are
+> **Exploratory tier**: measured on a laptop, reproducible, and never headlined.
+> See [Not claimed](#not-claimed) and [BENCH.md](BENCH.md).
 
 ## What is here today
 
-Thirteen crates.
+Fourteen crates.
 
 **[`keel-raft`](crates/keel-raft/)** — a Raft consensus core that does no I/O,
 owns no threads, and reads no clock. You feed it events and it hands back a
@@ -79,6 +80,13 @@ string arrives from somewhere this process does not control, plus a seeded smoke
 harness that runs them on stable on every commit. A corrupted log record is
 rejected sixty times out of sixty; with the checksum compiled out the same
 corruptions are accepted, which is what makes the first number mean anything.
+
+**[`keel-bench`](crates/keel-bench/)** — the gate every published number has to
+pass, built *before* any code that could produce one. A run on a memory
+filesystem or with fsync off is refused; an ablation that is supposed to run that
+way is *admitted* with the reason stamped into its header. Load is offered
+open-loop with the latency measured from when each request was **due**, which is
+what stops a stall being under-sampled by exactly the clients it delayed.
 
 The consensus core exists to make the simulator possible. Because the core is a pure function
 of its inputs, a run is a pure function of `(seed, config)`: any failure is
@@ -221,9 +229,14 @@ hardware and no commit behind it. Both run in CI.
 
 ## Not claimed
 
-- **No performance number.** Nothing has been benchmarked. The throughput,
-  latency, and etcd-comparison figures this project intends to publish will be
-  measured on stated Linux hardware with fsync on, or they will not be published.
+- **No headline performance number, and none from a reference platform.** Every
+  figure in [`results/bench/`](results/bench/) is Exploratory tier: an Apple M2
+  Pro laptop, macOS, `F_FULLFSYNC`, with a browser open. Reproducible, honest,
+  and never quoted without that qualifier — which is stated in each file's
+  header, repeated above its numbers, and rendered into every plot's caption,
+  because a picture travels further than the file it came from. The harness for
+  the reference tier is built and runs; what is missing is Linux hardware, and
+  that is the whole of what is missing. See [BENCH.md](BENCH.md).
 - **Not Jepsen-tested.** Jepsen's *Maelstrom* drives a three-node cluster on the
   `lin-kv` workload, with and without a partition nemesis, and Knossos finds both
   histories linearizable ([`results/maelstrom/`](results/maelstrom/)). A real

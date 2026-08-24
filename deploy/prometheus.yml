@@ -1,0 +1,17 @@
+# Scraping the three nodes' admin surfaces.
+#
+# Five seconds, not the fifteen Prometheus defaults to. An election takes
+# hundreds of milliseconds and a failover demonstration is over in under a
+# second; at fifteen seconds the whole event falls between two samples and the
+# dashboard shows a leader that never changed.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: keel
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["keel1:7201", "keel2:7201", "keel3:7201"]
+        labels:
+          cluster: local

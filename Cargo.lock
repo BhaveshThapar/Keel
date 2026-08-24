@@ -298,6 +298,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-bench"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "keel-chaos",
+ "keel-client",
+ "keel-log",
+ "keel-rand",
+ "libc",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "keel-chaos"
 version = "0.1.0"
 dependencies = [

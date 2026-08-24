@@ -144,8 +144,8 @@ unchanged. That is checkable because the disk is inside `World::fingerprint`, so
 
 | # | Phase | Exit criterion |
 |---|---|---|
-| P24 | The benchmark gate, **before any number exists** | No code path writes under `results/bench/` without a `Publishable`; tmpfs and zero-fsync experiments are refused and their controls admitted |
-| P25 | Workload, loops, campaigns, curves, plots | One campaign runs end to end on a CI runner and produces an SVG that regenerates **byte-for-byte** |
+| ~~P24~~ | ~~The benchmark gate, **before any number exists**~~ | **Done.** `Evidence` is a sealed trait with two implementations, so there is no third way to write under `results/bench/`; tmpfs and fsync-off are refused and their ablations admitted with the reason stamped in. The path is not the caller's to choose either — it names a file, not a location ([ADR-031](DESIGN.md)) |
+| ~~P25~~ | ~~Workload, loops, campaigns, curves, plots~~ | **Done.** Open-loop with the latency measured from when each request was *due*, so a stall is charged to every request it delayed ([ADR-032](DESIGN.md)); curves rather than points, three runs a rate, median reported; SVG by integer arithmetic with no plotting library, so it regenerates byte for byte |
 | P26 | etcd baseline, failover, snapshot bench, latency breakdown | Blocked on hardware, not on engineering |
 | P27 | Compose, dashboard, `BENCH.md`, results-first README | — |
 | P28 | Run the campaigns, release checklist, `v1.0.0` | `scripts/release-checklist.sh` exits 0 on a clean tree at the tagged commit |

@@ -864,6 +864,90 @@ can say so and have that belief checked instead.
 
 ---
 
+## ADR-031 — The gate is a type, and it was built before anything could produce a number
+
+`keel-bench` cannot write a file under `results/bench/` without an `Evidence`,
+and `Evidence` is a sealed trait with exactly two implementations: `Publishable`,
+which has no constructor other than a function that checks four conditions, and
+`Admitted`, which carries the reason it failed them. There is no third
+implementation and no way to write one.
+
+**Built first, and that is the decision.** A gate added after the first number
+exists is a gate that has already been bypassed once, and the number that
+bypassed it is the one everybody quotes. So this landed at P24, before the
+workload, the campaign runner or the plots — with nothing to gate.
+
+**What it refuses, and why none of it is pedantry.** A data directory on tmpfs:
+an fsync there returns without doing anything, so the run measures a memcpy, and
+typically reports three to ten times what the same code does on a disk. Fsync
+off: both `Barrier` and `None` are legitimate configurations and neither may
+produce a durability number, because the claim a headline makes is about a system
+that survives power loss. Hardware nobody stated: a throughput figure with no
+CPU and no filesystem behind it is not reproducible. One repetition: a number
+with no spread invites a comparison it cannot support.
+
+**The second door had to exist.** An ablation measuring fsync-off throughput is
+*the experiment*, not a mistake — its whole point is the comparison with fsync
+on. Without `Admitted`, the only way to record that arm would have been to weaken
+the gate, and a gate weakened once for a good reason is not a gate. So an
+admitted result is written with `tier: NOT PUBLISHABLE`, the refusal, and what
+the run was for. That last field is the difference between "the fsync-off arm of
+the durability ablation" and "we could not make the disk go faster", and in six
+months it is the only thing that tells them apart.
+
+**The honest limit.** The *tier* is a label the caller chooses; nothing in a type
+can tell a dedicated Linux box from a laptop. What stops a laptop number being
+headlined is that somebody has to write `Tier::Reference` down, in a commit,
+where a reviewer can see it. That is said in the tests rather than papered over.
+
+**The path is not the caller's either.** An earlier version took a path and
+checked it began with `results/bench/`, which meant reasoning about `..`,
+absolute paths and a current working directory that tests had to mutate — a
+global that made them race each other. Taking a *file name* removes the class:
+the directory is not something a caller can express.
+
+---
+
+## ADR-032 — Latency is measured from when a request was due
+
+Load is offered open-loop, and each request's latency runs from the moment it
+was *scheduled* to be sent rather than from the moment a sender thread got to
+it. That one line is the difference between a benchmark and a sales figure.
+
+A closed-loop client sends, waits, and sends again. When the server slows down
+such a client sends *less* — so slow periods produce fewer samples than fast
+ones, and the tail, which is made entirely of slow periods, is under-sampled by
+exactly the thing it is trying to measure. A system that stalls for a second and
+serves the rest of that second in a microsecond reports an excellent p99 from a
+closed-loop harness, because during the stall nobody was measuring.
+
+Fixing the schedule in advance fixes it: request *i* is due at
+`start + i / rate` whatever the server is doing, so a stall lands on every
+request that was due during it — which is what actually happened to a client
+that wanted to send at that rate.
+
+**Closed-loop is kept**, because the two answer different questions: closed-loop
+measures what a fixed number of clients get, open-loop measures what a fixed
+offered rate costs. Each run's shape is in its header so they cannot be compared
+by accident.
+
+**The load generator is measured too.** A run counts the requests it could not
+issue on time, and a row where that exceeds a twentieth of the attempts is marked
+in the output: its offered rate is a request rather than a fact, and its achieved
+throughput says as much about the harness as about the cluster. Printed rather
+than dropped, because where a harness stops keeping up is itself worth knowing.
+
+**The histogram is in this repository rather than a crate**, and not to save a
+dependency: the buckets have to serialise and compare byte for byte so a plot
+regenerates identically, and that is a property of an implementation rather than
+of an interface. It buckets by magnitude — 128 sub-buckets per power of two — so
+relative error is bounded everywhere instead of absolute error being bounded near
+zero and useless at the tail, and a reported percentile is the bucket's upper
+edge so it is never optimistic. That is also why a p99 can read a shade above the
+max, which is the one raw value in the table, and why the table says so.
+
+---
+
 ## Planned
 
 These are decided but not yet built. They are recorded here so the shape is

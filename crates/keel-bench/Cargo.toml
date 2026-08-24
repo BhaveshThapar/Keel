@@ -1,0 +1,30 @@
+[package]
+name = "keel-bench"
+description = "The gate every published number has to pass, and the harness that produces them."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+categories = ["development-tools::profiling"]
+keywords = ["benchmark", "latency", "hdrhistogram", "methodology"]
+
+[[bin]]
+name = "keel-bench"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+keel-chaos = { workspace = true }
+keel-client = { workspace = true }
+keel-log = { workspace = true }
+keel-rand = { workspace = true }
+libc = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

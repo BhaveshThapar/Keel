@@ -1,0 +1,278 @@
+{
+  "description": "A three-node Keel cluster. Every panel here answers a question somebody actually asks during a demonstration: who is leader, is it replicating, is it durable, and did anything break. Panels are described rather than left to be guessed at, because a dashboard whose numbers need explaining out loud is a dashboard that gets screenshotted and misread.",
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "description": "One line per node, 1 when it believes it is leader. Two lines at 1 in the same term would be an Election Safety violation; two at 1 in *different* terms is a deposed leader that has not found out yet, which is normal and brief. The distinction is the term panel below.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PROM"
+          },
+          "expr": "keel_is_leader",
+          "legendFormat": "node {{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Who is leader",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "description": "Terms only ever increase. A term climbing while nothing else moves is a cluster that cannot elect - a partitioned node campaigning, or a quorum that is not there. Pre-vote exists to keep this flat.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 2,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PROM"
+          },
+          "expr": "keel_term",
+          "legendFormat": "node {{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Term",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "description": "How far each node is behind what the cluster has committed. Two distances, because they fail differently: applied-behind-commit is a slow state machine, durable-behind-commit is a slow disk, and only the second one costs a leader its ability to count itself towards a quorum.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "id": 3,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PROM"
+          },
+          "expr": "max(keel_commit_index) - keel_applied_index",
+          "legendFormat": "applied behind commit, {{instance}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PROM"
+          },
+          "expr": "max(keel_commit_index) - keel_persisted_index",
+          "legendFormat": "durable behind commit, {{instance}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Replication lag",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "description": "Committed entries per second, derived from the index rather than from a counter, so it is the same quantity the safety oracles watch.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
+      "id": 4,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PROM"
+          },
+          "expr": "rate(keel_commit_index[1m])",
+          "legendFormat": "entries/s, {{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Commit rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "description": "1 when this node's fsyncs survive power loss. A cluster showing 0 here is running in a mode no durability claim may be made about, and every benchmark taken against it is refused by the Publishable gate for the same reason.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 13
+      },
+      "id": 5,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PROM"
+          },
+          "expr": "keel_sync_durable",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Durability",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "description": "Voting members. It changes during a membership change and the nodes disagree about it briefly, which is joint consensus working rather than failing.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 8,
+        "y": 13
+      },
+      "id": 6,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PROM"
+          },
+          "expr": "keel_voters",
+          "legendFormat": "voters, {{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Configuration size",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "description": "1 when a node has hit a storage error it cannot continue past. It stops serving rather than carrying on, because a node that cannot make writes durable and keeps acknowledging them is worse than a node that is down.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 13
+      },
+      "id": 7,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PROM"
+          },
+          "expr": "keel_failed",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Latched storage failure",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "description": "Segment files on disk. A count that climbs and never falls is compaction not happening - the log floor is not moving, which eventually means a restart replays everything.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
+      "id": 8,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PROM"
+          },
+          "expr": "keel_log_segments",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Log segments",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": [
+    "keel",
+    "raft"
+  ],
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "title": "Keel",
+  "uid": "keel-cluster",
+  "version": 1
+}

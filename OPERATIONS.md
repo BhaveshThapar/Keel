@@ -1,215 +1,146 @@
 # Operations
 
-What exists to run today, and what does not.
+Running a Keel cluster, watching it, and breaking it on purpose.
 
-> The server, client, CLI, admin API, metrics, and Docker Compose files are M1
-> and later work. There is nothing to deploy yet. This file covers the tools
-> that are built.
-
-## The simulator
+## Starting a node
 
 ```
-cargo build --release -p keel-sim
+keel-server \
+  --id 1 \
+  --dir /var/lib/keel \
+  --listen 0.0.0.0:7001 \
+  --client 0.0.0.0:7101 \
+  --admin  0.0.0.0:7201 \
+  --peer 1=node1:7001 --peer 2=node2:7001 --peer 3=node3:7001 \
+  --sync durable
 ```
 
-### Sweep seeds
+Every node is given the whole peer list, **including itself**. A node not in its
+own peer list refuses to start rather than serving alone, because a cluster of
+one that believes it is a cluster of three is the failure mode that loses data
+quietly.
+
+### Wait for the ready file, not the port
+
+`--dir/keel.ready` appears once recovery is finished. The listener is bound
+*before* the log is replayed, so a supervisor that waits for the socket starts
+sending traffic to a node that is still recovering. The file is published by
+rename, so it never exists half-written.
 
 ```
-keel-sim run --from 0 --count 500 --steps 60000 --nodes 5 --profile chaos
+until [ -f /var/lib/keel/keel.ready ]; do sleep 0.2; done
 ```
 
-Exits non-zero if any seed reports a safety violation, printing the seed, the
-violated property, the last events before it, and every node's state.
+### `--sync`
 
-| Profile | What it is for |
+| Mode | What it means |
 |---|---|
-| `default` | Steady client traffic with occasional partitions and crashes. Commits thousands of entries per run, so it exercises the ordinary path hard. |
-| `chaos` | Heavy loss, one entry per message, frequent leadership change. Commits far less per run, and reaches states the default profile does not. |
-| `fig8-hunt` | Aimed at the window the Figure 8 rule guards. Strikes the leader the moment it commits an earlier term's entry. Not a fair sample of real faults — evidence about one specific hazard. |
-| `disk-chaos` | Faults aimed at the disk. A crash decides sector by sector what reached the device, at the 4096-byte sector modern hardware has. Proposals are padded to 1 KiB, because a write tears only if it straddles a boundary and the chance of that is the record's length over the sector size. |
-| `disk-hunt` | The same at a 512-byte sector, where a record of a few hundred bytes straddles a boundary about half the time. Smaller segments too, so rollover and multi-segment recovery are crossed often. |
+| `durable` | `F_FULLFSYNC` on macOS, `fdatasync` on Linux. The only mode under which a durability claim may be made. |
+| `barrier` | Writes are ordered but not made to survive power loss. |
+| `none` | Neither ordered nor durable. |
 
-The two sector sizes are a deliberate pair, not a redundancy. 4096 is what the
-hardware is; 512 is where the sub-record shapes are cheap to reach. Both matter,
-and a profile whose segments are smaller than its sector cannot tear **at all** —
-every offset lies in the same sector, so one draw is made and the only outcomes
-are lost and whole. That is not a weaker fault model but an absent one, and
-`fault_fs::a_four_kilobyte_sector_over_a_one_kilobyte_segment_can_never_tear`
-pins the arithmetic so nobody configures it by accident.
+The mode is reported in `/status` and as the `keel_sync_durable` metric, and a
+benchmark taken in anything but `durable` is refused by the gate in BENCH.md.
+It is the first field of `/status` because it is the first thing anyone
+diagnosing a data-loss report needs to know.
 
-Cluster size matters and is not a detail. Commit needs the k-th highest match
-index where k is the quorum size, so a three-node cluster reaches partial
-replication states that a five-node cluster reaches far more rarely. Sweep both.
-
-### Reproduce a failure
+## Looking at a running cluster
 
 ```
-keel-sim repro --seed 4 --steps 80000 --nodes 3 --profile fig8-hunt
+curl -s localhost:7201/status
+curl -s localhost:7201/metrics
 ```
 
-The same seed and config always produce the same run, down to the event order.
-There is no state to save and no log to keep: the seed *is* the reproduction.
+`/status` is JSON for a person. `/metrics` is Prometheus text exposition,
+parsed back by a test the way a scraper parses it, so a malformed body is a
+failing build rather than a silently empty dashboard.
 
-A passing run prints what it did — virtual time, events, messages sent and lost,
-elections, crashes, partitions, entries committed — plus coverage counters
-saying which of the states the safety rules guard were actually reached. A clean
-run over a schedule that never partitioned anything would prove nothing, so the
-counters are part of the result, not decoration.
-
-### Reproduce a disk failure
-
-```
-keel-sim repro --seed 0 --steps 40000 --nodes 3 --profile disk-hunt
-```
-
-The disk counters are the ones to read on a `disk-*` profile:
-
-| Counter | Zero means |
+| Metric | What a bad value looks like |
 |---|---|
-| `crashes with writes in flight` | no crash landed between a write and the fsync covering it, so nothing could have torn however the policy is configured |
-| `bytes in flight at crash` | the same, in bytes; below one sector means a tear was very unlikely |
-| `writes lost/whole/head/tail/pieces` | a head or tail count of zero means the sector model never cut a write |
-| `files left with a hole` | no crash left bytes above a gap — the state [KEEL-7](BUGS.md) lived in |
-| `torn tails` | the real recovery parser never met one, so nothing the tear model produced reached the code it exists to exercise |
-| `tears during partition` | tears and partitions both happened and never met |
+| `keel_is_leader` | two nodes at 1 in the *same* term would be an Election Safety violation; in different terms it is a deposed leader that has not found out yet, which is normal and brief |
+| `keel_term` | climbing while nothing else moves means a cluster that cannot elect — a partitioned node campaigning, or a quorum that is not there |
+| `keel_commit_index`, `keel_applied_index`, `keel_persisted_index` | applied far behind commit is a slow state machine; *durable* far behind commit is a slow disk, and only that one costs a leader its ability to count itself |
+| `keel_log_segments` | climbing and never falling means compaction is not happening |
+| `keel_sync_durable` | 0 means no durability claim may be made about anything this node did |
+| `keel_failed` | 1 means the node hit a storage error it cannot continue past. It stops serving rather than carrying on, because a node that cannot make writes durable and keeps acknowledging them is worse than a node that is down |
 
-A failure on a `disk-*` profile reproduces the same way as any other: the seed is
-the reproduction, and the disk is inside the fingerprint, so
-`keel-sim determinism --profile disk-hunt` covers it too.
-
-### Check determinism
+## A cluster on one machine
 
 ```
-keel-sim determinism --from 0 --count 100 --steps 30000
+docker compose -f deploy/docker-compose.yml up --build
+open http://localhost:3000     # Grafana, anonymous, the Keel dashboard
+open http://localhost:9090     # Prometheus
 ```
 
-Runs each seed twice and compares a fingerprint of the whole world. This is the
-canary for an ambient clock, a hash-map iteration order, or anything else that
-would make a seed stop reproducing. CI runs it on every change so a leak turns
-into a red build the day it appears rather than months later.
+Three nodes, Prometheus scraping every five seconds — not the default fifteen,
+because an election takes hundreds of milliseconds and at fifteen seconds the
+whole event falls between two samples.
 
-## Does the checker have teeth?
+This is for watching, not for running anything: no TLS, no authentication, no
+resource limits, and all three nodes on one host, so a machine failure takes the
+cluster.
 
-```
-scripts/negative-demos/figure-8.sh [seeds] [steps]
-```
-
-Compiles out the Figure 8 current-term commit rule and requires the simulator to
-find the resulting violation, with a control run showing the same fault schedule
-is survivable when the rule is present. Exits non-zero if the control fails
-(the schedule is not survivable, or there is a real bug) or if the experiment
-passes (the harness cannot detect this class of bug at all).
-
-Committed output is in `results/negative-demos/`.
+## The client
 
 ```
-scripts/record-demos.sh [seeds] [steps]
+kv --node 127.0.0.1:7101 --node 127.0.0.1:7102 --node 127.0.0.1:7103 put k v
+kv --node 127.0.0.1:7101 get k
+kv --node 127.0.0.1:7101 incr counter --by 1
+kv --node 127.0.0.1:7101 scan --start a --end z
 ```
 
-Runs every demonstration and writes each one's output to
-`results/negative-demos/`, provenance header and all. Recording by hand is what
-left the first of those files with no header at all, so there is one way to do
-it rather than a convention to remember. Exits non-zero if any demonstration
-stopped demonstrating — the artifact still records what happened, because an
-artifact that only exists when the news is good is not evidence.
+Give it every node's client address; it finds the leader itself and follows
+redirects.
+
+### The one thing to get right: nonces
+
+`--nonce` identifies a *session*. The same nonce reopens the same session, which
+is what makes a retried command apply exactly once. It is also, for the same
+reason, the thing that breaks a script that reuses one across independent
+clients:
+
+> Two clients sharing a nonce share a session. The second one's sequence numbers
+> replay the first one's, so its writes are answered from the exactly-once cache
+> and never applied — acknowledged, and gone.
+
+Give each concurrent client its own nonce. [KEEL-9](BUGS.md) is what this looks
+like when a *server* gets it wrong; the same shape is available to a caller.
+
+## Breaking it on purpose
 
 ```
-KEEL_SM_KILL_CYCLES=1000 cargo test --release -p keel-sm --test kill_during_apply
+# What a seed would do, injecting nothing.
+keel-chaos plan --seed 7 --nodes 3 --secs 60
+
+# Do it: partitions, pauses, kills, and clock jumps where the host allows them.
+scripts/chaos.sh 45 1 2 3 4
+
+# A thousand kill cycles, and the question of whether anything acknowledged was lost.
+scripts/kill-loop.sh 1000 durable 250
+
+# The clock nemesis, which cannot run on macOS at all — see ADR-026.
+scripts/chaos-clock.sh
 ```
 
-Kills a process mid-apply a thousand times over and checks, after every restart,
-that the applied index and the data still agree. Sixty cycles by default, which
-is what an ordinary `cargo test` runs; the thousand is a CI job of its own
-because it takes minutes.
+Every schedule is drawn from a seed and printed before anything is injected, and
+a run that injects no fault, or gets no acknowledgement, **fails** rather than
+reporting a pass.
 
-## The external checker
+## When something is wrong
 
-```
-scripts/maelstrom.sh [seconds] [ops-per-second]
-```
+**A node will not start.** Its log is in `--dir`; the error names which of the
+two subdirectories it could not open. A node that cannot recover its log is not
+a node that starts empty — it refuses, because starting empty is how a cluster
+silently loses a member's history.
 
-Runs Jepsen's Maelstrom against a three-node cluster on the `lin-kv` workload
-and lets Knossos decide whether the history is linearizable. Maelstrom is pinned
-by tarball and SHA-256 and cached outside the repository; set `MAELSTROM_HOME` to
-point at a copy you already have.
+**A node is up and not serving.** Check `keel_is_leader` across all three and
+`keel_term`. A follower that cannot reach the leader parks client requests and
+answers `Unavailable` after five seconds rather than holding the connection.
 
-Needs a JVM and **gnuplot**. Without gnuplot, Maelstrom's plot checkers return
-`:unknown` and the whole run reports `:unknown` while every correctness check
-passed — an inconclusive result that looks like a real one, so the script refuses
-to start rather than producing it.
+**Writes are being refused with `SessionExpired`.** Sessions expire on
+leader-stamped time; a client that has been idle longer than the timeout
+re-registers. This is the client library's job and `kv` does it.
 
-## Keeping the documents honest
-
-```
-scripts/check-docs.sh
-scripts/check-artifacts.sh
-```
-
-The first resolves every test CORRECTNESS.md names against the workspace test
-list, every ADR number against DESIGN.md, every bug number against BUGS.md, and
-every relative link against the tree. The second requires each committed result
-to carry host, commit and date, to name a commit that is an ancestor of HEAD,
-and to have been recorded from a clean tree.
-
-Both run in CI, alongside `shellcheck` over every script — including these two,
-since a checker with an unquoted expansion is how a check comes to pass having
-examined nothing.
-
-## How big the CI sweep is, and why that number
-
-```
-scripts/throughput.sh [seeds] [steps] [repetitions]
-```
-
-Times every profile at both cluster sizes, keeps the slowest repetition, and
-derives what fits inside a job. `results/simulator/disk-throughput.txt` is the
-committed answer and the sizing comments in `.github/workflows/ci.yml` cite it.
-The one figure in there that is not measured is how much slower a GitHub runner
-is than a laptop; it is assumed to be six times, labelled as an assumption, and
-the nightly `throughput` job runs the same script on a runner so it can be
-replaced by a measurement.
-
-## Running the tests
-
-```
-cargo test --workspace
-cargo test -p keel-raft --features negative-demos
-```
-
-The second is not redundant. It compiles the safety guard out and asserts the
-bug appears, so a change that accidentally makes the guard unreachable fails
-here instead of passing quietly.
-
-## What a running node says about itself
-
-Two endpoints, both read-only, both answered on the consensus loop's own turn
-rather than from a thread — a scrape pays a few milliseconds of latency and
-replication pays nothing.
-
-```
-GET /status    -> application/json
-GET /metrics   -> text/plain; version=0.0.4
-```
-
-`/status`'s first field is `sync_mode`, and it is first because it is the field
-an operator most needs and least expects to be wrong. `durable` means this
-node's fsyncs survive a power cut — `F_FULLFSYNC` on macOS, `fdatasync` on Linux
-(ADR-013). A node running in `barrier` looks identical to a durable one right up
-until the machine loses power, so it says so, and `keel_sync_durable` exports the
-same fact as a metric for anyone who alerts on it.
-
-There are no histograms yet. A commit-latency histogram is what FR-13 wants and
-it needs the host loop to time its own fsyncs, which is M4's work; exporting a
-made-up bucket layout now would be worse than exporting nothing, because a
-dashboard would be built on it.
-
-The **ready file** is written after recovery, published by rename so a
-supervisor can never read a half-written one. Waiting for the port to open would
-say only that a socket was bound, which happens before a thirty-gigabyte log has
-been replayed.
-
-## Planned
-
-- `keel server` — running a cluster, the admin CLI, Prometheus metrics, Grafana, Docker Compose (M1–M4).
-- `keel-chaos` — partition proxy, `SIGSTOP`/`SIGKILL` loops, clock jumps against a real cluster (M2).
-- Maelstrom and Porcupine runs (M1–M2).
+**`keel_failed` is 1.** The node latched a storage error. It will not serve
+again in that process. Look at its log output for the error, fix the disk, and
+restart it — its Raft log is intact and it will catch up.

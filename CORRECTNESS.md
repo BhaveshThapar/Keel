@@ -169,6 +169,30 @@ of these, because it replaces the parts they live in: a scheduler, a TCP stack, 
 | A run that injected no fault, or got no acknowledgement, is refused rather than reported as a pass | `keel-chaos run`, checked in `results/chaos/real-cluster.txt` | enforced |
 | A jump reaches `CLOCK_MONOTONIC`, not just the wall clock | `keel-chaos clock-check`, recorded in `results/chaos/clock-jump.txt` — Linux only, see [ADR-026](DESIGN.md) | recorded, not in CI |
 
+## What a number is allowed to mean
+
+A benchmark is a claim, and these are the checks that stop an unsupportable one
+being written down. Built at P24, before any code existed that could produce a
+number: a gate added afterwards is a gate that has already been bypassed once.
+
+| Property | Enforced by | Status |
+|---|---|---|
+| A run on a memory filesystem is refused | `publishable::tests::a_run_on_memory_is_refused` — an fsync on tmpfs returns without doing anything, so the run measures a memcpy | enforced |
+| A run with fsync off is refused | `publishable::tests::a_run_without_fsync_is_refused`, for both `barrier` and `none` | enforced |
+| A run on hardware nobody stated is refused | `publishable::tests::a_host_nobody_described_is_refused` | enforced |
+| Fewer than three repetitions is refused | `publishable::tests::one_run_is_refused_and_three_is_the_floor` | enforced |
+| …and the ablations those refusals name are still recordable, with the reason stamped in | `publishable::tests::an_admitted_run_carries_the_reason_it_cannot_be_published`; `gate::tmpfs_and_zero_fsync_are_refused_and_their_controls_are_admitted` | enforced |
+| Nothing reaches `results/bench/` without evidence | `Evidence` is sealed to two types, so a third way to satisfy it will not compile; `gate::a_result_cannot_be_written_outside_the_bench_directory` covers the part the type system does not express | enforced |
+| An Exploratory result says so above its numbers, not only in its header | `record::tests::an_unheadlineable_result_repeats_the_qualifier_above_the_numbers` | enforced |
+| An open-loop stall is charged to every request it delayed | `workload::tests::an_open_loop_charges_a_stall_to_every_request_it_delayed` — the coordinated-omission correction, as a test rather than as a paragraph | enforced |
+| A run that could not offer the rate it claims says so | `workload::tests::a_run_that_fell_behind_its_schedule_says_so` | enforced |
+| A quoted percentile is never optimistic | `histogram::tests::a_percentile_is_never_optimistic` | enforced |
+| …and the relative error stays bounded at every magnitude | `histogram::tests::the_relative_error_is_bounded_at_every_magnitude` | enforced |
+| A campaign's plot regenerates byte for byte | `plot::tests::the_same_data_renders_the_same_bytes`; `plot::tests::a_series_recorded_out_of_order_draws_the_same_picture` | enforced |
+| A single point is refused, because it is not a curve | `plot::tests::a_single_point_is_refused_because_it_is_not_a_curve` | enforced |
+| A failover report with too few trials says its percentiles describe the draw | `failover::tests::a_report_with_too_few_trials_says_its_percentiles_describe_the_draw` | enforced |
+| A failover trial that killed nothing is discarded, not counted as a fast recovery | `failover::tests::a_trial_that_killed_nothing_is_discarded_rather_than_timed` | enforced |
+
 ## Parsers, against bytes they did not write
 
 Six targets, one per place a byte string arrives from somewhere this process

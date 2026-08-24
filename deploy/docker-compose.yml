@@ -1,0 +1,98 @@
+# A three-node Keel cluster, with Prometheus scraping it and Grafana showing it.
+#
+# This is the thing to hand somebody who asks "can I see it run". It is not a
+# production deployment and does not pretend to be: no TLS, no authentication,
+# no resource limits, and every node on one host so a machine failure takes all
+# three. What it is for is watching a real cluster elect, replicate, fail over
+# and recover, with the numbers that matter on a screen.
+#
+#   docker compose -f deploy/docker-compose.yml up --build
+#   open http://localhost:3000        (Grafana, anonymous, the Keel dashboard)
+#   open http://localhost:9090        (Prometheus, to ask it something else)
+#
+# The nodes reach each other by service name, which is why --peer uses names
+# rather than addresses. A client on the host reaches them on 7101-7103.
+
+services:
+  keel1: &node
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command:
+      - --id=1
+      - --dir=/data
+      - --listen=0.0.0.0:7001
+      - --admin=0.0.0.0:7201
+      - --client=0.0.0.0:7101
+      - --peer=1=keel1:7001
+      - --peer=2=keel2:7001
+      - --peer=3=keel3:7001
+      # Durable, because a demonstration that quietly runs without fsync
+      # teaches the wrong thing about what it is showing.
+      - --sync=durable
+    ports: ["7101:7101", "7201:7201"]
+    volumes: ["keel1-data:/data"]
+    healthcheck:
+      # The ready file, not the port. A node binds its listener before it has
+      # replayed its log, so a supervisor that waits for the socket starts
+      # sending traffic to a node that is still recovering.
+      test: ["CMD", "test", "-f", "/data/keel.ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  keel2:
+    <<: *node
+    command:
+      - --id=2
+      - --dir=/data
+      - --listen=0.0.0.0:7001
+      - --admin=0.0.0.0:7201
+      - --client=0.0.0.0:7101
+      - --peer=1=keel1:7001
+      - --peer=2=keel2:7001
+      - --peer=3=keel3:7001
+      - --sync=durable
+    ports: ["7102:7101", "7202:7201"]
+    volumes: ["keel2-data:/data"]
+
+  keel3:
+    <<: *node
+    command:
+      - --id=3
+      - --dir=/data
+      - --listen=0.0.0.0:7001
+      - --admin=0.0.0.0:7201
+      - --client=0.0.0.0:7101
+      - --peer=1=keel1:7001
+      - --peer=2=keel2:7001
+      - --peer=3=keel3:7001
+      - --sync=durable
+    ports: ["7103:7101", "7203:7201"]
+    volumes: ["keel3-data:/data"]
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["9090:9090"]
+    depends_on: [keel1, keel2, keel3]
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      # Anonymous, because asking somebody to log in to look at a demo is a
+      # step at which they stop looking.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus]
+
+volumes:
+  keel1-data:
+  keel2-data:
+  keel3-data:
