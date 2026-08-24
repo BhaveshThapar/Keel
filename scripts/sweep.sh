@@ -46,6 +46,17 @@ provenance_of "$OUT"
         done
     done
 
+    # Reads, a wandering clock, and a nemesis weighted towards healing so the
+    # cluster commits enough for a stale read to be possible at all. The read
+    # oracles are the only ones here that check what a *client* observes rather
+    # than what the nodes agree about.
+    for nodes in 3 5; do
+        echo "--- profile=read-hunt nodes=$nodes"
+        ./target/release/keel-sim run \
+            --from 0 --count "$SEEDS" --steps "$STEPS" \
+            --nodes "$nodes" --profile read-hunt | tail -2
+    done
+
     echo "--- profile=fig8-hunt nodes=3"
     ./target/release/keel-sim run \
         --from 0 --count "$SEEDS" --steps $(( STEPS + 20000 )) \

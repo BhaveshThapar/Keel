@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use keel_sim::{SimConfig, World, run_seed};
+use keel_sim::{NemesisAction, NemesisWeights, SimConfig, World, run_seed};
 
 /// A short sweep, cheap enough to run on every change. The real sweeps live in
 /// CI; this one exists so a change that breaks safety fails locally in seconds.
@@ -260,6 +260,9 @@ const PINNED: &[(&str, u64, u64)] = &[
     ("snapshot-hunt", 0, 0x80e2_2a35_a9dc_502b),
     ("snapshot-hunt", 7, 0xc6bd_36b6_6021_4bb4),
     ("snapshot-hunt", 42, 0x50af_1a06_ea02_98a0),
+    ("read-hunt", 0, 0x67af_feb9_5ead_cae0),
+    ("read-hunt", 7, 0xfe39_4c8c_485a_9157),
+    ("read-hunt", 42, 0x11cf_bdd1_963e_eb4e),
 ];
 
 #[test]
@@ -451,4 +454,172 @@ fn snapshots_are_actually_taken_streamed_and_resumed() {
          a resume from a restart"
     );
     assert!(completed > 0, "no stream ever finished and installed");
+}
+
+/// P20's constraint, as a test rather than as a hope.
+///
+/// The nemesis weight table replaced six literal ranges. The defaults have to
+/// select exactly the actions those ranges did, for every roll, or every pinned
+/// fingerprint moves — and the fingerprints moving is a diff nobody can tell
+/// from a real regression.
+#[test]
+fn the_default_weights_reproduce_the_ranges_they_replaced() {
+    let weights = NemesisWeights::default();
+    assert_eq!(weights.total(), 100);
+    for roll in 0..100u32 {
+        let expected = match roll {
+            0..=24 => NemesisAction::Split,
+            25..=39 => NemesisAction::OneWay,
+            40..=49 => NemesisAction::Isolate,
+            50..=74 => NemesisAction::Heal,
+            75..=89 => NemesisAction::Crash,
+            _ => NemesisAction::Restart,
+        };
+        assert_eq!(
+            weights.action_for(roll),
+            expected,
+            "roll {roll} selects a different action than the range it replaced"
+        );
+    }
+}
+
+/// A roll can never fall off the end of the table, whatever the weights are.
+///
+/// The last arm is a catch-all rather than a bound, so a table whose weights do
+/// not sum to the roll's range still selects something instead of panicking or
+/// silently doing nothing — which is what a `match` on literal ranges would have
+/// done if somebody edited one.
+#[test]
+fn every_roll_selects_an_action_whatever_the_weights_are() {
+    let tables = [
+        NemesisWeights::default(),
+        NemesisWeights {
+            split: 0,
+            one_way: 0,
+            isolate: 0,
+            heal: 1,
+            crash: 0,
+            restart: 0,
+        },
+        NemesisWeights {
+            split: 3,
+            one_way: 0,
+            isolate: 0,
+            heal: 0,
+            crash: 0,
+            restart: 0,
+        },
+    ];
+    for weights in tables {
+        for roll in 0..200u32 {
+            // Does not panic, and is total.
+            let _ = weights.action_for(roll);
+        }
+        // Inside its own range, a weight of zero is never selected.
+        if weights.total() > 0 {
+            for roll in 0..weights.total() {
+                let action = weights.action_for(roll);
+                let weight = match action {
+                    NemesisAction::Split => weights.split,
+                    NemesisAction::OneWay => weights.one_way,
+                    NemesisAction::Isolate => weights.isolate,
+                    NemesisAction::Heal => weights.heal,
+                    NemesisAction::Crash => weights.crash,
+                    NemesisAction::Restart => weights.restart,
+                };
+                assert!(
+                    weight > 0,
+                    "roll {roll} selected {action:?}, which has weight zero"
+                );
+            }
+        }
+    }
+}
+
+/// A profile that issues reads has to actually get some answered, or the
+/// recency oracle is a check that never ran.
+///
+/// Three counters rather than one, because a read can fail to happen at three
+/// separate points and each of them looks like success from the next one along.
+/// Issued but never confirmed is a cluster with no stable leader; confirmed but
+/// never answered is a state machine that never caught up; and answered with no
+/// *recency window* is a run whose reads all landed before anything was
+/// committed, which cannot be stale and therefore demonstrates nothing.
+#[test]
+fn reads_are_actually_issued_confirmed_and_answered() {
+    let mut issued = 0;
+    let mut confirmed = 0;
+    let mut answered = 0;
+    let mut windows = 0;
+    for seed in 0..12 {
+        let cfg = SimConfig::named("read-hunt", 3).expect("read-hunt exists");
+        let mut world = World::new(seed, cfg);
+        world.run(40_000);
+        assert!(
+            !world.is_broken(),
+            "read-hunt seed {seed} failed:\n{}",
+            world.failure_report()
+        );
+        issued += world.stats.reads_issued;
+        confirmed += world.stats.reads_confirmed;
+        answered += world.stats.reads_answered;
+        windows += world.stats.read_recency_windows;
+    }
+    assert!(issued > 0, "no read was ever issued");
+    assert!(confirmed > 0, "no read was ever confirmed by the core");
+    assert!(answered > 0, "no read was ever answered");
+    assert!(
+        windows > 0,
+        "every read was answered on a cluster with nothing committed, so none of \
+         them could have been stale and the recency oracle checked nothing"
+    );
+}
+
+/// The profiles that predate reads must not issue any.
+///
+/// This is the other half of "the fingerprints did not move": they did not move
+/// because those profiles never touch the read stream, and if one of them
+/// started to, the pinned table would go red for a reason that reads as a
+/// regression. Asserting it here names the cause instead.
+#[test]
+fn the_profiles_that_predate_reads_still_issue_none() {
+    for profile in ["default", "chaos", "fig8-hunt"] {
+        let cfg = SimConfig::named(profile, 3).expect("profile exists");
+        let mut world = World::new(3, cfg);
+        world.run(20_000);
+        assert_eq!(
+            world.stats.reads_issued, 0,
+            "{profile} issued a read; its pinned fingerprint is no longer meaningful"
+        );
+    }
+}
+
+/// Clock drift is off by default, and a profile that turns it on gets it.
+///
+/// The property that matters is the *number of draws*, not the periods
+/// themselves: `range` draws nothing when its bounds collapse, and a drift of
+/// zero must draw nothing at all or every committed fingerprint moves. Two runs
+/// of the same seed at different drifts diverging is the observable form of
+/// that.
+#[test]
+fn clock_drift_is_off_unless_a_profile_asks_for_it() {
+    let base = SimConfig::named("chaos", 3).expect("chaos exists");
+    assert_eq!(base.clock_drift_pct, 0);
+    assert_eq!(base.read_pct, 0);
+
+    let reading = SimConfig::named("read-hunt", 3).expect("read-hunt exists");
+    assert!(reading.clock_drift_pct > 0);
+    assert!(reading.read_pct > 0);
+
+    let mut without = World::new(5, SimConfig::named("chaos", 3).expect("chaos"));
+    without.run(5_000);
+    let mut drifting = SimConfig::named("chaos", 3).expect("chaos");
+    drifting.clock_drift_pct = 25;
+    let mut with = World::new(5, drifting);
+    with.run(5_000);
+    assert_ne!(
+        without.fingerprint(),
+        with.fingerprint(),
+        "turning drift on changed nothing, so the clock stream is never drawn"
+    );
 }

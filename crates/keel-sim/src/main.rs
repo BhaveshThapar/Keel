@@ -224,6 +224,11 @@ fn main() -> ExitCode {
                 "  commands refused no-session/stale {}/{}",
                 s.commands_without_a_session, s.commands_with_a_stale_sequence
             );
+            println!(
+                "  reads issued/confirmed/answered {}/{}/{}",
+                s.reads_issued, s.reads_confirmed, s.reads_answered
+            );
+            println!("  read recency windows {}", s.read_recency_windows);
             println!("  committed index  {}", s.committed);
             println!("  applied index    {}", s.applied);
             println!("  live nodes       {}/{nodes}", world.live_nodes());

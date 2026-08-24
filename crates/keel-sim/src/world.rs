@@ -21,6 +21,101 @@ use keel_rand::Rng;
 
 const TRACE_DEPTH: usize = 64;
 
+/// How often the nemesis reaches for each kind of fault.
+///
+/// A weight table rather than the literal `0..=24 => split, 25..=39 => cut`
+/// ranges this replaced, because those ranges were a decision nobody could
+/// change per profile without rewriting the match — and a profile that wants to
+/// hunt a particular interleaving usually wants a different mix, not a different
+/// set of faults.
+///
+/// The order of the fields is the order they are drawn in, and it is
+/// load-bearing: the roll is a single draw compared against running totals, so
+/// reordering the fields changes which action a given roll selects and moves
+/// every seed's fingerprint. The defaults reproduce the ranges they replaced
+/// exactly, which is why the six committed profiles' fingerprints are unmoved by
+/// this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NemesisWeights {
+    /// Cut the cluster in two at a random point.
+    pub split: u32,
+    /// A one-way link failure — the hardest kind to reason about, because each
+    /// side has a different view of who is reachable.
+    pub one_way: u32,
+    /// Cut one node off from everybody.
+    pub isolate: u32,
+    /// Repair everything.
+    pub heal: u32,
+    /// Crash a node.
+    pub crash: u32,
+    /// Restart one that is down.
+    pub restart: u32,
+}
+
+impl Default for NemesisWeights {
+    fn default() -> Self {
+        // Exactly the ranges this replaced: 0..=24, 25..=39, 40..=49, 50..=74,
+        // 75..=89, and everything else. Changing any of these moves every
+        // pinned fingerprint, which is the point of writing them down.
+        Self {
+            split: 25,
+            one_way: 15,
+            isolate: 10,
+            heal: 25,
+            crash: 15,
+            restart: 10,
+        }
+    }
+}
+
+/// One kind of fault, chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NemesisAction {
+    Split,
+    OneWay,
+    Isolate,
+    Heal,
+    Crash,
+    Restart,
+}
+
+impl NemesisWeights {
+    pub fn total(&self) -> u32 {
+        self.split + self.one_way + self.isolate + self.heal + self.crash + self.restart
+    }
+
+    /// Which action a roll in `0..total()` selects.
+    ///
+    /// Separated from the drawing so it can be tested exhaustively without a
+    /// simulator: the property that matters is that every roll below the total
+    /// maps to some action and that the boundaries fall where the weights say.
+    pub fn action_for(&self, roll: u32) -> NemesisAction {
+        let mut bound = self.split;
+        if roll < bound {
+            return NemesisAction::Split;
+        }
+        bound += self.one_way;
+        if roll < bound {
+            return NemesisAction::OneWay;
+        }
+        bound += self.isolate;
+        if roll < bound {
+            return NemesisAction::Isolate;
+        }
+        bound += self.heal;
+        if roll < bound {
+            return NemesisAction::Heal;
+        }
+        bound += self.crash;
+        if roll < bound {
+            return NemesisAction::Crash;
+        }
+        // Everything above the last boundary, so a roll can never fall off the
+        // end even if the weights do not sum to the roll's range.
+        NemesisAction::Restart
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SimConfig {
     pub nodes: usize,
@@ -104,6 +199,29 @@ pub struct SimConfig {
     /// only by luck; aiming at it directly is how a negative demonstration
     /// shows what the Figure 8 rule is actually preventing.
     pub kill_leader_on_fig8_bypass: bool,
+    /// How often the nemesis reaches for each kind of fault.
+    pub nemesis_weights: NemesisWeights,
+    /// How far a node's tick period may wander *during* a run, as a percentage
+    /// of its own period, redrawn on every tick.
+    ///
+    /// Distinct from `clock_skew_pct`, which draws one period per node at
+    /// construction and then never moves it. A fixed skew models machines whose
+    /// crystals differ; drift models a machine whose clock is being corrected,
+    /// descheduled, or run inside a hypervisor that stopped it — and it is drift
+    /// rather than skew that makes an election timeout fire early once and late
+    /// the next time, which is the interleaving a fixed offset can never
+    /// produce.
+    ///
+    /// Zero draws nothing at all, which is what keeps the committed profiles'
+    /// fingerprints where they are.
+    pub clock_drift_pct: u64,
+    /// What fraction of client operations are linearizable reads rather than
+    /// writes.
+    ///
+    /// Zero draws nothing, for the same reason. A run with no reads cannot
+    /// violate read recency and cannot demonstrate that it holds, so this is
+    /// the switch that makes the recency oracle mean anything.
+    pub read_pct: u32,
 }
 
 impl Default for SimConfig {
@@ -139,6 +257,9 @@ impl Default for SimConfig {
             aim_at_writes_in_flight: false,
             target_leader_pct: 60,
             kill_leader_on_fig8_bypass: false,
+            nemesis_weights: NemesisWeights::default(),
+            clock_drift_pct: 0,
+            read_pct: 0,
         }
     }
 }
@@ -288,6 +409,39 @@ impl SimConfig {
         }
     }
 
+    /// Reads under a wandering clock, and a nemesis aimed at leadership.
+    ///
+    /// Three things at once, because the read hazard needs all three. Reads
+    /// have to be issued at all; the cluster has to keep changing leader, since
+    /// a read is only interesting when the node answering it might not be
+    /// leader any more; and the clock has to drift, because a lease or an
+    /// election timeout that is uniformly wrong is wrong in one direction and a
+    /// wandering one is wrong in both.
+    ///
+    /// The weight table is why this is a profile and not a flag. Healing is
+    /// worth more here than in `chaos` — a permanently broken cluster commits
+    /// nothing, and a read against a cluster with nothing committed cannot be
+    /// stale — and crashes are worth more than partitions, because a crash is
+    /// what makes a node's applied index fall behind the index a read was
+    /// confirmed at.
+    pub fn read_hunt(nodes: usize) -> Self {
+        Self {
+            read_pct: 40,
+            // Wander by a fifth of a period, on top of the fixed skew `chaos`
+            // already gives each node.
+            clock_drift_pct: 20,
+            nemesis_weights: NemesisWeights {
+                split: 15,
+                one_way: 10,
+                isolate: 10,
+                heal: 35,
+                crash: 20,
+                restart: 10,
+            },
+            ..Self::chaos(nodes)
+        }
+    }
+
     /// Every profile `named` accepts. Kept next to it so an error message
     /// listing the choices cannot drift from the choices themselves, and a
     /// slice rather than a fixed-size array so adding one is a single edit
@@ -298,6 +452,7 @@ impl SimConfig {
         "fig8-hunt",
         "disk-chaos",
         "disk-hunt",
+        "read-hunt",
         "snapshot-hunt",
     ];
 
@@ -312,6 +467,7 @@ impl SimConfig {
             "disk-chaos" => Some(Self::disk_chaos(nodes)),
             "disk-hunt" => Some(Self::disk_hunt(nodes)),
             "snapshot-hunt" => Some(Self::snapshot_hunt(nodes)),
+            "read-hunt" => Some(Self::read_hunt(nodes)),
             _ => None,
         }
     }
@@ -556,6 +712,10 @@ struct SimNode {
     applied_count: usize,
     was_leader: bool,
     fsync_rng: Rng,
+    /// This node's own clock stream. Drift is per node, because a cluster whose
+    /// clocks all wandered together would be a cluster with no relative skew at
+    /// all — which is the one case consensus does not have to survive.
+    clock_rng: Rng,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -622,11 +782,48 @@ pub struct Stats {
     pub streams_resumed: u64,
     /// Streams that decoded and installed.
     pub streams_completed: u64,
+    // Reads. A read is three things — asked for, confirmed at an index, and
+    // answered out of a store that has reached it — and each of them can fail
+    // to happen. Counting all three is how a profile that turned reads on and
+    // never got one answered is distinguishable from one where they worked.
+    /// Linearizable reads asked for.
+    pub reads_issued: u64,
+    /// Reads the core confirmed an index for. A read issued to a node that then
+    /// lost its leadership is never confirmed, which is correct and not a
+    /// violation — but a run where none were confirmed checked nothing.
+    pub reads_confirmed: u64,
+    /// Reads answered out of a store that had applied the confirmed index.
+    pub reads_answered: u64,
+    /// Reads confirmed at an index at or above what was already committed when
+    /// they were asked for, with something actually committed at the time.
+    ///
+    /// The coverage counter for the recency oracle. A read confirmed when
+    /// nothing had been committed yet cannot be stale and cannot demonstrate
+    /// that it is not, so a run whose reads all landed on an empty cluster has
+    /// not exercised the property however many it answered.
+    pub read_recency_windows: u64,
     /// Crashes that tore a node's log while that node was inside a partition.
     ///
     /// The counter the durability claim turns on. It is not enough that tears
     /// happen and partitions happen; what has to be shown is that they met.
     pub tears_during_partition: u64,
+}
+
+/// A linearizable read that has been asked for and not yet answered.
+///
+/// The two indexes are the whole of the recency property. `commit_at_issue` is
+/// what the cluster had already committed at the moment the read was asked for
+/// — every one of those entries is a write that had completed, so a
+/// linearizable read is obliged to see all of them. `confirmed` is the index
+/// the core came back with. A read whose confirmed index is *below* what was
+/// already committed when it was issued is a read that may legally return stale
+/// data, and that is precisely the bug ReadIndex exists to prevent.
+#[derive(Debug, Clone)]
+struct PendingRead {
+    node: NodeId,
+    key: Vec<u8>,
+    commit_at_issue: Index,
+    confirmed: Option<Index>,
 }
 
 pub struct World {
@@ -639,6 +836,9 @@ pub struct World {
     net: Network,
     nemesis_rng: Rng,
     workload_rng: Rng,
+    read_rng: Rng,
+    /// Reads issued and not yet answered, by context.
+    reads: BTreeMap<u64, PendingRead>,
     oracle: Oracle,
     trace: VecDeque<String>,
     next_ctx: u64,
@@ -709,6 +909,14 @@ impl World {
         // so a draw added in the loop body would shift node 2's seed, its skew,
         // its fsync stream, and everything after.
         let mut disk_rng = root.split("disks");
+        // Two more, and they come last for the reason the comment above gives:
+        // a split is decided by the root's seed, the label, and how many splits
+        // preceded it, so a stream added anywhere but the end moves every
+        // stream after it and every old seed becomes a different run. These two
+        // draw nothing at all unless the profile turns their feature on, which
+        // is why the six committed profiles' fingerprints are unmoved.
+        let mut clock_rng = root.split("clocks");
+        let read_rng = root.split("reads");
 
         let ids: Vec<NodeId> = (1..=cfg.nodes as NodeId).collect();
         let conf = ConfState::single(ids.iter().copied());
@@ -768,6 +976,10 @@ impl World {
                     applied_count: 0,
                     was_leader: false,
                     fsync_rng: node_rng.split("fsync"),
+                    // From the clock stream, never from `node_rng`: a draw
+                    // added to that generator would shift node 2's core seed
+                    // and everything after it.
+                    clock_rng: clock_rng.split("node"),
                 },
             );
         }
@@ -782,6 +994,8 @@ impl World {
             nodes,
             nemesis_rng,
             workload_rng,
+            read_rng,
+            reads: BTreeMap::new(),
             oracle: Oracle::new(),
             trace: VecDeque::new(),
             next_ctx: 1,
@@ -877,10 +1091,25 @@ impl World {
         if self.nodes.get(&id).is_some_and(|n| n.receiving.is_some()) {
             self.stream_snapshot(id);
         }
-        let period = self
-            .nodes
-            .get(&id)
-            .map_or(self.cfg.tick_ns, |n| n.tick_period);
+        // Drift is applied here rather than at construction, because the point
+        // of it is that the period is not the same twice. A node whose ticks
+        // are uniformly 5% slow never fires an election timeout early; a node
+        // whose ticks wander fires early once and late the next time, and the
+        // second of those is a state a fixed offset cannot reach.
+        let drift = self.cfg.clock_drift_pct;
+        let period = match self.nodes.get_mut(&id) {
+            None => self.cfg.tick_ns,
+            Some(node) if drift == 0 => node.tick_period,
+            Some(node) => {
+                let base = node.tick_period;
+                let low = base * (100 - drift.min(90)) / 100;
+                let high = base * (100 + drift) / 100;
+                // `range` draws nothing when the bounds collapse, so a base
+                // period small enough that the two bounds meet costs no draw
+                // and the stream stays where it is.
+                node.clock_rng.range(low, high + 1)
+            }
+        };
         self.schedule_in(period, Event::Tick(id));
         let alive = self.nodes.get(&id).is_some_and(|n| n.alive);
         if !alive {
@@ -1038,6 +1267,15 @@ impl World {
         let ctx = self.next_ctx;
         self.next_ctx += 1;
 
+        // A read, sometimes. `chance` draws nothing at all when the percentage
+        // is zero, which is what lets this be added without moving a single
+        // committed fingerprint — the six profiles that predate it never reach
+        // the read stream.
+        if self.cfg.read_pct > 0 && self.read_rng.chance(self.cfg.read_pct) {
+            self.issue_read(target, ctx, client);
+            return;
+        }
+
         // A real proposal, encoded the way a real client's would be, because
         // the state machine on the other end is the real one. The sequence
         // number is the context, which is monotonic across the whole run, so a
@@ -1086,6 +1324,132 @@ impl World {
         }
         self.pump(target);
         self.check(target);
+    }
+
+    /// Ask a leader for a linearizable read, and remember what the cluster had
+    /// already committed when it was asked.
+    ///
+    /// That second half is the whole of the oracle. A read is only checkable
+    /// against something that was true before it started: every entry committed
+    /// at this moment is a write that had already completed, so a linearizable
+    /// read is obliged to observe all of them. Recording the commit index *at
+    /// issue* is what turns "the read returned something" into "the read
+    /// returned something new enough".
+    fn issue_read(&mut self, target: NodeId, ctx: u64, client: usize) {
+        // The highest index committed anywhere. Taken across the cluster rather
+        // than from the node being asked, because a write acknowledged by a
+        // leader that has since been deposed still happened, and a read that
+        // missed it would still be stale.
+        let commit_at_issue = self
+            .nodes
+            .values()
+            .filter(|n| n.alive)
+            .map(|n| n.core.log().committed())
+            .max()
+            .unwrap_or(0);
+
+        let key = format!("c{client}").into_bytes();
+        match self.nodes.get_mut(&target) {
+            // A read the core refuses — no leader, or a leader whose no-op has
+            // not committed — is a refusal like any other and not a violation.
+            // It is simply never confirmed, and `reads_confirmed` says so.
+            Some(node) => {
+                let _ = node.core.step(Input::ReadIndex { ctx });
+            }
+            None => return,
+        }
+        self.reads.insert(
+            ctx,
+            PendingRead {
+                node: target,
+                key,
+                commit_at_issue,
+                confirmed: None,
+            },
+        );
+        self.stats.reads_issued += 1;
+        self.pump(target);
+        self.check(target);
+    }
+
+    /// The core has confirmed a read index. Check it is not older than what was
+    /// already committed when the read was asked for.
+    fn on_read_confirmed(&mut self, ctx: u64, index: Index) {
+        let Some(pending) = self.reads.get_mut(&ctx) else {
+            // A confirmation for a read nobody is waiting on. Not a violation:
+            // a leader that was asked twice, or a duplicate delivery, produces
+            // one.
+            return;
+        };
+        pending.confirmed = Some(index);
+        let issued_at = pending.commit_at_issue;
+        self.stats.reads_confirmed += 1;
+        if index >= issued_at && issued_at > 0 {
+            // The window this profile exists to reach: a read confirmed at an
+            // index the cluster had genuinely already committed, so the check
+            // below had something to be wrong about.
+            self.stats.read_recency_windows += 1;
+        }
+        if index < issued_at {
+            self.violations.push(Violation {
+                property: "Read Recency",
+                detail: format!(
+                    "a read asked for when index {issued_at} was already committed was \
+                     confirmed at index {index}, so it may return a value older than a \
+                     write that had already completed"
+                ),
+            });
+        }
+    }
+
+    /// Answer every read whose confirmed index its node has now applied.
+    ///
+    /// A read is not answered when it is confirmed — it is answered when the
+    /// state machine has caught up to the index the core named. Answering
+    /// earlier is exactly the bug: the index says which version of the world
+    /// the read is entitled to see, and a store that has not reached it holds
+    /// an older one.
+    fn answer_reads(&mut self, id: NodeId) {
+        let applied = match self.nodes.get(&id) {
+            Some(node) if node.alive => node.sm.applied(),
+            _ => return,
+        };
+        let ready: Vec<u64> = self
+            .reads
+            .iter()
+            .filter(|(_, r)| r.node == id && r.confirmed.is_some_and(|i| i <= applied))
+            .map(|(ctx, _)| *ctx)
+            .collect();
+        for ctx in ready {
+            let Some(pending) = self.reads.remove(&ctx) else {
+                continue;
+            };
+            let Some(confirmed) = pending.confirmed else {
+                continue;
+            };
+            debug_assert!(
+                confirmed <= applied,
+                "a read was answered before its confirmed index was applied"
+            );
+            let observed = self
+                .nodes
+                .get(&id)
+                .and_then(|n| n.sm.get(&pending.key).ok().flatten());
+            self.stats.reads_answered += 1;
+            // The node's applied index, not the read's confirmed index. The
+            // read is entitled to everything through `confirmed`; the store it
+            // was answered from has reached `applied`, which may be further on.
+            // Judging it against `confirmed` would call a *newer* answer wrong,
+            // and a newer answer is exactly what linearizability permits.
+            if let Some(v) = self.oracle.check_read(
+                id,
+                applied,
+                &pending.key,
+                observed.as_ref().map(|b| b.as_ref()),
+            ) {
+                self.violations.push(v);
+            }
+        }
     }
 
     /// Take a checkpoint if enough has been applied since the last one.
@@ -1495,8 +1859,14 @@ impl World {
         }
         let quorum = ids.len() / 2 + 1;
 
-        match self.nemesis_rng.range(0, 100) {
-            0..=24 => {
+        // One draw, compared against the table's running totals. It is one draw
+        // rather than several because the number of draws a decision costs is
+        // part of the seed's meaning: two draws here would shift every stream
+        // position after it and move every pinned fingerprint.
+        let weights = self.cfg.nemesis_weights;
+        let roll = self.nemesis_rng.range(0, u64::from(weights.total())) as u32;
+        match weights.action_for(roll) {
+            NemesisAction::Split => {
                 // Split into two groups at a random point.
                 let cut = self.nemesis_rng.range(1, ids.len() as u64) as usize;
                 let (a, b) = ids.split_at(cut);
@@ -1508,7 +1878,7 @@ impl World {
                 self.stats.partitions += 1;
                 self.trace(format!("partition {a:?} | {b:?}"));
             }
-            25..=39 => {
+            NemesisAction::OneWay => {
                 // One-way link failure: the hardest kind to reason about,
                 // because each side has a different view of who is reachable.
                 let Some(from) = self.nemesis_rng.pick(&ids).copied() else {
@@ -1523,7 +1893,7 @@ impl World {
                     self.trace(format!("one-way cut {from} -> {to}"));
                 }
             }
-            40..=49 => {
+            NemesisAction::Isolate => {
                 // Isolate one node entirely.
                 let Some(victim) = self.victim(&ids) else {
                     return;
@@ -1536,11 +1906,11 @@ impl World {
                 self.stats.partitions += 1;
                 self.trace(format!("isolated node {victim}"));
             }
-            50..=74 => {
+            NemesisAction::Heal => {
                 self.net.heal();
                 self.trace("network healed".to_string());
             }
-            75..=89 => {
+            NemesisAction::Crash => {
                 // Crash a node, but never so many that no quorum can survive:
                 // a cluster with no quorum makes no progress, and a run that
                 // makes no progress checks nothing.
@@ -1553,7 +1923,7 @@ impl World {
                     self.trace(format!("crashed node {victim}"));
                 }
             }
-            _ => {
+            NemesisAction::Restart => {
                 let dead: Vec<NodeId> = self
                     .nodes
                     .values()
@@ -1607,6 +1977,13 @@ impl World {
                 None
             };
 
+            // Read confirmations, taken before the Ready is consumed. They are
+            // not I/O and do not wait on an fsync: the round trip that makes
+            // the read linearizable already happened, in heartbeats, inside the
+            // core.
+            let confirmed: Vec<(u64, Index)> =
+                rd.read_states.iter().map(|r| (r.ctx, r.index)).collect();
+
             let persisted = rd.entries.last().map(|e| (e.index, e.term));
             let needs_sync = !rd.entries.is_empty()
                 || rd.hard_state.is_some()
@@ -1643,6 +2020,10 @@ impl World {
                     }),
                 },
             );
+            for (ctx, index) in confirmed {
+                self.on_read_confirmed(ctx, index);
+            }
+            self.answer_reads(id);
             if let Some((leader, meta)) = offered
                 && let Some(leader) = leader
             {

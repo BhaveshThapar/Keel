@@ -122,8 +122,8 @@ sweep goes red on correct code and the day is spent proving it was the oracle.
 
 | # | Phase | Exit criterion |
 |---|---|---|
-| P19 | The simulator at CI scale | ≥ 2,000 **distinct** seeds × 50k steps per PR, with the wall-clock arithmetic in a comment citing a committed throughput artifact |
-| P20 | Nemesis weight table, clock model, reads, recency oracle | Adding seven nemesis actions and a read workload leaves all three original profiles' fingerprints **byte-identical** |
+| ~~P19~~ | ~~The simulator at CI scale~~ | **Done.** Two shards of 1,000 with the stride raised to match, so 2,000 distinct seeds per profile and cluster size; `scripts/check-ci-budget.sh` reads the shard arithmetic back out of the workflow, because a stride smaller than the count halves the coverage while every job still passes. The margin fell from 5x to 2.5x and is stated rather than spent quietly |
+| ~~P20~~ | ~~Nemesis weight table, clock model, reads, recency oracle~~ | **Done.** A `read-hunt` profile issues linearizable reads under a wandering clock; two oracles judge them — `Read Recency` on the confirmed index, `Read Correctness` on the value — and all six older profiles' fingerprints are byte-identical, because the new streams are created last and are drawn zero times unless a profile asks. [ADR-027](DESIGN.md), [ADR-028](DESIGN.md) |
 | P21 | The last two TR-8 demonstrations | Pre-vote and lease-drift demos exit 0, control clean and experiment dirty, coverage non-zero **in both arms** |
 | P22 | `ReadyAudit` and fuzzing | Six fuzz targets compile and smoke-run; the CRC-removed build is caught inside the stated budget and the intact build is not |
 | P23 | Membership and transfer under the fault schedule | `membership-hunt` reaches a non-zero `joint_config_windows`; `SimConfig::PROFILES` becomes a slice so it cannot drift from `named()` |

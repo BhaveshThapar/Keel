@@ -66,6 +66,25 @@ fn fresh_nonce() -> u64 {
     NEXT.fetch_add(1, Ordering::SeqCst)
 }
 
+/// Wait until the proxy mesh reports it has actually dropped something.
+///
+/// A partition is not a fact about the harness's intent, it is a fact about
+/// traffic, and the proxy counts traffic. Asserting the counter *before* doing
+/// anything under the partition is what stops a test from passing because its
+/// write completed in the window between asking for a cut and the cut landing.
+fn wait_for_partition(c: &Cluster, within: Duration) -> bool {
+    let (_, refused_before, severed_before) = c.traffic();
+    let deadline = Instant::now() + within;
+    while Instant::now() < deadline {
+        let (_, refused, severed) = c.traffic();
+        if refused > refused_before || severed > severed_before {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
 /// Retry until the cluster answers or the budget runs out.
 ///
 /// Every write in these tests goes through this. A single attempt that failed
@@ -114,6 +133,15 @@ fn a_cluster_survives_a_partition_a_pause_and_a_kill() {
 
     // 1. Partition: a minority of one, so the majority can still commit.
     c.split(&[2]);
+    // Wait for it to actually bite before claiming anything happened during it.
+    // The proxy notices a cut on its next read poll, which is 50 ms away at
+    // worst, and a write that completed inside that window would have completed
+    // on an unpartitioned cluster — a green test for a fault that had not
+    // landed yet.
+    assert!(
+        wait_for_partition(&c, Duration::from_secs(10)),
+        "the partition dropped no connection within ten seconds, so it did not happen"
+    );
     assert!(
         put_until(&c, "during-partition", "2", Duration::from_secs(20)),
         "a majority could not commit while one node was partitioned off"
@@ -121,11 +149,6 @@ fn a_cluster_survives_a_partition_a_pause_and_a_kill() {
 
     // 2. Heal.
     c.heal();
-    let (_, refused, severed) = c.traffic();
-    assert!(
-        refused + severed > 0,
-        "the partition dropped no connection, so it did not happen"
-    );
 
     // 3. Pause. Its sockets stay open and unanswered — the fault a crash does
     //    not produce.
@@ -180,6 +203,10 @@ fn a_one_way_partition_does_not_stop_the_majority() {
 
     // n2 can send but not receive: it will campaign into a void.
     c.isolate(2, Cut::Backward);
+    assert!(
+        wait_for_partition(&c, Duration::from_secs(10)),
+        "the one-way cut dropped no connection, so it did not happen"
+    );
     assert!(
         !c.link_is_cut(2, 0),
         "outbound was cut, making it symmetric"

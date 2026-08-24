@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use keel_api::{Proposal, ProposalBody, decode};
+use keel_api::{Command, Proposal, ProposalBody, decode};
 use keel_raft::{Entry, EntryPayload, Index, NodeId, Term};
 use keel_sm::{MemStore, StateMachine};
 
@@ -51,6 +51,15 @@ pub struct Oracle {
     model_pending: BTreeMap<Index, Entry>,
     /// What the model held after applying through each index.
     model_digests: BTreeMap<Index, u64>,
+    /// Every write the model applied, per key, in index order.
+    ///
+    /// A read has to be judged against the world as it was at a particular
+    /// index, so a single "current value" per key is not enough — that answers
+    /// a different and weaker question. Only indexes where a key was actually
+    /// written appear, so this is proportional to the log rather than to the
+    /// log times the keyspace, and the value at any other index is found by
+    /// looking backwards from it.
+    model_writes: BTreeMap<Vec<u8>, BTreeMap<Index, Option<Vec<u8>>>>,
     pub max_committed: Index,
     pub max_applied: Index,
     /// Entries the model has applied. Zero after a run means the model saw
@@ -76,6 +85,7 @@ impl Oracle {
             model: StateMachine::new(MemStore::new()),
             model_pending: BTreeMap::new(),
             model_digests: BTreeMap::new(),
+            model_writes: BTreeMap::new(),
             max_committed: 0,
             max_applied: 0,
             model_applied: 0,
@@ -202,7 +212,80 @@ impl Oracle {
             self.model_applied += 1;
             self.model_digests
                 .insert(entry.index, state_digest(&self.model));
+            // Record what this entry did to the key it touched, so a read
+            // confirmed at some index can be judged against the value that
+            // index entitles it to. Read back out of the model rather than
+            // predicted from the command: a command can be refused — an expired
+            // session, a stale sequence number — and predicting the write a
+            // refusal never made would have the model disagreeing with every
+            // correct node.
+            if let ProposalBody::Command(command) = &proposal.body
+                && let Some(key) = command_key(command)
+            {
+                let value = self.model.get(&key).ok().flatten().map(|b| b.to_vec());
+                self.model_writes
+                    .entry(key)
+                    .or_default()
+                    .insert(entry.index, value);
+            }
         }
+    }
+
+    /// What a linearizable read returned must be what the model held at the
+    /// index the answering node had applied to.
+    ///
+    /// This is the half of read correctness the index arithmetic cannot reach.
+    /// `World::on_read_confirmed` checks that the confirmed *index* is not
+    /// older than what was already committed when the read was asked for; this
+    /// checks that the *value* handed back is the one that index entitles the
+    /// caller to.
+    ///
+    /// It is judged against the node's applied index at the moment it answered,
+    /// not against the read index, and the difference matters. A read confirmed
+    /// at index 40 and answered by a node that has since applied to 55 may
+    /// legitimately return the value as of 55 — linearizability lets the read
+    /// take effect anywhere between its call and its return, so a *newer* value
+    /// is correct and only an *older* one is not. Comparing against the read
+    /// index would fail correct runs, which is a worse failure than not
+    /// checking at all.
+    ///
+    /// An index the model has not reached is not a violation either: the model
+    /// is behind, not wrong.
+    pub fn check_read(
+        &self,
+        id: NodeId,
+        applied: Index,
+        key: &[u8],
+        observed: Option<&[u8]>,
+    ) -> Option<Violation> {
+        if applied > self.model.applied() {
+            return None;
+        }
+        let expected = self.model_value_at(key, applied);
+        if expected.as_deref() == observed {
+            return None;
+        }
+        Some(Violation {
+            property: "Read Correctness",
+            detail: format!(
+                "node {id} answered a read of {} out of a store applied through {applied} \
+                 with {}, but the model applying the same committed log in order holds {} \
+                 there",
+                String::from_utf8_lossy(key),
+                render(observed),
+                render(expected.as_deref()),
+            ),
+        })
+    }
+
+    /// What the model says `key` was worth after applying through `index`: the
+    /// most recent write to it at or below that index, or absent if there is
+    /// none.
+    fn model_value_at(&self, key: &[u8], index: Index) -> Option<Vec<u8>> {
+        self.model_writes
+            .get(key)
+            .and_then(|history| history.range(..=index).next_back())
+            .and_then(|(_, value)| value.clone())
     }
 
     /// A node that has applied through `index` must hold what the model holds
@@ -400,4 +483,30 @@ pub(crate) fn state_digest(sm: &StateMachine<MemStore>) -> u64 {
         }
     }
     hash
+}
+
+/// The key a command touches, if it touches one.
+///
+/// A `Query` never reaches here — the simulator proposes only commands — and a
+/// command that writes nothing has no key to record.
+fn command_key(command: &Command) -> Option<Vec<u8>> {
+    match command {
+        Command::Put { key, .. }
+        | Command::Delete { key }
+        | Command::Cas { key, .. }
+        | Command::Incr { key, .. } => Some(key.to_vec()),
+    }
+}
+
+/// A value, or the fact that there was not one, in a form a failure message can
+/// carry.
+///
+/// An absent key and an empty value are different things and a message that
+/// rendered both as `""` would make the two failures indistinguishable — which
+/// is exactly the pair a stale read produces.
+fn render(value: Option<&[u8]>) -> String {
+    match value {
+        None => "absent".to_string(),
+        Some(bytes) => format!("{:?}", String::from_utf8_lossy(bytes)),
+    }
 }

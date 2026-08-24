@@ -709,6 +709,85 @@ wall clock would pass a large-number check and fail this one.
 
 ---
 
+## ADR-027 — A read is checked against two different things, and neither one alone would do
+
+The simulator issues linearizable reads, and two oracles judge them. They look
+redundant and are not; each one passes histories the other rejects.
+
+**Recency** compares the index the core *confirmed* against what the cluster had
+already committed when the read was asked for. Every entry committed at that
+moment is a write that had already completed, so a read confirmed below it may
+legally return something older than a completed write. This is the property
+`ReadIndex` exists to provide, and it is checked at the moment of confirmation —
+before any value is looked at.
+
+**Correctness** compares the *value* handed back against a reference state
+machine fed the same committed log in index order.
+
+Recency alone would pass a node that confirmed a perfectly good index and then
+answered out of the wrong store. Correctness alone would pass a node that
+answered a stale value entirely consistently — a follower serving its own
+lagging store is self-consistent and wrong.
+
+**The subtlety that had to be got right, and was got wrong first.** Correctness
+is judged against the *answering node's applied index*, not against the read's
+confirmed index. A read confirmed at index 40 and answered by a node that has
+since applied through 55 may legitimately return the value as of 55:
+linearizability lets a read take effect anywhere between its call and its
+return, so a newer answer is correct and only an older one is not. The first
+version compared against the confirmed index and reported a violation on correct
+code within five seeds. A test that fails on correct code is worse than no test,
+because the first thing it teaches is not to trust it.
+
+**Why reads did not exist before.** Everything the simulator checked until now
+is a property of what the *nodes* agree about — log prefixes, applied state,
+commit indexes. None of it is a property of what a *client* observes, and those
+are different claims: a cluster whose nodes agree perfectly can still hand a
+client a stale read, because the staleness is in which node answered and when,
+not in what any of them holds.
+
+---
+
+## ADR-028 — Nemesis weights are a table, and clock drift is not clock skew
+
+Two changes to the fault model, both off by default so that the six profiles
+that predate them keep their pinned fingerprints.
+
+**The weight table.** Fault selection was six literal ranges in a `match` —
+`0..=24` split, `25..=39` one-way cut, and so on. A profile that wanted a
+different mix had to rewrite the match, so in practice no profile ever did, and
+every profile hunted with the same distribution however different the thing it
+was hunting. The table makes the mix a per-profile decision.
+
+The defaults reproduce the old ranges exactly, and a test walks all hundred
+rolls to say so. That is not ceremony: a boundary off by one changes which
+action a given roll selects, every seed becomes a different run, and the diff is
+indistinguishable from a real regression in the pinned fingerprint table.
+
+The roll stays a *single* draw compared against running totals. Two draws would
+have been simpler to write and would have shifted every stream position after
+it. The number of draws a decision costs is part of what a seed means.
+
+**Drift is not skew.** `clock_skew_pct` draws one tick period per node at
+construction and never moves it: a model of machines whose crystals differ. A
+node that is uniformly 5% slow is *always* 5% slow, so its election timeout
+fires late every time and never early. `clock_drift_pct` redraws the period on
+every tick, which is a machine being corrected, descheduled, or run inside a
+hypervisor that stopped it — and it fires early once and late the next time.
+The second is a state the first cannot reach.
+
+**Why both are gated at zero rather than merged into the existing profiles.**
+[`keel_rand`]'s discipline is that a new consumer takes a new split so old seeds
+keep reproducing, and that holds for the *streams*. It says nothing about a new
+consumer that draws from its own stream on a profile that already exists — that
+still changes what that profile does. So the new streams are created after every
+existing one, and the profiles that predate them draw from them zero times:
+`Rng::chance(0)` and a collapsed `Rng::range` both return without drawing. A
+test asserts those profiles still issue no reads, so the pinned table going red
+would name its cause rather than reading as a regression.
+
+---
+
 ## Planned
 
 These are decided but not yet built. They are recorded here so the shape is

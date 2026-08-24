@@ -101,6 +101,24 @@ the committed output, side by side.
 | A misconfigured node refuses to start rather than serving alone | `cluster::a_misconfigured_node_refuses_to_start` | enforced |
 | A node says whether its fsyncs survive power loss, in its ready file | `cluster::a_three_node_cluster_serves_traffic` checks every node's | enforced |
 
+## What a client observes
+
+Every other section in this file is about what the *nodes* agree on. These are
+about what a client is handed, which is a different claim: a cluster whose nodes
+agree perfectly can still serve a stale read, because the staleness is in which
+node answered and when.
+
+| Property | Enforced by | Status |
+|---|---|---|
+| A linearizable read is confirmed at an index no older than what was already committed when it was asked for | the `Read Recency` oracle in `keel-sim`, checked at every confirmation under the `read-hunt` profile | enforced |
+| A read returns what a reference state machine fed the same committed log holds at the answering node's applied index | `Oracle::check_read`, reported as `Read Correctness` | enforced |
+| Reads are actually issued, confirmed *and* answered, and land on a cluster with something committed | `reads_are_actually_issued_confirmed_and_answered` — four counters, because a read can fail to happen at four separate points | enforced |
+| The profiles that predate reads still issue none | `the_profiles_that_predate_reads_still_issue_none` — which is why their pinned fingerprints are still meaningful | enforced |
+| Turning clock drift on changes the run; leaving it off draws nothing | `clock_drift_is_off_unless_a_profile_asks_for_it` | enforced |
+| The default nemesis weights select exactly the ranges they replaced, for every roll | `the_default_weights_reproduce_the_ranges_they_replaced` | enforced |
+| A roll never falls off the end of the weight table, whatever the weights | `every_roll_selects_an_action_whatever_the_weights_are` | enforced |
+| A client's read observed under a real cluster's faults | `scripts/porcupine.sh` — see [Checked by somebody else's checker](#checked-by-somebody-elses-checker) | enforced |
+
 ## A cluster under chaos
 
 Faults injected into real processes, from a seed. The simulator cannot reach any

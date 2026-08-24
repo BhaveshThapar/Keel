@@ -38,7 +38,7 @@ pub use network::NetConfig;
 // Re-exported so a consumer of the simulator does not need a second
 // dependency to construct the thing every entry point already takes.
 pub use keel_rand::Rng;
-pub use world::{SimConfig, Stats, World};
+pub use world::{NemesisAction, NemesisWeights, SimConfig, Stats, World};
 
 /// The result of running one seed.
 #[derive(Debug, Clone)]
