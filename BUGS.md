@@ -405,3 +405,80 @@ real processes with real clients could produce it, which is what P17 and P18
 exist for. It was also invisible to a run that counted acknowledgements without
 recording what they returned — the shortfall would have read as data loss, and
 the investigation would have started in the wrong place.
+
+---
+
+## KEEL-10 — a restarting node was handed a configuration that had already moved past the log it was about to replay
+
+**Status: fixed.** A harness bug, found by `membership-hunt` — the fourth of ten
+entries in this file to be in the harness rather than in the code it tests,
+which is why "the oracle is wrong" stays a hypothesis to test rather than a
+conclusion to act on.
+
+**Reproduce with** `keel-sim repro --seed 259 --steps 60000 --nodes 5 --profile
+membership-hunt` at commit `3a347aa`.
+
+**Symptom.** A **Leader Completeness** violation, which is the most serious
+class there is:
+
+```
+node 5 became leader in term 37 with a different prefix at committed index 551 (term 36)
+```
+
+One seed in five hundred, at five nodes. Three nodes was clean, for a reason
+that turned out to matter: at three nodes the profile is inert.
+
+**What made it diagnosable.** The failure report printed each node's term, index
+and commit and *not its configuration*, which on a membership profile is the one
+thing needed — a commit index means nothing without knowing who was entitled to
+vote for it. Adding it made the answer visible in one run:
+
+```
+node 1 ... last=552 commit=551 applied=551 voters=[1, 3, 5]+[1, 5](joint) learners=[2, 4]
+node 2 ... last=552 commit=551 applied=551 voters=[1, 3, 5]        learners=[2, 4]
+node 4 ... last=551 commit=550 applied=550 voters=[1, 5]           learners=[2, 3, 4]
+node 5 ... last=551 commit=550 applied=550 voters=[1, 3, 5]        learners=[2, 4]
+```
+
+A voter set of **two**, on a profile whose floor is three and whose proposals
+move the set by one at a time. No sequence of legal proposals produces it, so
+something other than a proposal was changing the membership.
+
+**The defect.** `World::on_restart` handed `RaftCore::restore` the node's *live
+in-memory* configuration, together with the log to replay. Membership is a
+function of the applied log, so those two disagree about where the replay
+starts: the configuration had already advanced past entries that were about to
+be applied again, and re-applying a change relative to a configuration that
+already included it composed into configurations no proposal had asked for.
+
+A real node does not have this problem, and the shape of the fix is the shape of
+what a real node does: recover the configuration from the snapshot — the boot
+configuration if it has never taken one — and let the log replay rebuild the
+rest.
+
+**A second, smaller harness fault, fixed with it.** The proposal logic read the
+configuration of whichever node the client had picked, to decide whether a
+demotion was safe. A follower's configuration can be arbitrarily stale, so two
+changes drawn from two stale readings could each look safe and together not be.
+Proposals now come only from a leader. A leader that is *already* mid-change is
+deliberately **not** filtered out, because the core's refusal is itself a safety
+property — one change in flight — and a harness that never triggers it has never
+checked it; that path fires 99 times in a single seed.
+
+**Enforced by** `the_membership_profile_never_takes_the_voter_set_below_three`,
+which asserts the floor across eighty runs, and
+`membership_actually_changes_and_the_joint_configuration_is_actually_open`,
+which asserts the refusal path still fires.
+
+**What it says about the method, twice over.** The bug was reachable only at five
+nodes, because at three the profile cannot legally change anything — so a sweep
+that ran it at three and called that coverage would have reported a clean run
+forever. That is [KEEL-4](#keel-4--the-fault-schedule-could-not-reach-the-state-it-was-meant-to-test)'s
+lesson for the fourth time, and it is now asserted:
+`the_membership_profile_is_inert_at_three_nodes` states the inertness as a fact
+rather than leaving it to be discovered.
+
+And the fix changed the RNG draws, so seed 259 no longer reaches the same
+interleaving. That is why the diagnosis rests on the configuration dump and the
+voter-set invariant rather than on "the seed passes now" — a seed passing after
+a change that moved every draw is not evidence of anything.

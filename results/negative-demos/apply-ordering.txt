@@ -3,8 +3,8 @@ Apply ordering: is the model oracle watching what applying produced?
   profile default, 3 nodes, 25 seeds x 30000 steps
 ==============================================================
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
-commit: 9136692
-date:   2026-08-24T13:02:29Z
+commit: 3a347aa
+date:   2026-08-24T23:11:07Z
 
 --- CONTROL: entries applied in index order. Expect every seed to pass.
 

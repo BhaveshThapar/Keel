@@ -345,6 +345,7 @@ fn main() -> ExitCode {
             );
             println!("  distinct configurations {}", s.distinct_configurations);
             println!("  joint config windows {}", s.joint_config_windows);
+            println!("  smallest voter set {}", s.smallest_voter_set);
             println!("  transfers requested {}", s.transfers_requested);
             println!("  terms led        {}", s.terms_with_leaders);
             println!("  highest term     {}", s.highest_term);

@@ -551,6 +551,15 @@ impl SimConfig {
     /// Calmer than `chaos` on purpose. A membership change needs to commit for
     /// the configuration to move, and a cluster that never commits stays in the
     /// configuration it booted with however many changes are proposed at it.
+    ///
+    /// **This profile does nothing at three nodes, and that is not a bug to
+    /// fix.** A change needs somewhere to change to, the voter floor is three
+    /// because a cluster of two stops on a single crash, and a simulated
+    /// cluster cannot start a process that was not in the seed — so three nodes
+    /// means three voters, no learners, and nothing that can legally move. The
+    /// sweep runs it at five, and a test asserts the inertness at three so it
+    /// reads as a stated fact rather than as coverage that quietly is not
+    /// there.
     pub fn membership_hunt(nodes: usize) -> Self {
         Self {
             initial_voters: 3,
@@ -891,6 +900,15 @@ pub struct Stats {
     /// reconnects. With pre-vote the two numbers track each other; without it
     /// the gap is the disruption.
     pub highest_term: Term,
+    /// The smallest voter set any node was ever observed in.
+    ///
+    /// A harness invariant rather than a property of the cluster, and it is
+    /// here because breaking it is how [KEEL-10](BUGS.md) was reached: a
+    /// membership profile that lets the voter set fall to two produces a
+    /// cluster where a single crash stops progress, and a run that stops making
+    /// progress is a run whose findings are hard to attribute. Asserted in the
+    /// tests, so the harness cannot drift back to it quietly.
+    pub smallest_voter_set: usize,
     /// Observations of a node sitting in a joint configuration.
     ///
     /// The window joint consensus exists to make safe, counted rather than
@@ -1033,6 +1051,9 @@ pub struct World {
     workload_rng: Rng,
     read_rng: Rng,
     membership_rng: Rng,
+    /// The configuration every node booted with, which is what a node that has
+    /// never taken a snapshot recovers to before it replays its log.
+    boot_conf: ConfState,
     /// Every voter set any node has been seen in, so a run can say whether the
     /// membership actually moved rather than only that a change was proposed.
     configurations_seen: std::collections::BTreeSet<(Vec<NodeId>, Vec<NodeId>)>,
@@ -1224,6 +1245,7 @@ impl World {
             workload_rng,
             read_rng,
             membership_rng,
+            boot_conf: conf.clone(),
             configurations_seen: std::collections::BTreeSet::new(),
             reads: BTreeMap::new(),
             oracle: Oracle::new(),
@@ -1580,9 +1602,27 @@ impl World {
     /// quorum of two, so a single crash stops it, and a run that stops making
     /// progress checks nothing — the same argument the crash nemesis makes.
     fn propose_conf_change(&mut self, target: NodeId, ctx: u64) {
-        let Some(conf) = self.nodes.get(&target).map(|n| n.core.conf().clone()) else {
+        let Some(node) = self.nodes.get(&target) else {
             return;
         };
+        let conf = node.core.conf().clone();
+        // Only from a leader.
+        //
+        // The guard below reads this configuration to decide what is safe to
+        // propose, and a follower's configuration can be arbitrarily stale — it
+        // takes effect at apply time, so a node that is behind is looking at
+        // the membership of some earlier moment. Proposing against that view
+        // let two changes drawn from two stale readings take the voter set
+        // somewhere neither of them intended, which is a fault in the harness
+        // rather than in the cluster and made a real finding hard to attribute.
+        //
+        // A leader that is *already* mid-change is deliberately not filtered
+        // out here. The core refuses that itself, and the refusal path is a
+        // safety property — only one change in flight — that a harness which
+        // never triggers it has never checked.
+        if node.core.role() != Role::Leader {
+            return;
+        }
         // A change proposed while one is in flight is refused by the core, which
         // is correct and is counted rather than avoided: the refusal path is
         // part of what P23 is here to exercise.
@@ -2030,19 +2070,31 @@ impl World {
         let opts = self.cfg.log_options();
         // Everything the reopen needs, taken before the borrow is dropped, so
         // that recording a violation below does not fight the borrow checker.
-        let Some((cfg, conf, fs, dir, checkpoint)) =
-            self.nodes.get(&id).filter(|n| !n.alive).map(|n| {
-                (
-                    n.core.config().clone(),
-                    n.core.conf().clone(),
-                    n.fs.clone(),
-                    n.dir.clone(),
-                    n.checkpoint.clone(),
-                )
-            })
-        else {
+        let Some((cfg, fs, dir, checkpoint)) = self.nodes.get(&id).filter(|n| !n.alive).map(|n| {
+            (
+                n.core.config().clone(),
+                n.fs.clone(),
+                n.dir.clone(),
+                n.checkpoint.clone(),
+            )
+        }) else {
             return;
         };
+        // The configuration a real node recovers, which is not the one it was
+        // holding in memory when it died.
+        //
+        // Membership is a function of the applied log, so a restarting node
+        // starts from whatever its snapshot records — the boot configuration if
+        // it has never taken one — and replays the log forward to rebuild the
+        // rest. Handing the core the live in-memory configuration *and* the log
+        // to replay gives it a membership that has already advanced past the
+        // entries about to be re-applied, so the two disagree about where the
+        // replay starts. That produced configurations no sequence of proposals
+        // could have produced, including voter sets of two on a profile whose
+        // floor is three, and it is how [KEEL-10](BUGS.md) was reached.
+        let conf = checkpoint
+            .as_ref()
+            .map_or_else(|| self.boot_conf.clone(), |(meta, _, _)| meta.conf.clone());
         let checkpoint_index = checkpoint.as_ref().map_or(0, |(meta, _, _)| meta.index);
         // Through the real recovery parser, over whatever the crash left: the
         // torn tail, the erase, the clamped commit, all of it.
@@ -2515,6 +2567,13 @@ impl World {
             if conf.is_joint() {
                 self.stats.joint_config_windows += 1;
             }
+            if !conf.voters.is_empty() {
+                self.stats.smallest_voter_set = if self.stats.smallest_voter_set == 0 {
+                    conf.voters.len()
+                } else {
+                    self.stats.smallest_voter_set.min(conf.voters.len())
+                };
+            }
             let shape = (conf.voters.clone(), conf.voters_outgoing.clone());
             if self.configurations_seen.insert(shape) {
                 self.stats.distinct_configurations = self.configurations_seen.len() as u64;
@@ -2603,8 +2662,26 @@ impl World {
         out.push_str("  node state:\n");
         for node in self.nodes.values() {
             let s = node.core.status();
+            // The configuration is part of the state, and on a membership
+            // profile it is the *first* thing a reader needs: a commit index
+            // means nothing without knowing which nodes were entitled to vote
+            // for it, and two nodes disagreeing about the configuration is the
+            // normal middle of a change rather than a fault.
+            let conf = if s.conf.is_joint() {
+                format!(
+                    " voters={:?}+{:?}(joint)",
+                    s.conf.voters, s.conf.voters_outgoing
+                )
+            } else {
+                format!(" voters={:?}", s.conf.voters)
+            };
+            let learners = if s.conf.learners.is_empty() {
+                String::new()
+            } else {
+                format!(" learners={:?}", s.conf.learners)
+            };
             out.push_str(&format!(
-                "    node {} alive={} role={:?} term={} last={} commit={} applied={}\n",
+                "    node {} alive={} role={:?} term={} last={} commit={} applied={}{conf}{learners}\n",
                 s.id, node.alive, s.role, s.term, s.last_index, s.commit, s.applied
             ));
         }

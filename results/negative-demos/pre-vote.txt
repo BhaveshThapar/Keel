@@ -1,0 +1,20 @@
+==============================================================
+Pre-vote: how many terms a partitioned node burns without it
+  one stock build, two configurations
+  3 nodes, 25 seeds x 40000 steps, profile chaos
+==============================================================
+host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
+commit: 3a347aa
+date:   2026-08-24T23:11:26Z
+
+Both arms are clean. Pre-vote costs availability, not safety, so what is
+compared is disruption rather than violations.
+
+  with pre-vote         42 terms entered that produced no leader
+  without pre-vote     477
+
+==============================================================
+PASS: turning pre-vote off burned 11.4x as many terms. Each one is a
+      node campaigning where nobody can hear it, and each one is a
+      term a healthy leader has to step down for when the partition
+      heals.

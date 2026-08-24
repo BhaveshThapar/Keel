@@ -67,15 +67,15 @@ provenance_of "$OUT"
             --nodes "$nodes" --profile lease-drift | tail -2
     done
 
-    # Membership changes and leader transfers under faults. Two of five nodes
-    # start as learners so there is somewhere to change to; a simulated cluster
-    # cannot start a process that was not in the seed.
-    for nodes in 3 5; do
-        echo "--- profile=membership-hunt nodes=$nodes"
-        ./target/release/keel-sim run \
-            --from 0 --count "$SEEDS" --steps "$STEPS" \
-            --nodes "$nodes" --profile membership-hunt | tail -2
-    done
+    # Membership changes and leader transfers under faults. Five nodes only, and
+    # deliberately: two of them start as learners so there is somewhere to
+    # change to, and at three nodes the profile is inert — three voters, no
+    # learners, and a voter floor of three leaves no legal move. Sweeping it at
+    # three would spend the time and report coverage that is not there.
+    echo "--- profile=membership-hunt nodes=5"
+    ./target/release/keel-sim run \
+        --from 0 --count "$SEEDS" --steps "$STEPS" \
+        --nodes 5 --profile membership-hunt | tail -2
 
     echo "--- profile=fig8-hunt nodes=3"
     ./target/release/keel-sim run \

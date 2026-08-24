@@ -107,7 +107,13 @@ while read -r doc; do
         resolved="$(dirname "$doc")/$path"
         [[ -e "$resolved" ]] ||
             problem "$doc links to $target, which does not exist"
-    done < <(grep -ohE '\]\([^)]+\)' "$doc" | sed -E 's/^\]\(//; s/\)$//')
+        # Fenced code is skipped. A transcript pasted into a bug report is not
+        # markup, and `voters=[1, 5](joint)` in one is not a broken link — but
+        # it looks exactly like one to a regular expression, and a checker that
+        # cries wolf about evidence is a checker somebody edits the evidence to
+        # satisfy.
+    done < <(awk '/^```/ { fenced = !fenced; next } !fenced' "$doc" |
+        grep -ohE '\]\([^)]+\)' | sed -E 's/^\]\(//; s/\)$//')
 done < <(git ls-files "*.md")
 
 # ---------------------------------------------------------------------------

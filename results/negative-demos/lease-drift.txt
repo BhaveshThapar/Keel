@@ -1,0 +1,892 @@
+==============================================================
+Lease reads: what the clock assumption is actually holding up
+  one stock build, two read modes
+  3 nodes, 25 seeds x 40000 steps, profile lease-drift
+==============================================================
+host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
+commit: 3a347aa
+date:   2026-08-24T23:11:22Z
+
+--- CONTROL: ReadIndex. Every read confirmed by a heartbeat round.
+    Expect every seed to pass, whatever the clocks do.
+
+25 seeds x 40000 steps, 3 nodes, lease-drift profile: 25 passed, 0 failed (mean 3088 entries committed per run)
+
+--- EXPERIMENT: the same seeds, served from a lease that assumes the
+    clocks do not drift at all. Expect seeds to fail with a stale read.
+
+seed 2 failed after 23550 events
+  violation: Read Recency: a read asked for when index 1770 was already committed was confirmed at index 1765, so it may return a value older than a write that had already completed
+  reproduce with: keel-sim repro --seed 2 --nodes 3
+  recent events:
+    [   150000000ns] network healed
+    [   300000000ns] network healed
+    [   450000000ns] isolated node 3
+    [   600000000ns] isolated node 3
+    [   750000000ns] network healed
+    [   900000000ns] isolated node 3
+    [  1050000000ns] isolated node 3
+    [  1200000000ns] isolated node 2
+    [  1350000000ns] isolated node 3
+    [  1500000000ns] isolated node 3
+    [  1650000000ns] isolated node 1
+    [  1800000000ns] network healed
+    [  1950000000ns] isolated node 2
+    [  2100000000ns] network healed
+    [  2250000000ns] network healed
+    [  2400000000ns] network healed
+    [  2550000000ns] network healed
+    [  2700000000ns] network healed
+    [  2850000000ns] isolated node 2
+    [  3000000000ns] network healed
+    [  3150000000ns] isolated node 2
+    [  3300000000ns] network healed
+    [  3450000000ns] network healed
+    [  3600000000ns] isolated node 2
+    [  3750000000ns] network healed
+    [  3900000000ns] network healed
+    [  4050000000ns] network healed
+    [  4200000000ns] isolated node 2
+    [  4350000000ns] isolated node 2
+    [  4500000000ns] network healed
+    [  4650000000ns] network healed
+    [  4800000000ns] network healed
+    [  4950000000ns] isolated node 2
+    [  5100000000ns] isolated node 1
+    [  5250000000ns] network healed
+    [  5400000000ns] isolated node 3
+    [  5550000000ns] partition [1] | [2, 3]
+    [  5700000000ns] network healed
+    [  5850000000ns] isolated node 1
+    [  6000000000ns] isolated node 1
+  node state:
+    node 1 alive=true role=Leader term=7 last=1839 commit=1765 applied=1765
+    node 2 alive=true role=Leader term=8 last=1772 commit=1770 applied=1770
+    node 3 alive=true role=Follower term=8 last=1771 commit=1769 applied=1768
+
+seed 3 failed after 22439 events
+  violation: Read Recency: a read asked for when index 1633 was already committed was confirmed at index 1632, so it may return a value older than a write that had already completed
+  reproduce with: keel-sim repro --seed 3 --nodes 3
+  recent events:
+    [   150000000ns] isolated node 1
+    [   300000000ns] isolated node 3
+    [   450000000ns] network healed
+    [   600000000ns] network healed
+    [   750000000ns] network healed
+    [   900000000ns] network healed
+    [  1050000000ns] isolated node 3
+    [  1200000000ns] isolated node 2
+    [  1350000000ns] isolated node 1
+    [  1500000000ns] isolated node 3
+    [  1650000000ns] isolated node 2
+    [  1800000000ns] network healed
+    [  1950000000ns] isolated node 2
+    [  2100000000ns] network healed
+    [  2250000000ns] partition [1] | [2, 3]
+    [  2400000000ns] partition [1, 2] | [3]
+    [  2550000000ns] network healed
+    [  2700000000ns] isolated node 3
+    [  2850000000ns] network healed
+    [  2850000000ns] node 3 lost leadership while it still had a quorum
+    [  3000000000ns] isolated node 3
+    [  3150000000ns] network healed
+    [  3300000000ns] isolated node 3
+    [  3450000000ns] partition [1, 2] | [3]
+    [  3600000000ns] partition [1, 2] | [3]
+    [  3750000000ns] network healed
+    [  3900000000ns] network healed
+    [  4050000000ns] network healed
+    [  4200000000ns] network healed
+    [  4350000000ns] isolated node 1
+    [  4500000000ns] network healed
+    [  4650000000ns] isolated node 1
+    [  4800000000ns] network healed
+    [  4829593252ns] node 1 lost leadership while it still had a quorum
+    [  4950000000ns] isolated node 3
+    [  5100000000ns] isolated node 3
+    [  5250000000ns] isolated node 1
+    [  5400000000ns] network healed
+    [  5550000000ns] network healed
+    [  5700000000ns] network healed
+    [  5850000000ns] isolated node 1
+  node state:
+    node 1 alive=true role=Leader term=8 last=1690 commit=1632 applied=1632
+    node 2 alive=true role=Leader term=9 last=1633 commit=1633 applied=1633
+    node 3 alive=true role=Follower term=9 last=1633 commit=1628 applied=1628
+
+seed 4 failed after 15108 events
+  violation: Read Recency: a read asked for when index 1000 was already committed was confirmed at index 994, so it may return a value older than a write that had already completed
+  reproduce with: keel-sim repro --seed 4 --nodes 3
+  recent events:
+    [   150000000ns] network healed
+    [   300000000ns] network healed
+    [   450000000ns] isolated node 3
+    [   600000000ns] isolated node 3
+    [   750000000ns] isolated node 2
+    [   900000000ns] network healed
+    [  1050000000ns] network healed
+    [  1200000000ns] isolated node 2
+    [  1350000000ns] isolated node 2
+    [  1500000000ns] isolated node 3
+    [  1650000000ns] isolated node 3
+    [  1800000000ns] network healed
+    [  1950000000ns] partition [1, 2] | [3]
+    [  2100000000ns] network healed
+    [  2250000000ns] network healed
+    [  2400000000ns] isolated node 3
+    [  2550000000ns] isolated node 3
+    [  2700000000ns] network healed
+    [  2850000000ns] isolated node 3
+    [  3000000000ns] isolated node 3
+    [  3150000000ns] isolated node 3
+    [  3300000000ns] network healed
+    [  3450000000ns] isolated node 2
+    [  3600000000ns] isolated node 3
+    [  3750000000ns] network healed
+    [  3900000000ns] isolated node 2
+    [  4050000000ns] isolated node 2
+    [  4200000000ns] network healed
+    [  4350000000ns] isolated node 1
+    [  4500000000ns] partition [1, 2] | [3]
+    [  4650000000ns] network healed
+    [  4800000000ns] isolated node 1
+    [  4950000000ns] isolated node 1
+  node state:
+    node 1 alive=true role=Leader term=8 last=1128 commit=994 applied=994
+    node 2 alive=true role=Follower term=9 last=1001 commit=998 applied=998
+    node 3 alive=true role=Leader term=9 last=1001 commit=1000 applied=1000
+
+seed 6 failed after 24287 events
+  violation: Read Recency: a read asked for when index 1682 was already committed was confirmed at index 1678, so it may return a value older than a write that had already completed
+  reproduce with: keel-sim repro --seed 6 --nodes 3
+  recent events:
+    [   150000000ns] isolated node 3
+    [   300000000ns] network healed
+    [   300000000ns] node 3 lost leadership while it still had a quorum
+    [   450000000ns] network healed
+    [   600000000ns] network healed
+    [   750000000ns] isolated node 3
+    [   900000000ns] network healed
+    [  1050000000ns] network healed
+    [  1200000000ns] network healed
+    [  1350000000ns] isolated node 3
+    [  1500000000ns] network healed
+    [  1650000000ns] partition [1, 2] | [3]
+    [  1800000000ns] isolated node 1
+    [  1950000000ns] isolated node 1
+    [  2100000000ns] isolated node 2
+    [  2250000000ns] network healed
+    [  2400000000ns] network healed
+    [  2550000000ns] network healed
+    [  2700000000ns] network healed
+    [  2850000000ns] isolated node 2
+    [  3000000000ns] isolated node 2
+    [  3150000000ns] network healed
+    [  3300000000ns] isolated node 2
+    [  3450000000ns] network healed
+    [  3600000000ns] network healed
+    [  3750000000ns] isolated node 2
+    [  3900000000ns] network healed
+    [  4050000000ns] isolated node 3
+    [  4200000000ns] isolated node 3
+    [  4350000000ns] network healed
+    [  4500000000ns] network healed
+    [  4650000000ns] network healed
+    [  4800000000ns] isolated node 2
+    [  4950000000ns] isolated node 3
+    [  5100000000ns] isolated node 3
+    [  5250000000ns] partition [1] | [2, 3]
+    [  5400000000ns] network healed
+    [  5550000000ns] network healed
+    [  5700000000ns] network healed
+    [  5850000000ns] isolated node 2
+    [  6000000000ns] isolated node 2
+    [  6150000000ns] isolated node 3
+    [  6300000000ns] isolated node 1
+    [  6450000000ns] network healed
+    [  6600000000ns] network healed
+    [  6750000000ns] isolated node 1
+    [  6900000000ns] isolated node 1
+  node state:
+    node 1 alive=true role=Leader term=9 last=1763 commit=1678 applied=1678
+    node 2 alive=true role=Follower term=10 last=1683 commit=1680 applied=1680
+    node 3 alive=true role=Leader term=10 last=1683 commit=1682 applied=1680
+
+seed 7 failed after 10654 events
+  violation: Read Recency: a read asked for when index 847 was already committed was confirmed at index 844, so it may return a value older than a write that had already completed
+  reproduce with: keel-sim repro --seed 7 --nodes 3
+  recent events:
+    [   150000000ns] network healed
+    [   300000000ns] isolated node 2
+    [   450000000ns] network healed
+    [   600000000ns] isolated node 2
+    [   750000000ns] network healed
+    [   900000000ns] isolated node 2
+    [  1050000000ns] isolated node 2
+    [  1200000000ns] network healed
+    [  1350000000ns] isolated node 2
+    [  1500000000ns] network healed
+    [  1650000000ns] network healed
+    [  1800000000ns] isolated node 2
+    [  1950000000ns] isolated node 1
+    [  2100000000ns] network healed
+    [  2250000000ns] network healed
+    [  2400000000ns] isolated node 1
+    [  2550000000ns] isolated node 1
+  node state:
+    node 1 alive=true role=Leader term=3 last=948 commit=844 applied=844
+    node 2 alive=true role=Follower term=4 last=847 commit=844 applied=844
+    node 3 alive=true role=Leader term=4 last=848 commit=847 applied=847
+
+seed 8 failed after 17783 events
+  violation: Read Recency: a read asked for when index 1296 was already committed was confirmed at index 1290, so it may return a value older than a write that had already completed
+  reproduce with: keel-sim repro --seed 8 --nodes 3
+  recent events:
+    [   150000000ns] isolated node 3
+    [   300000000ns] network healed
+    [   310000000ns] node 3 lost leadership while it still had a quorum
+    [   450000000ns] network healed
+    [   600000000ns] isolated node 3
+    [   750000000ns] isolated node 3
+    [   900000000ns] network healed
+    [  1050000000ns] partition [1] | [2, 3]
+    [  1200000000ns] isolated node 2
+    [  1350000000ns] network healed
+    [  1500000000ns] network healed
+    [  1650000000ns] network healed
+    [  1800000000ns] isolated node 2
+    [  1950000000ns] isolated node 2
+    [  2100000000ns] isolated node 2
+    [  2250000000ns] isolated node 2
+    [  2400000000ns] network healed
+    [  2550000000ns] isolated node 1
+    [  2700000000ns] network healed
+    [  2850000000ns] isolated node 1
+    [  3000000000ns] network healed
+    [  3150000000ns] network healed
+    [  3300000000ns] isolated node 1
+    [  3450000000ns] network healed
+    [  3481159884ns] node 1 lost leadership while it still had a quorum
+    [  3600000000ns] isolated node 2
+    [  3750000000ns] isolated node 2
+    [  3900000000ns] partition [1, 2] | [3]
+    [  4050000000ns] network healed
+    [  4200000000ns] network healed
+    [  4350000000ns] network healed
+    [  4500000000ns] network healed
+    [  4650000000ns] isolated node 1
+    [  4800000000ns] isolated node 1
+  node state:
+    node 1 alive=true role=Leader term=6 last=1383 commit=1290 applied=1290
+    node 2 alive=true role=Leader term=7 last=1296 commit=1296 applied=1295
+    node 3 alive=true role=Follower term=7 last=1296 commit=1290 applied=1290
+
+seed 9 failed after 4821 events
+  violation: Read Recency: a read asked for when index 291 was already committed was confirmed at index 287, so it may return a value older than a write that had already completed
+  reproduce with: keel-sim repro --seed 9 --nodes 3
+  recent events:
+    [   150000000ns] network healed
+    [   300000000ns] isolated node 2
+    [   450000000ns] network healed
+    [   600000000ns] isolated node 2
+    [   750000000ns] isolated node 2
+    [   900000000ns] isolated node 2
+    [  1050000000ns] isolated node 1
+    [  1200000000ns] isolated node 1
+    [  1350000000ns] network healed
+    [  1500000000ns] isolated node 1
+    [  1650000000ns] isolated node 1
+  node state:
+    node 1 alive=true role=Leader term=3 last=474 commit=287 applied=287
+    node 2 alive=true role=Follower term=4 last=291 commit=283 applied=283
+    node 3 alive=true role=Leader term=4 last=295 commit=291 applied=283
+
+seed 11 failed after 31366 events
+  violation: Read Recency: a read asked for when index 2355 was already committed was confirmed at index 2352, so it may return a value older than a write that had already completed
+  reproduce with: keel-sim repro --seed 11 --nodes 3
+  recent events:
+    [   150000000ns] network healed
+    [   300000000ns] network healed
+    [   450000000ns] network healed
+    [   600000000ns] isolated node 2
+    [   750000000ns] network healed
+    [   750000000ns] node 2 lost leadership while it still had a quorum
+    [   900000000ns] network healed
+    [  1050000000ns] isolated node 2
+    [  1200000000ns] isolated node 1
+    [  1350000000ns] network healed
+    [  1500000000ns] network healed
+    [  1650000000ns] network healed
+    [  1800000000ns] network healed
+    [  1950000000ns] network healed
+    [  2100000000ns] network healed
+    [  2250000000ns] network healed
+    [  2400000000ns] network healed
+    [  2550000000ns] network healed
+    [  2700000000ns] network healed
+    [  2850000000ns] network healed
+    [  3000000000ns] network healed
+    [  3150000000ns] network healed
+    [  3300000000ns] isolated node 2
+    [  3450000000ns] isolated node 2
+    [  3600000000ns] isolated node 1
+    [  3750000000ns] isolated node 3
+    [  3900000000ns] partition [1] | [2, 3]
+    [  4050000000ns] network healed
+    [  4200000000ns] partition [1, 2] | [3]
+    [  4350000000ns] network healed
+    [  4500000000ns] network healed
+    [  4650000000ns] isolated node 2
+    [  4800000000ns] network healed
+    [  4950000000ns] network healed
+    [  5100000000ns] isolated node 2
+    [  5250000000ns] network healed
+    [  5400000000ns] isolated node 2
+    [  5550000000ns] network healed
+    [  5700000000ns] network healed
+    [  5850000000ns] isolated node 2
+    [  6000000000ns] isolated node 2
+    [  6150000000ns] network healed
+    [  6300000000ns] isolated node 2
+    [  6450000000ns] network healed
+    [  6600000000ns] isolated node 3
+    [  6750000000ns] isolated node 3
+    [  6900000000ns] network healed
+    [  7050000000ns] network healed
+    [  7200000000ns] isolated node 1
+    [  7350000000ns] isolated node 1
+  node state:
+    node 1 alive=true role=Leader term=9 last=2468 commit=2352 applied=2352
+    node 2 alive=true role=Follower term=11 last=2355 commit=2350 applied=2350
+    node 3 alive=true role=Leader term=11 last=2356 commit=2355 applied=2350
+
+seed 13 failed after 25986 events
+  violation: Read Recency: a read asked for when index 1986 was already committed was confirmed at index 1980, so it may return a value older than a write that had already completed
+  reproduce with: keel-sim repro --seed 13 --nodes 3
+  recent events:
+    [   150000000ns] network healed
+    [   300000000ns] isolated node 2
+    [   450000000ns] network healed
+    [   600000000ns] network healed
+    [   750000000ns] network healed
+    [   900000000ns] network healed
+    [  1050000000ns] isolated node 2
+    [  1200000000ns] isolated node 1
+    [  1350000000ns] network healed
+    [  1500000000ns] isolated node 2
+    [  1650000000ns] partition [1, 2] | [3]
+    [  1800000000ns] network healed
+    [  1950000000ns] isolated node 2
+    [  2100000000ns] isolated node 3
+    [  2250000000ns] isolated node 2
+    [  2400000000ns] network healed
+    [  2550000000ns] partition [1] | [2, 3]
+    [  2700000000ns] network healed
+    [  2850000000ns] network healed
+    [  3000000000ns] isolated node 2
+    [  3150000000ns] network healed
+    [  3300000000ns] network healed
+    [  3450000000ns] network healed
+    [  3600000000ns] isolated node 2
+    [  3750000000ns] network healed
+    [  3900000000ns] network healed
+    [  4050000000ns] network healed
+    [  4200000000ns] isolated node 2
+    [  4350000000ns] isolated node 2
+    [  4500000000ns] isolated node 3
+    [  4650000000ns] isolated node 3
+    [  4800000000ns] isolated node 3
+    [  4950000000ns] isolated node 3
+    [  5100000000ns] isolated node 2
+    [  5250000000ns] network healed
+    [  5400000000ns] network healed
+    [  5550000000ns] isolated node 2
+    [  5700000000ns] network healed
+    [  5850000000ns] network healed
+    [  6000000000ns] isolated node 1
+    [  6150000000ns] isolated node 1
+    [  6300000000ns] network healed
+    [  6450000000ns] network healed
+    [  6600000000ns] network healed
+    [  6750000000ns] isolated node 1
+    [  6900000000ns] isolated node 1
+  node state:
+    node 1 alive=true role=Leader term=8 last=2064 commit=1980 applied=1980
+    node 2 alive=true role=Follower term=9 last=1986 commit=1981 applied=1981
+    node 3 alive=true role=Leader term=9 last=1987 commit=1986 applied=1985
+
+seed 14 failed after 35121 events
+  violation: Read Recency: a read asked for when index 2682 was already committed was confirmed at index 2678, so it may return a value older than a write that had already completed
+  reproduce with: keel-sim repro --seed 14 --nodes 3
+  recent events:
+    [   150000000ns] isolated node 2
+    [   300000000ns] isolated node 2
+    [   450000000ns] network healed
+    [   600000000ns] network healed
+    [   750000000ns] network healed
+    [   900000000ns] partition [1, 2] | [3]
+    [  1050000000ns] network healed
+    [  1050000000ns] node 3 lost leadership while it still had a quorum
+    [  1200000000ns] network healed
+    [  1350000000ns] network healed
+    [  1500000000ns] network healed
+    [  1650000000ns] network healed
+    [  1800000000ns] network healed
+    [  1950000000ns] isolated node 3
+    [  2100000000ns] network healed
+    [  2250000000ns] isolated node 3
+    [  2400000000ns] network healed
+    [  2550000000ns] network healed
+    [  2700000000ns] isolated node 3
+    [  2850000000ns] isolated node 3
+    [  3000000000ns] network healed
+    [  3150000000ns] network healed
+    [  3300000000ns] network healed
+    [  3450000000ns] network healed
+    [  3600000000ns] partition [1] | [2, 3]
+    [  3750000000ns] network healed
+    [  3900000000ns] network healed
+    [  4050000000ns] isolated node 3
+    [  4200000000ns] isolated node 1
+    [  4350000000ns] isolated node 1
+    [  4500000000ns] network healed
+    [  4650000000ns] network healed
+    [  4800000000ns] network healed
+    [  4950000000ns] isolated node 3
+    [  5100000000ns] network healed
+    [  5100000000ns] node 3 lost leadership while it still had a quorum
+    [  5250000000ns] network healed
+    [  5400000000ns] network healed
+    [  5550000000ns] network healed
+    [  5700000000ns] isolated node 3
+    [  5850000000ns] isolated node 1
+    [  6000000000ns] network healed
+    [  6150000000ns] network healed
+    [  6300000000ns] network healed
+    [  6450000000ns] isolated node 3
+    [  6600000000ns] isolated node 3
+    [  6750000000ns] network healed
+    [  6900000000ns] network healed
+    [  7050000000ns] isolated node 3
+    [  7200000000ns] network healed
+    [  7350000000ns] isolated node 3
+    [  7500000000ns] isolated node 3
+    [  7650000000ns] network healed
+    [  7800000000ns] network healed
+    [  7950000000ns] network healed
+    [  8100000000ns] isolated node 1
+    [  8250000000ns] isolated node 1
+  node state:
+    node 1 alive=true role=Leader term=12 last=2770 commit=2678 applied=2678
+    node 2 alive=true role=Leader term=13 last=2682 commit=2682 applied=2678
+    node 3 alive=true role=Follower term=13 last=2682 commit=2678 applied=2678
+
+seed 15 failed after 26495 events
+  violation: Read Recency: a read asked for when index 1942 was already committed was confirmed at index 1940, so it may return a value older than a write that had already completed
+  reproduce with: keel-sim repro --seed 15 --nodes 3
+  recent events:
+    [   150000000ns] isolated node 2
+    [   300000000ns] isolated node 3
+    [   450000000ns] isolated node 3
+    [   600000000ns] network healed
+    [   750000000ns] network healed
+    [   900000000ns] network healed
+    [  1050000000ns] network healed
+    [  1200000000ns] network healed
+    [  1350000000ns] network healed
+    [  1500000000ns] network healed
+    [  1650000000ns] isolated node 1
+    [  1800000000ns] network healed
+    [  1827092305ns] node 1 lost leadership while it still had a quorum
+    [  1950000000ns] isolated node 2
+    [  2100000000ns] network healed
+    [  2250000000ns] network healed
+    [  2400000000ns] network healed
+    [  2550000000ns] isolated node 2
+    [  2700000000ns] network healed
+    [  2850000000ns] network healed
+    [  3000000000ns] isolated node 2
+    [  3150000000ns] isolated node 3
+    [  3300000000ns] isolated node 2
+    [  3450000000ns] network healed
+    [  3600000000ns] network healed
+    [  3750000000ns] isolated node 2
+    [  3900000000ns] isolated node 3
+    [  4050000000ns] network healed
+    [  4200000000ns] isolated node 2
+    [  4350000000ns] network healed
+    [  4500000000ns] isolated node 2
+    [  4650000000ns] isolated node 2
+    [  4800000000ns] isolated node 1
+    [  4950000000ns] isolated node 3
+    [  5100000000ns] isolated node 3
+    [  5250000000ns] isolated node 3
+    [  5400000000ns] network healed
+    [  5550000000ns] isolated node 3
+    [  5700000000ns] network healed
+    [  5850000000ns] network healed
+    [  6000000000ns] network healed
+    [  6150000000ns] isolated node 3
+    [  6300000000ns] isolated node 3
+    [  6450000000ns] isolated node 1
+    [  6600000000ns] network healed
+    [  6750000000ns] network healed
+    [  6900000000ns] isolated node 1
+  node state:
+    node 1 alive=true role=Leader term=8 last=1997 commit=1940 applied=1940
+    node 2 alive=true role=Leader term=9 last=1944 commit=1942 applied=1942
+    node 3 alive=true role=Follower term=9 last=1944 commit=1942 applied=1939
+
+seed 16 failed after 1985 events
+  violation: Read Recency: a read asked for when index 73 was already committed was confirmed at index 68, so it may return a value older than a write that had already completed
+  reproduce with: keel-sim repro --seed 16 --nodes 3
+  recent events:
+    [   150000000ns] isolated node 3
+    [   300000000ns] isolated node 3
+    [   450000000ns] network healed
+    [   600000000ns] network healed
+    [   750000000ns] isolated node 1
+    [   900000000ns] isolated node 1
+  node state:
+    node 1 alive=true role=Leader term=2 last=167 commit=68 applied=68
+    node 2 alive=true role=Leader term=3 last=74 commit=73 applied=72
+    node 3 alive=true role=Follower term=3 last=74 commit=72 applied=72
+
+seed 17 failed after 34293 events
+  violation: Read Recency: a read asked for when index 2472 was already committed was confirmed at index 2468, so it may return a value older than a write that had already completed
+  reproduce with: keel-sim repro --seed 17 --nodes 3
+  recent events:
+    [   150000000ns] network healed
+    [   300000000ns] network healed
+    [   450000000ns] network healed
+    [   600000000ns] network healed
+    [   750000000ns] network healed
+    [   900000000ns] network healed
+    [  1050000000ns] isolated node 2
+    [  1200000000ns] network healed
+    [  1350000000ns] isolated node 1
+    [  1500000000ns] network healed
+    [  1502243390ns] node 1 lost leadership while it still had a quorum
+    [  1650000000ns] network healed
+    [  1800000000ns] network healed
+    [  1950000000ns] network healed
+    [  2100000000ns] network healed
+    [  2250000000ns] partition [1, 2] | [3]
+    [  2400000000ns] network healed
+    [  2410000000ns] node 3 lost leadership while it still had a quorum
+    [  2550000000ns] partition [1, 2] | [3]
+    [  2700000000ns] network healed
+    [  2850000000ns] isolated node 3
+    [  3000000000ns] network healed
+    [  3150000000ns] network healed
+    [  3300000000ns] isolated node 3
+    [  3450000000ns] isolated node 1
+    [  3600000000ns] isolated node 3
+    [  3750000000ns] isolated node 2
+    [  3900000000ns] network healed
+    [  4050000000ns] network healed
+    [  4200000000ns] isolated node 2
+    [  4350000000ns] isolated node 2
+    [  4500000000ns] isolated node 1
+    [  4650000000ns] isolated node 2
+    [  4800000000ns] network healed
+    [  4950000000ns] isolated node 2
+    [  5100000000ns] isolated node 2
+    [  5250000000ns] partition [1, 2] | [3]
+    [  5400000000ns] isolated node 2
+    [  5550000000ns] network healed
+    [  5700000000ns] network healed
+    [  5850000000ns] isolated node 2
+    [  6000000000ns] network healed
+    [  6150000000ns] network healed
+    [  6300000000ns] isolated node 2
+    [  6450000000ns] isolated node 1
+    [  6600000000ns] isolated node 1
+    [  6750000000ns] network healed
+    [  6900000000ns] network healed
+    [  7050000000ns] network healed
+    [  7200000000ns] network healed
+    [  7350000000ns] isolated node 1
+    [  7500000000ns] network healed
+    [  7650000000ns] network healed
+    [  7800000000ns] isolated node 1
+    [  7950000000ns] partition [1, 2] | [3]
+    [  8100000000ns] network healed
+    [  8131550818ns] node 1 lost leadership while it still had a quorum
+    [  8250000000ns] isolated node 2
+    [  8400000000ns] isolated node 2
+    [  8550000000ns] isolated node 2
+    [  8700000000ns] network healed
+    [  8850000000ns] isolated node 1
+  node state:
+    node 1 alive=true role=Leader term=12 last=2519 commit=2468 applied=2468
+    node 2 alive=true role=Leader term=13 last=2475 commit=2472 applied=2472
+    node 3 alive=true role=Follower term=13 last=2475 commit=2472 applied=2472
+
+seed 19 failed after 24620 events
+  violation: Read Recency: a read asked for when index 1885 was already committed was confirmed at index 1884, so it may return a value older than a write that had already completed
+  reproduce with: keel-sim repro --seed 19 --nodes 3
+  recent events:
+    [   150000000ns] isolated node 2
+    [   300000000ns] isolated node 3
+    [   450000000ns] isolated node 3
+    [   600000000ns] isolated node 2
+    [   750000000ns] network healed
+    [   900000000ns] network healed
+    [  1050000000ns] partition [1, 2] | [3]
+    [  1200000000ns] network healed
+    [  1350000000ns] network healed
+    [  1500000000ns] isolated node 3
+    [  1650000000ns] partition [1] | [2, 3]
+    [  1800000000ns] network healed
+    [  1950000000ns] network healed
+    [  2100000000ns] network healed
+    [  2250000000ns] network healed
+    [  2400000000ns] isolated node 3
+    [  2550000000ns] network healed
+    [  2700000000ns] network healed
+    [  2850000000ns] isolated node 3
+    [  3000000000ns] isolated node 1
+    [  3150000000ns] isolated node 1
+    [  3300000000ns] network healed
+    [  3450000000ns] isolated node 2
+    [  3600000000ns] network healed
+    [  3750000000ns] network healed
+    [  3900000000ns] isolated node 2
+    [  4050000000ns] network healed
+    [  4200000000ns] network healed
+    [  4350000000ns] network healed
+    [  4500000000ns] isolated node 2
+    [  4650000000ns] isolated node 1
+    [  4800000000ns] network healed
+    [  4950000000ns] network healed
+    [  5100000000ns] network healed
+    [  5250000000ns] network healed
+    [  5400000000ns] isolated node 2
+    [  5550000000ns] isolated node 2
+    [  5700000000ns] network healed
+    [  5850000000ns] isolated node 1
+    [  6000000000ns] network healed
+    [  6150000000ns] network healed
+    [  6300000000ns] isolated node 1
+  node state:
+    node 1 alive=true role=Leader term=10 last=1943 commit=1884 applied=1884
+    node 2 alive=true role=Follower term=11 last=1885 commit=1882 applied=1882
+    node 3 alive=true role=Leader term=11 last=1886 commit=1885 applied=1880
+
+seed 21 failed after 8637 events
+  violation: Read Recency: a read asked for when index 551 was already committed was confirmed at index 550, so it may return a value older than a write that had already completed
+  reproduce with: keel-sim repro --seed 21 --nodes 3
+  recent events:
+    [   150000000ns] network healed
+    [   300000000ns] isolated node 3
+    [   450000000ns] network healed
+    [   600000000ns] network healed
+    [   750000000ns] isolated node 3
+    [   900000000ns] network healed
+    [  1050000000ns] isolated node 3
+    [  1200000000ns] network healed
+    [  1350000000ns] partition [1, 2] | [3]
+    [  1500000000ns] isolated node 3
+    [  1650000000ns] network healed
+    [  1800000000ns] isolated node 2
+    [  1950000000ns] isolated node 2
+    [  2100000000ns] network healed
+    [  2250000000ns] network healed
+    [  2400000000ns] network healed
+    [  2550000000ns] isolated node 1
+    [  2700000000ns] isolated node 1
+  node state:
+    node 1 alive=true role=Leader term=6 last=647 commit=550 applied=550
+    node 2 alive=true role=Follower term=7 last=553 commit=551 applied=546
+    node 3 alive=true role=Leader term=7 last=553 commit=551 applied=551
+
+seed 22 failed after 28464 events
+  violation: Read Recency: a read asked for when index 2229 was already committed was confirmed at index 2224, so it may return a value older than a write that had already completed
+  reproduce with: keel-sim repro --seed 22 --nodes 3
+  recent events:
+    [   150000000ns] isolated node 2
+    [   300000000ns] network healed
+    [   300000000ns] node 2 lost leadership while it still had a quorum
+    [   450000000ns] isolated node 2
+    [   600000000ns] isolated node 2
+    [   750000000ns] partition [1] | [2, 3]
+    [   900000000ns] network healed
+    [  1050000000ns] isolated node 3
+    [  1200000000ns] network healed
+    [  1350000000ns] isolated node 3
+    [  1500000000ns] network healed
+    [  1650000000ns] isolated node 3
+    [  1800000000ns] isolated node 3
+    [  1950000000ns] network healed
+    [  2100000000ns] isolated node 3
+    [  2250000000ns] isolated node 3
+    [  2400000000ns] isolated node 2
+    [  2550000000ns] network healed
+    [  2700000000ns] isolated node 3
+    [  2850000000ns] isolated node 3
+    [  3000000000ns] isolated node 2
+    [  3150000000ns] network healed
+    [  3300000000ns] partition [1] | [2, 3]
+    [  3450000000ns] network healed
+    [  3600000000ns] network healed
+    [  3750000000ns] isolated node 3
+    [  3900000000ns] isolated node 3
+    [  4050000000ns] network healed
+    [  4200000000ns] network healed
+    [  4350000000ns] network healed
+    [  4500000000ns] network healed
+    [  4650000000ns] network healed
+    [  4800000000ns] isolated node 3
+    [  4950000000ns] isolated node 3
+    [  5100000000ns] isolated node 2
+    [  5250000000ns] network healed
+    [  5400000000ns] network healed
+    [  5550000000ns] network healed
+    [  5700000000ns] network healed
+    [  5850000000ns] isolated node 1
+    [  6000000000ns] network healed
+    [  6150000000ns] network healed
+    [  6300000000ns] isolated node 1
+    [  6450000000ns] network healed
+    [  6600000000ns] network healed
+    [  6750000000ns] network healed
+    [  6900000000ns] network healed
+    [  7050000000ns] isolated node 1
+    [  7200000000ns] network healed
+  node state:
+    node 1 alive=true role=Leader term=7 last=2306 commit=2224 applied=2224
+    node 2 alive=true role=Follower term=8 last=2229 commit=2225 applied=2225
+    node 3 alive=true role=Leader term=8 last=2234 commit=2229 applied=2225
+
+seed 23 failed after 25108 events
+  violation: Read Recency: a read asked for when index 1955 was already committed was confirmed at index 1953, so it may return a value older than a write that had already completed
+  reproduce with: keel-sim repro --seed 23 --nodes 3
+  recent events:
+    [   150000000ns] isolated node 2
+    [   300000000ns] network healed
+    [   450000000ns] partition [1, 2] | [3]
+    [   600000000ns] network healed
+    [   750000000ns] isolated node 2
+    [   900000000ns] network healed
+    [  1050000000ns] network healed
+    [  1200000000ns] isolated node 2
+    [  1350000000ns] network healed
+    [  1500000000ns] isolated node 1
+    [  1650000000ns] isolated node 1
+    [  1800000000ns] network healed
+    [  1801305479ns] node 1 lost leadership while it still had a quorum
+    [  1950000000ns] network healed
+    [  2100000000ns] network healed
+    [  2250000000ns] network healed
+    [  2400000000ns] isolated node 3
+    [  2550000000ns] network healed
+    [  2700000000ns] isolated node 1
+    [  2850000000ns] partition [1] | [2, 3]
+    [  3000000000ns] network healed
+    [  3150000000ns] isolated node 3
+    [  3300000000ns] network healed
+    [  3450000000ns] network healed
+    [  3600000000ns] network healed
+    [  3750000000ns] isolated node 3
+    [  3900000000ns] network healed
+    [  4050000000ns] network healed
+    [  4200000000ns] network healed
+    [  4350000000ns] network healed
+    [  4500000000ns] isolated node 3
+    [  4650000000ns] isolated node 1
+    [  4800000000ns] network healed
+    [  4950000000ns] network healed
+    [  5100000000ns] network healed
+    [  5250000000ns] isolated node 1
+  node state:
+    node 1 alive=true role=Leader term=6 last=2015 commit=1953 applied=1953
+    node 2 alive=true role=Leader term=7 last=1958 commit=1955 applied=1955
+    node 3 alive=true role=Follower term=7 last=1955 commit=1952 applied=1952
+
+seed 24 failed after 34558 events
+  violation: Read Recency: a read asked for when index 2511 was already committed was confirmed at index 2508, so it may return a value older than a write that had already completed
+  reproduce with: keel-sim repro --seed 24 --nodes 3
+  recent events:
+    [   150000000ns] network healed
+    [   300000000ns] isolated node 3
+    [   450000000ns] isolated node 3
+    [   600000000ns] network healed
+    [   750000000ns] network healed
+    [   900000000ns] isolated node 3
+    [  1050000000ns] isolated node 3
+    [  1200000000ns] isolated node 2
+    [  1350000000ns] network healed
+    [  1500000000ns] isolated node 3
+    [  1650000000ns] isolated node 3
+    [  1800000000ns] isolated node 1
+    [  1950000000ns] isolated node 2
+    [  2100000000ns] isolated node 3
+    [  2250000000ns] partition [1] | [2, 3]
+    [  2400000000ns] isolated node 1
+    [  2550000000ns] network healed
+    [  2700000000ns] isolated node 3
+    [  2850000000ns] isolated node 3
+    [  3000000000ns] isolated node 2
+    [  3150000000ns] network healed
+    [  3300000000ns] network healed
+    [  3450000000ns] isolated node 1
+    [  3600000000ns] network healed
+    [  3619548927ns] node 1 lost leadership while it still had a quorum
+    [  3750000000ns] isolated node 2
+    [  3900000000ns] isolated node 2
+    [  4050000000ns] isolated node 3
+    [  4200000000ns] network healed
+    [  4350000000ns] network healed
+    [  4500000000ns] network healed
+    [  4650000000ns] network healed
+    [  4800000000ns] network healed
+    [  4950000000ns] partition [1, 2] | [3]
+    [  5100000000ns] network healed
+    [  5250000000ns] isolated node 2
+    [  5400000000ns] partition [1, 2] | [3]
+    [  5550000000ns] isolated node 2
+    [  5700000000ns] isolated node 1
+    [  5850000000ns] network healed
+    [  6000000000ns] network healed
+    [  6150000000ns] network healed
+    [  6300000000ns] isolated node 3
+    [  6450000000ns] network healed
+    [  6600000000ns] network healed
+    [  6750000000ns] network healed
+    [  6900000000ns] network healed
+    [  7050000000ns] network healed
+    [  7200000000ns] network healed
+    [  7350000000ns] isolated node 3
+    [  7500000000ns] network healed
+    [  7650000000ns] isolated node 3
+    [  7800000000ns] isolated node 1
+    [  7950000000ns] network healed
+    [  8100000000ns] network healed
+    [  8250000000ns] isolated node 3
+    [  8400000000ns] isolated node 3
+    [  8550000000ns] network healed
+    [  8700000000ns] network healed
+    [  8850000000ns] network healed
+    [  9000000000ns] network healed
+    [  9150000000ns] isolated node 1
+  node state:
+    node 1 alive=true role=Leader term=11 last=2569 commit=2508 applied=2508
+    node 2 alive=true role=Follower term=12 last=2512 commit=2509 applied=2509
+    node 3 alive=true role=Leader term=12 last=2513 commit=2511 applied=2509
+
+25 seeds x 40000 steps, 3 nodes, lease-drift profile: 7 passed, 18 failed (mean 1989 entries committed per run)
+failing seeds: [2, 3, 4, 6, 7, 8, 9, 11, 13, 14, 15, 16, 17, 19, 21, 22, 23, 24]
+
+--- coverage: the lease path was actually taken
+
+  reads issued/confirmed/answered 2207/1867/1867
+  lease reads served 1819 (0 behind the cluster)
+
+==============================================================
+PASS: confirming each read with a heartbeat round is clean on every
+      seed; serving the same reads from a lease whose clock
+      assumption the deployment violates returns values the cluster
+      had already moved past. ReadIndex is the default for this
+      reason, and the lease bound is a claim about the deployment
+      rather than about the algorithm.

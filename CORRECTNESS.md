@@ -138,6 +138,9 @@ the one place the simulator had never been.
 | Leader transfers are requested under faults | the same test: `transfers_requested > 0` | enforced |
 | The crash nemesis's quorum is a majority of the *voters*, and of both halves when joint | `World::on_nemesis` — a budget computed over every node that exists would kill enough of `C_old` to stop the cluster while the arithmetic still said a quorum survived | enforced |
 | The profiles that predate membership changes propose none | `the_profiles_that_predate_membership_changes_propose_none` | enforced |
+| A restarting node recovers its configuration from its snapshot and rebuilds the rest by replay, rather than keeping the one it held in memory | `the_membership_profile_never_takes_the_voter_set_below_three` — [KEEL-10](BUGS.md) | enforced |
+| The voter set never falls to two, where a single crash stops the cluster | the same test, across eighty runs | enforced |
+| …and at three nodes the profile is inert, which is stated rather than left to look like coverage | `the_membership_profile_is_inert_at_three_nodes` | enforced |
 
 ## A cluster under chaos
 

@@ -780,6 +780,55 @@ fn membership_actually_changes_and_the_joint_configuration_is_actually_open() {
     assert!(transfers > 0, "no leader transfer was ever requested");
 }
 
+/// And at three nodes it does nothing, which is a fact about the profile rather
+/// than a gap in it.
+///
+/// A change needs somewhere to change to; the voter floor is three because a
+/// cluster of two stops on a single crash; and a simulated cluster cannot start
+/// a process that was not in the seed. Three nodes therefore means three
+/// voters, no learners, and no legal move. Asserted rather than left implicit,
+/// because a profile in the sweep that silently exercises nothing is exactly
+/// the shape of [KEEL-4](../../../BUGS.md).
+#[test]
+fn the_membership_profile_is_inert_at_three_nodes() {
+    let cfg = SimConfig::named("membership-hunt", 3).expect("exists");
+    let mut world = World::new(11, cfg);
+    world.run(30_000);
+    assert!(!world.is_broken());
+    assert_eq!(
+        world.stats.conf_changes_proposed, 0,
+        "three nodes proposed a membership change, so the floor is not what it says"
+    );
+    assert_eq!(world.stats.joint_config_windows, 0);
+}
+
+/// The voter set never falls to two, because a cluster of two has a quorum of
+/// two and a single crash stops it.
+///
+/// A harness invariant rather than a property of the cluster, and it is a test
+/// because breaking it is how [KEEL-10](../../../BUGS.md) was reached. The
+/// original guard read the configuration of whichever node the client had
+/// picked, and a node's configuration takes effect at apply time — so a node
+/// that was behind was consulted about a membership that had already moved on,
+/// and two changes drawn from two stale readings took the voter set somewhere
+/// neither intended.
+#[test]
+fn the_membership_profile_never_takes_the_voter_set_below_three() {
+    for seed in 0..40 {
+        for nodes in [3usize, 5] {
+            let cfg = SimConfig::named("membership-hunt", nodes).expect("exists");
+            let mut world = World::new(seed, cfg);
+            world.run(30_000);
+            assert!(
+                world.stats.smallest_voter_set >= 3,
+                "seed {seed} at {nodes} nodes reached a voter set of {}, where a single \
+                 crash stops the cluster",
+                world.stats.smallest_voter_set
+            );
+        }
+    }
+}
+
 /// The profiles that predate membership changes still propose none.
 ///
 /// The other half of "their fingerprints did not move", named here so that the

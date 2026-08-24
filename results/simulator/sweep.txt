@@ -1,7 +1,7 @@
 === keel-sim validation sweep ===
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
-commit: 2ca19d4
-date:   2026-08-24T04:18:11Z
+commit: 3a347aa
+date:   2026-08-24T22:59:44Z
 
 Safety only. No timing claim is made here: the simulator runs on a
 virtual clock, so wall-clock speed says nothing about the system
@@ -15,19 +15,15 @@ under test.
 500 seeds x 60000 steps, 3 nodes, chaos profile: 500 passed, 0 failed (mean 195 entries committed per run)
 --- profile=chaos nodes=5
 500 seeds x 60000 steps, 5 nodes, chaos profile: 500 passed, 0 failed (mean 197 entries committed per run)
---- profile=fig8-hunt nodes=3
-500 seeds x 80000 steps, 3 nodes, fig8-hunt profile: 500 passed, 0 failed (mean 198 entries committed per run)
-
---- profile=disk-chaos nodes=3
-100 seeds x 60000 steps, 3 nodes, disk-chaos profile: 100 passed, 0 failed (mean 140 entries committed per run)
---- profile=disk-chaos nodes=5
-100 seeds x 60000 steps, 5 nodes, disk-chaos profile: 100 passed, 0 failed (mean 149 entries committed per run)
---- profile=disk-hunt nodes=3
-100 seeds x 60000 steps, 3 nodes, disk-hunt profile: 100 passed, 0 failed (mean 148 entries committed per run)
---- profile=disk-hunt nodes=5
-100 seeds x 60000 steps, 5 nodes, disk-hunt profile: 100 passed, 0 failed (mean 169 entries committed per run)
-
---- determinism: 100 seeds, each run twice
-100 seeds replayed identically
---- determinism with the disk in the fingerprint: 60 seeds, disk-hunt
-60 seeds replayed identically
+--- profile=read-hunt nodes=3
+500 seeds x 60000 steps, 3 nodes, read-hunt profile: 500 passed, 0 failed (mean 267 entries committed per run)
+--- profile=read-hunt nodes=5
+500 seeds x 60000 steps, 5 nodes, read-hunt profile: 500 passed, 0 failed (mean 240 entries committed per run)
+--- profile=lease-drift nodes=3
+500 seeds x 60000 steps, 3 nodes, lease-drift profile: 500 passed, 0 failed (mean 4661 entries committed per run)
+--- profile=lease-drift nodes=5
+500 seeds x 60000 steps, 5 nodes, lease-drift profile: 500 passed, 0 failed (mean 2657 entries committed per run)
+--- profile=membership-hunt nodes=3
+500 seeds x 60000 steps, 3 nodes, membership-hunt profile: 500 passed, 0 failed (mean 4324 entries committed per run)
+--- profile=membership-hunt nodes=5
+500 seeds x 60000 steps, 5 nodes, membership-hunt profile: 499 passed, 1 failed (mean 2549 entries committed per run)
