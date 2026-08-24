@@ -632,6 +632,80 @@ simulator has never exercised is shipping the confidence without the evidence.
 a running cluster. That is a real limitation and it is in README's "Not claimed"
 rather than discovered.
 
+---
+
+## ADR-025 — Partitions are a userland proxy, one per ordered pair
+
+`keel-chaos` puts a TCP proxy between every ordered pair of nodes — six of them
+for a three-node cluster — and each node is given its *own* peer map pointing at
+its own proxies. A partition is a proxy that stops forwarding.
+
+**Why not a firewall rule.** `iptables` and `pfctl` need root, differ between
+platforms, and leave state behind when a run is killed — a machine that still
+cannot talk to itself an hour after the test ended. A proxy is a process: kill
+it and the partition is over. It is also *observable*, which is the part that
+matters more. The proxy counts what it carried and what it refused, so a run can
+assert that a partition actually cut something. Without that, the most likely
+outcome of a chaos harness is a green result from a fault that never landed —
+and a green result is exactly what nobody investigates.
+
+**Why one per ordered pair rather than one per node.** `keel-server` takes a
+single peer map. Given every node the same one, every node reaches node 3 at the
+same address, and a proxy in front of node 3 can only cut *everybody's* traffic
+to it. That is a node failure wearing a partition's clothes, and it is why so
+many harnesses only ever produce symmetric partitions. Per-pair proxies cost
+`n * (n - 1)` sockets and buy the asymmetric case: a node that can send but not
+receive keeps campaigning, keeps raising its term, and is never told it lost —
+then heals into a cluster that was doing fine and deposes its leader.
+
+**Why a cut severs rather than pauses.** A cut connection is shut down in both
+directions, not held. Holding it would deliver a burst of stale messages the
+moment the partition healed, which is a different fault from a partition and one
+no real network produces. Severing is also what a peer sees when a machine's
+route disappears, and `TcpTransport` redials lazily on the next send, so a heal
+needs no coordination.
+
+**What it does not cover.** Clients are not proxied. A partition that also hid
+the cluster from its clients would turn every fault into a timeout, and the
+interesting observation — a node that is up, reachable, and unable to serve
+because it has lost contact with the majority — would never be made.
+
+---
+
+## ADR-026 — `SIGSTOP` is a separate fault from `SIGKILL`, and the clock jump runs in a container
+
+Three nemeses, and two decisions inside them that were not obvious.
+
+**A pause is not a slow crash.** `SIGKILL` closes the process's descriptors, so
+peers see connection resets and everything unsynced is lost. `SIGSTOP` leaves
+every socket open and unanswered — no reset, no refusal, silence — which is what
+a garbage collection pause, a hypervisor stall, or a machine that has started
+swapping looks like from outside. Then the process resumes still holding every
+belief it had, including "I am the leader", at a moment when the cluster has
+elected somebody else. A harness that only crashes nodes never gives one the
+chance to be wrong about that, so both are injected and they are counted
+separately.
+
+**The clock jump runs on Linux, in a container, and says so.** Raft reads its
+timeouts off `CLOCK_MONOTONIC`. A fault that moves only `CLOCK_REALTIME` — which
+is what `date -s` and most container tricks do — moves a clock no node reads.
+Moving the monotonic clock needs `libfaketime` preloaded, and macOS strips
+`DYLD_INSERT_LIBRARIES` under System Integrity Protection and does not interpose
+the commpage `mach_absolute_time` reads. It cannot be made to work here.
+
+The choice taken is that the schedule is drawn *knowing* whether the host can
+move a clock. On macOS it contains no clock jumps at all, rather than containing
+them and skipping them at injection time — a plan that describes a run that did
+not happen is worse than a shorter plan. The fault itself runs under
+`scripts/chaos-clock.sh`, inside `rust:1-slim-bookworm` with `faketime`
+installed, and its artifact states both machines: the host that built it and the
+guest the cluster ran on.
+
+**The probe is why any of that is believable.** A child process reads
+`CLOCK_MONOTONIC` across the jump and the check is for a *discontinuity* —
+monotonic time outrunning real time by most of the amount asked for — not for a
+large number, which any sleep would also produce. A library that faked only the
+wall clock would pass a large-number check and fail this one.
 
 ---
 

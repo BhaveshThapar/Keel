@@ -89,6 +89,33 @@ are for.
 | A misconfigured node refuses to start rather than serving alone | `cluster::a_misconfigured_node_refuses_to_start` | enforced |
 | A node says whether its fsyncs survive power loss, in its ready file | `cluster::a_three_node_cluster_serves_traffic` checks every node's | enforced |
 
+## A cluster under chaos
+
+Faults injected into real processes, from a seed. The simulator cannot reach any
+of these, because it replaces the parts they live in: a scheduler, a TCP stack, a
+`SIGSTOP` that lands between two instructions.
+
+| Property | Enforced by | Status |
+|---|---|---|
+| A cluster survives a partition, a pause and a kill without losing an acknowledged write | `real_cluster::a_cluster_survives_a_partition_a_pause_and_a_kill` | enforced |
+| A one-way partition of one node does not stop the majority | `real_cluster::a_one_way_partition_does_not_stop_the_majority` | enforced |
+| A killed node rejoins and the cluster still has what it acknowledged | `real_cluster::a_killed_node_rejoins_and_the_cluster_keeps_its_acknowledged_writes` | enforced |
+| Isolating one node leaves every other pair connected | `cluster::tests::isolating_one_node_leaves_the_rest_of_the_cluster_connected` | enforced |
+| A one-way isolation cuts one direction only | `cluster::tests::a_one_way_isolation_cuts_one_direction_only` | enforced |
+| A split cuts across the two sides and not within either | `cluster::tests::a_split_cuts_across_and_not_within` | enforced |
+| A stopped process is still alive, and can still be killed | `nemesis::tests::a_stopped_process_stays_alive_until_it_is_resumed`; `nemesis::tests::a_stopped_process_can_still_be_killed` | enforced |
+| A signal at something that is not running is an error, not a silent no-op | `nemesis::tests::signalling_something_that_is_not_running_is_an_error_rather_than_a_silent_no_op` | enforced |
+| A node that dies during startup is noticed rather than waited out | `nemesis::tests::a_process_that_dies_during_startup_is_noticed_immediately` | enforced |
+| A seed determines the whole fault schedule | `schedule::tests::a_seed_determines_the_whole_schedule` | enforced |
+| Every fault is paired with its repair, and the cluster ends healthy | `schedule::tests::every_fault_is_repaired_and_the_cluster_ends_healthy` | enforced |
+| A split never puts a majority on the minority side | `schedule::tests::a_split_never_puts_a_majority_on_the_wrong_side` | enforced |
+| Every kind of fault is actually reachable | `schedule::tests::a_hundred_seeds_reach_every_kind_of_fault` | enforced |
+| A host that cannot move clocks draws a schedule with no clock jumps in it | `schedule::tests::a_host_without_clock_control_gets_a_schedule_without_clock_jumps` | enforced |
+| …and a host that can, does | `schedule::tests::clock_jumps_do_occur_when_the_host_allows_them` | enforced |
+| Elapsed time is not accepted as evidence of a clock jump | `clock::tests::a_probe_that_merely_waited_does_not_count_as_a_jump` | enforced |
+| A run that injected no fault, or got no acknowledgement, is refused rather than reported as a pass | `keel-chaos run`, checked in `results/chaos/real-cluster.txt` | enforced |
+| A jump reaches `CLOCK_MONOTONIC`, not just the wall clock | `keel-chaos clock-check`, recorded in `results/chaos/clock-jump.txt` — Linux only, see [ADR-026](DESIGN.md) | recorded, not in CI |
+
 ## The host loop
 
 | Property | Enforced by | Status |

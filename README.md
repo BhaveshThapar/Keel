@@ -11,7 +11,7 @@ verified by a deterministic simulator that replays any failure from a seed.
 
 ## What is here today
 
-Eleven crates.
+Twelve crates.
 
 **[`keel-raft`](crates/keel-raft/)** — a Raft consensus core that does no I/O,
 owns no threads, and reads no clock. You feed it events and it hands back a
@@ -61,6 +61,15 @@ under the same sequence number, and the `kv` CLI. It records a history in the
 shape an external checker wants, including the third outcome most recorders get
 wrong: a request whose answer was lost may or may not have applied, and saying
 "failed" would be claiming something the client cannot know.
+
+**[`keel-chaos`](crates/keel-chaos/)** — faults against a cluster of real
+processes, drawn from a seed and printed before any of them is injected. A proxy
+per *ordered pair* of nodes, so a partition can be one-directional; `SIGSTOP` as
+well as `SIGKILL`, because a paused process holds its sockets open and answers
+nothing, which is the fault a crash does not produce; and a `CLOCK_MONOTONIC`
+jump with a probe that checks the jump was a discontinuity rather than elapsed
+time. A run that injects no fault, or gets no acknowledgement, fails rather than
+reporting a pass.
 
 The consensus core exists to make the simulator possible. Because the core is a pure function
 of its inputs, a run is a pure function of `(seed, config)`: any failure is

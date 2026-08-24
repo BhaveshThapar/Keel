@@ -1,0 +1,32 @@
+[package]
+name = "keel-chaos"
+description = "Faults against a real cluster: a partition proxy, a process nemesis, and clock jumps, all driven from a seeded schedule."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+categories = ["development-tools::testing"]
+keywords = ["chaos", "jepsen", "partition", "nemesis", "testing"]
+
+[[bin]]
+name = "keel-chaos"
+path = "src/main.rs"
+
+[dependencies]
+keel-rand = { workspace = true }
+clap = { workspace = true }
+thiserror = { workspace = true }
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# The chaos tests break a cluster of real processes, so cargo has to have built
+# one. A dev-dependency rather than a path guess, for the same reason
+# keel-client's cluster test takes one.
+keel-server = { workspace = true }
+keel-client = { workspace = true }
+
+[lints]
+workspace = true
