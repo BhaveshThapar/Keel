@@ -259,19 +259,39 @@ impl Clients {
     }
 
     /// A write applied. Answer whoever was waiting for it.
-    pub fn answer_write(&mut self, session: Option<(ClientId, Seq)>, response: &Response) {
-        let matched = match (session, response) {
-            (Some((client, seq)), _) => self
+    ///
+    /// `registration` is the nonce, when the applied proposal was a
+    /// registration. It is not optional decoration: a registration is the one
+    /// request that has no session pair — it is asking for one — so without the
+    /// nonce there is nothing to match it on, and matching it on "the first
+    /// parked registration" hands whichever client happened to park first the
+    /// identity the state machine minted for somebody else.
+    ///
+    /// That went unnoticed for a while because the result still looks correct.
+    /// Both clients get *an* identity, both are distinct, both work. The damage
+    /// arrives one step later: the client whose answer was taken retries its
+    /// registration, the state machine returns the same `ClientId` it minted
+    /// the first time — registration is idempotent by nonce, correctly — and
+    /// now two clients hold the same one. The next request from either hits the
+    /// other's exactly-once dedup cache, is acknowledged, and never applies.
+    /// [KEEL-9](../../../BUGS.md).
+    pub fn answer_write(
+        &mut self,
+        session: Option<(ClientId, Seq)>,
+        registration: Option<u64>,
+        response: &Response,
+    ) {
+        let matched = match (session, registration, response) {
+            (Some((client, seq)), _, _) => self
                 .parked
                 .iter()
                 .position(|p| matches!(p.waiting, Waiting::Write { client: c, seq: s } if c == client && s == seq)),
-            // A registration is matched by the nonce it echoed, which is parked
-            // as a sequence number under client zero.
-            (None, Response::Registered { .. }) => self
-                .parked
-                .iter()
-                .position(|p| matches!(p.waiting, Waiting::Write { client: 0, .. })),
-            (None, _) => None,
+            // A registration is matched by the nonce it was parked under, and
+            // by nothing else.
+            (None, Some(nonce), Response::Registered { .. }) => self.parked.iter().position(
+                |p| matches!(p.waiting, Waiting::Write { client: 0, seq: s } if s == nonce),
+            ),
+            _ => None,
         };
         if let Some(index) = matched {
             let mut parked = self.parked.remove(index);
@@ -362,4 +382,138 @@ fn answer(stream: &mut TcpStream, response: &Response) -> io::Result<()> {
     stream.write_all(&(payload.len() as u32).to_le_bytes())?;
     stream.write_all(&payload)?;
     stream.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    /// A connected pair, so a parked request can be answered and the answer
+    /// read back.
+    fn pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let client = TcpStream::connect(addr).expect("connect");
+        let (server, _) = listener.accept().expect("accept");
+        (client, server)
+    }
+
+    fn read_response(stream: &mut TcpStream) -> Response {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("timeout");
+        let mut len = [0u8; 4];
+        stream.read_exact(&mut len).expect("length prefix");
+        let mut body = vec![0u8; u32::from_le_bytes(len) as usize];
+        stream.read_exact(&mut body).expect("body");
+        keel_api::decode::<Response>(&body).expect("decode")
+    }
+
+    fn park_registration(clients: &mut Clients, stream: TcpStream, nonce: u64) {
+        clients.parked.push(Parked {
+            stream,
+            waiting: Waiting::Write {
+                client: 0,
+                seq: nonce,
+            },
+            since: Instant::now(),
+        });
+    }
+
+    fn empty() -> Clients {
+        Clients::bind("127.0.0.1:0".parse().expect("literal")).expect("bind")
+    }
+
+    /// [KEEL-9](../../../BUGS.md). Two clients registering at the same moment
+    /// must each get the identity minted for *their* nonce.
+    ///
+    /// The old code matched a registration answer against the first parked
+    /// registration, whatever its nonce, so whichever client parked first took
+    /// whichever answer applied first. Both clients still got an id and both
+    /// ids were distinct, which is why it survived review — the damage only
+    /// shows up when one of them retries its registration and the two end up
+    /// sharing an id.
+    #[test]
+    fn two_concurrent_registrations_are_answered_by_nonce_and_not_by_arrival() {
+        let mut clients = empty();
+        let (mut first_client, first_server) = pair();
+        let (mut second_client, second_server) = pair();
+        park_registration(&mut clients, first_server, 111);
+        park_registration(&mut clients, second_server, 222);
+
+        // The *second* registration applies first, which is the whole point:
+        // the order proposals apply in is not the order connections arrived in.
+        clients.answer_write(None, Some(222), &Response::Registered { client: 7 });
+        clients.answer_write(None, Some(111), &Response::Registered { client: 8 });
+
+        assert_eq!(
+            read_response(&mut second_client),
+            Response::Registered { client: 7 },
+            "nonce 222 was handed the identity minted for another registration"
+        );
+        assert_eq!(
+            read_response(&mut first_client),
+            Response::Registered { client: 8 }
+        );
+    }
+
+    /// A registration answer that names a nonce nobody is waiting under is
+    /// dropped rather than given to whoever is nearest.
+    #[test]
+    fn a_registration_answer_for_an_unknown_nonce_answers_nobody() {
+        let mut clients = empty();
+        let (_held, server) = pair();
+        park_registration(&mut clients, server, 111);
+
+        clients.answer_write(None, Some(999), &Response::Registered { client: 7 });
+        assert_eq!(
+            clients.parked(),
+            1,
+            "an answer for a nonce nobody parked under took somebody else's connection"
+        );
+    }
+
+    /// And a registration answer with no nonce at all — which is what the host
+    /// sent before KEEL-9 — matches nothing, rather than matching the first
+    /// registration it finds.
+    #[test]
+    fn a_registration_answer_without_a_nonce_answers_nobody() {
+        let mut clients = empty();
+        let (_held, server) = pair();
+        park_registration(&mut clients, server, 111);
+
+        clients.answer_write(None, None, &Response::Registered { client: 7 });
+        assert_eq!(clients.parked(), 1);
+    }
+
+    /// The ordinary path is unchanged: a write is matched by its session pair,
+    /// and a pair nobody is waiting under answers nobody.
+    #[test]
+    fn a_write_is_answered_by_its_session_pair() {
+        let mut clients = empty();
+        let (mut a_client, a_server) = pair();
+        let (_b_client, b_server) = pair();
+        clients.parked.push(Parked {
+            stream: a_server,
+            waiting: Waiting::Write { client: 4, seq: 9 },
+            since: Instant::now(),
+        });
+        clients.parked.push(Parked {
+            stream: b_server,
+            waiting: Waiting::Write { client: 5, seq: 9 },
+            since: Instant::now(),
+        });
+
+        clients.answer_write(Some((4, 9)), None, &Response::Applied);
+        assert_eq!(read_response(&mut a_client), Response::Applied);
+        assert_eq!(clients.parked(), 1);
+
+        clients.answer_write(Some((6, 9)), None, &Response::Applied);
+        assert_eq!(
+            clients.parked(),
+            1,
+            "an answer for a session nobody is waiting under took a connection"
+        );
+    }
 }

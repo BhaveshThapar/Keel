@@ -13,8 +13,8 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
@@ -87,6 +87,17 @@ enum Verb {
     KillLoop {
         #[arg(long, default_value_t = 1_000)]
         cycles: u64,
+        /// How long the cluster is left alone between one restart and the next
+        /// kill.
+        ///
+        /// Not zero, and not because zero is too harsh. With no settle at all
+        /// the cluster spends the whole run in back-to-back elections and
+        /// commits almost nothing, so the run ends having acknowledged a few
+        /// dozen writes — and "no acknowledged write was lost" over forty
+        /// writes is a claim with nothing behind it. A window long enough to
+        /// elect and commit is what makes the thousand cycles worth running.
+        #[arg(long, default_value_t = 250)]
+        settle_ms: u64,
         #[arg(long, default_value_t = 3)]
         nodes: usize,
         #[arg(long)]
@@ -143,12 +154,13 @@ fn main() -> ExitCode {
         }),
         Verb::KillLoop {
             cycles,
+            settle_ms,
             nodes,
             dir,
             server_bin,
             kv_bin,
             sync,
-        } => kill_loop(cycles, nodes, dir, server_bin, kv_bin, sync),
+        } => kill_loop(cycles, settle_ms, nodes, dir, server_bin, kv_bin, sync),
         Verb::Probe { samples, every_ms } => probe(samples, every_ms),
         Verb::ClockCheck { by_secs } => clock_check(by_secs),
     };
@@ -269,56 +281,135 @@ struct Workload {
     acked: Arc<AtomicU64>,
     attempted: Arc<AtomicU64>,
     stop: Arc<std::sync::atomic::AtomicBool>,
+    /// The post-increment value each acknowledged `incr` reported.
+    ///
+    /// This is the diagnostic that tells the two possible failures apart, and
+    /// without it a shortfall is unattributable. Every genuine apply of
+    /// `incr --by 1` produces a *distinct* post-value, so:
+    ///
+    ///   - two acknowledgements reporting the same value means one of them was
+    ///     answered from the exactly-once dedup cache without applying — a
+    ///     harness fault, because it means two clients shared a session;
+    ///   - an acknowledged value above the final counter means an applied
+    ///     increment was actually lost, which is the thing this run exists to
+    ///     detect.
+    ///
+    /// A run that only counted acknowledgements could not distinguish them, and
+    /// would report the first as if it were the second.
+    values: Arc<Mutex<Vec<(u64, i64)>>>,
 }
 
 impl Workload {
-    fn start(kv_bin: PathBuf, nodes: Vec<String>) -> (Self, std::thread::JoinHandle<()>) {
+    /// `threads` concurrent writers, each spawning `kv incr` in a loop.
+    ///
+    /// More than one matters more than it looks. Each increment costs a process
+    /// spawn, a session registration and a round trip, so one writer under a
+    /// fault schedule spends most of its time waiting and the run ends with a
+    /// few dozen acknowledgements — a "no acknowledged write was lost" over
+    /// forty writes, which is a sentence with almost nothing behind it. The
+    /// assertion is only as strong as the number of writes it is quantified
+    /// over.
+    fn start(
+        kv_bin: PathBuf,
+        nodes: Vec<String>,
+        threads: u64,
+    ) -> (Self, Vec<std::thread::JoinHandle<()>>) {
         let acked = Arc::new(AtomicU64::new(0));
         let attempted = Arc::new(AtomicU64::new(0));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let handle = {
-            let acked = Arc::clone(&acked);
-            let attempted = Arc::clone(&attempted);
-            let stop = Arc::clone(&stop);
-            std::thread::spawn(move || {
-                let mut nonce = 1u64;
-                while !stop.load(Ordering::SeqCst) {
-                    nonce += 1;
-                    attempted.fetch_add(1, Ordering::SeqCst);
-                    let mut cmd = Command::new(&kv_bin);
-                    for n in &nodes {
-                        cmd.arg("--node").arg(n);
+        let values = Arc::new(Mutex::new(Vec::new()));
+        let handles = (0..threads.max(1))
+            .map(|id| {
+                let acked = Arc::clone(&acked);
+                let attempted = Arc::clone(&attempted);
+                let stop = Arc::clone(&stop);
+                let values = Arc::clone(&values);
+                let kv_bin = kv_bin.clone();
+                let nodes = nodes.clone();
+                std::thread::spawn(move || {
+                    // Disjoint nonce ranges. Two writers drawing from one range
+                    // would eventually share a session, and the second one's
+                    // sequence numbers would replay the first one's — so its
+                    // writes would be answered from the dedup cache and never
+                    // applied, and the run would count acknowledgements for
+                    // writes that did not happen.
+                    let mut nonce = id * 1_000_000_000 + 1;
+                    while !stop.load(Ordering::SeqCst) {
+                        nonce += 1;
+                        attempted.fetch_add(1, Ordering::SeqCst);
+                        let mut cmd = Command::new(&kv_bin);
+                        for n in &nodes {
+                            cmd.arg("--node").arg(n);
+                        }
+                        let out = cmd
+                            .arg("--nonce")
+                            .arg(nonce.to_string())
+                            .args(["incr", "chaos-counter", "--by", "1"])
+                            .stderr(Stdio::null())
+                            .output();
+                        if let Ok(out) = out
+                            && out.status.success()
+                        {
+                            acked.fetch_add(1, Ordering::SeqCst);
+                            if let Ok(v) =
+                                String::from_utf8_lossy(&out.stdout).trim().parse::<i64>()
+                                && let Ok(mut seen) = values.lock()
+                            {
+                                seen.push((nonce, v));
+                            }
+                        }
                     }
-                    // A fresh nonce per attempt. Reusing one would reopen the
-                    // same session with the sequence number back at 1, and the
-                    // dedup cache would answer from the previous run — an
-                    // acknowledgement for a write that never happened, which
-                    // would make the run's central assertion meaningless.
-                    let out = cmd
-                        .arg("--nonce")
-                        .arg(nonce.to_string())
-                        .args(["incr", "chaos-counter", "--by", "1"])
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status();
-                    if matches!(out, Ok(status) if status.success()) {
-                        acked.fetch_add(1, Ordering::SeqCst);
-                    }
-                }
+                })
             })
-        };
+            .collect();
         (
             Self {
                 acked,
                 attempted,
                 stop,
+                values,
             },
-            handle,
+            handles,
         )
     }
 
     fn finish(&self) {
         self.stop.store(true, Ordering::SeqCst);
+    }
+
+    /// What the acknowledged increments reported, and what that says.
+    ///
+    /// Returns `(acknowledged, distinct values, the highest value reported)`.
+    fn observed(&self) -> (usize, usize, i64) {
+        let Ok(values) = self.values.lock() else {
+            return (0, 0, 0);
+        };
+        let mut sorted: Vec<i64> = values.iter().map(|(_, v)| *v).collect();
+        sorted.sort_unstable();
+        let highest = sorted.last().copied().unwrap_or(0);
+        let total = sorted.len();
+        sorted.dedup();
+        (total, sorted.len(), highest)
+    }
+
+    /// Which acknowledgements reported a value another one had already
+    /// reported, and under which session nonce.
+    ///
+    /// Printed rather than merely counted: "one acknowledgement was a dedup
+    /// replay" is an explanation, and an explanation nobody can check is
+    /// indistinguishable from an excuse. With the nonces in the output a reader
+    /// can see whether two *different* sessions reported the same value — which
+    /// would not be a replay at all, and would mean something else entirely.
+    fn duplicates(&self) -> Vec<(i64, Vec<u64>)> {
+        let Ok(values) = self.values.lock() else {
+            return Vec::new();
+        };
+        let mut by_value: std::collections::BTreeMap<i64, Vec<u64>> =
+            std::collections::BTreeMap::new();
+        for (nonce, v) in values.iter() {
+            by_value.entry(*v).or_default().push(*nonce);
+        }
+        by_value.into_iter().filter(|(_, n)| n.len() > 1).collect()
     }
 }
 
@@ -419,7 +510,7 @@ fn run(opts: RunOptions) -> Result<(), ChaosError> {
     };
     let counter = recorder
         .is_none()
-        .then(|| Workload::start(kv_bin.clone(), client_nodes.clone()));
+        .then(|| Workload::start(kv_bin.clone(), client_nodes.clone(), 4));
 
     // Inject. Faults that fail because the target is already down are recorded
     // rather than fatal: a schedule drawn before the run cannot know that a
@@ -514,11 +605,13 @@ fn run(opts: RunOptions) -> Result<(), ChaosError> {
         return Ok(());
     }
 
-    let Some((workload, handle)) = counter else {
+    let Some((workload, handles)) = counter else {
         return Err(ChaosError::Violation("no workload ran".into()));
     };
     workload.finish();
-    let _ = handle.join();
+    for handle in handles {
+        let _ = handle.join();
+    }
     let acked = workload.acked.load(Ordering::SeqCst);
     let attempted = workload.attempted.load(Ordering::SeqCst);
     println!("workload attempted {attempted}, acknowledged {acked}");
@@ -529,15 +622,7 @@ fn run(opts: RunOptions) -> Result<(), ChaosError> {
     }
 
     let final_value = read_counter(&kv_bin, &client_nodes)?;
-    println!("counter: acknowledged {acked}, final value {final_value}");
-    // The counter is signed because `incr` is; a negative one would mean the
-    // state machine applied something this workload never proposed.
-    if final_value < 0 || (final_value as u64) < acked {
-        return Err(ChaosError::Violation(format!(
-            "{} acknowledged increments were lost: the counter reads {final_value}",
-            acked.saturating_sub(final_value.max(0) as u64)
-        )));
-    }
+    verify_counter(&workload, acked, final_value, "the fault schedule")?;
     println!("PASS no acknowledged write was lost");
     Ok(())
 }
@@ -555,8 +640,10 @@ fn run(opts: RunOptions) -> Result<(), ChaosError> {
 /// cluster a thousand times; killing the next node while the last one is still
 /// catching up is the case where a node's log and its state machine can
 /// disagree about what has been applied.
+#[allow(clippy::too_many_arguments)]
 fn kill_loop(
     cycles: u64,
+    settle_ms: u64,
     nodes: usize,
     dir: PathBuf,
     server_bin: PathBuf,
@@ -575,9 +662,9 @@ fn kill_loop(
     cfg.sync = sync.clone();
     let mut cluster = Cluster::start(cfg)?;
     let client_nodes: Vec<String> = cluster.client_addrs.iter().map(|a| a.to_string()).collect();
-    println!("cluster up: {nodes} nodes, sync {sync}, {cycles} cycles");
+    println!("cluster up: {nodes} nodes, sync {sync}, {cycles} cycles, {settle_ms}ms settle");
 
-    let (workload, handle) = Workload::start(kv_bin.clone(), client_nodes.clone());
+    let (workload, handles) = Workload::start(kv_bin.clone(), client_nodes.clone(), 4);
     let started = Instant::now();
     let mut restart_failures = 0u64;
 
@@ -600,6 +687,9 @@ fn kill_loop(
                 )));
             }
         }
+        if settle_ms > 0 {
+            std::thread::sleep(Duration::from_millis(settle_ms));
+        }
         if cycle % 100 == 99 {
             println!(
                 "  {} cycles, {} acknowledged writes, {:.0}s elapsed",
@@ -614,7 +704,9 @@ fn kill_loop(
     // workload get its last acknowledgement in.
     std::thread::sleep(Duration::from_secs(5));
     workload.finish();
-    let _ = handle.join();
+    for handle in handles {
+        let _ = handle.join();
+    }
 
     let acked = workload.acked.load(Ordering::SeqCst);
     let attempted = workload.attempted.load(Ordering::SeqCst);
@@ -630,15 +722,68 @@ fn kill_loop(
     }
 
     let final_value = read_counter(&kv_bin, &client_nodes)?;
-    println!("counter: acknowledged {acked}, final value {final_value}");
-    if final_value < 0 || (final_value as u64) < acked {
+    verify_counter(
+        &workload,
+        acked,
+        final_value,
+        &format!("{cycles} kill cycles"),
+    )?;
+    println!("PASS {cycles} kill cycles, no acknowledged write lost");
+    Ok(())
+}
+
+/// Decide what a shortfall between acknowledgements and the counter means.
+///
+/// Naively, `acked > final` is data loss. It is not, quite: an acknowledgement
+/// answered from the exactly-once dedup cache is a real acknowledgement of a
+/// write that a *previous* request already applied, so two acknowledgements can
+/// legitimately correspond to one increment — and that is the harness's fault
+/// for reusing a session, not the cluster's for losing anything.
+///
+/// The values tell them apart, which is why they are collected. Every applied
+/// `incr --by 1` returns a distinct post-value; a repeated value is a replay,
+/// and the number of replays is exactly how far the acknowledgement count is
+/// allowed to run ahead. What is never allowed is an acknowledged value the
+/// final counter has not reached.
+fn verify_counter(
+    workload: &Workload,
+    acked: u64,
+    final_value: i64,
+    what: &str,
+) -> Result<(), ChaosError> {
+    let (reported, distinct, highest) = workload.observed();
+    let replays = reported.saturating_sub(distinct);
+    for (value, nonces) in workload.duplicates() {
+        println!("  value {value} was reported by sessions {nonces:?}");
+    }
+    println!(
+        "counter: acknowledged {acked}, {reported} values reported, {distinct} distinct \
+         ({replays} answered from the dedup cache), highest {highest}, final value {final_value}"
+    );
+
+    if final_value < 0 {
         return Err(ChaosError::Violation(format!(
-            "{} acknowledged increments were lost over {cycles} kill cycles: \
-             the counter reads {final_value}",
-            acked.saturating_sub(final_value.max(0) as u64)
+            "the counter is negative ({final_value}), so something was applied that \
+             this workload never proposed"
         )));
     }
-    println!("PASS {cycles} kill cycles, no acknowledged write lost");
+    // The decisive check. An acknowledgement carried a value; if the counter has
+    // not reached that value, the increment that produced it is gone.
+    if highest > final_value {
+        return Err(ChaosError::Violation(format!(
+            "an increment acknowledged with value {highest} is gone: after {what} the \
+             counter reads {final_value}"
+        )));
+    }
+    // And the count, once the replays it is entitled to are allowed for.
+    let explained = (final_value as u64).saturating_add(replays as u64);
+    if acked > explained {
+        return Err(ChaosError::Violation(format!(
+            "{} acknowledged increments are unaccounted for after {what}: the counter \
+             reads {final_value} and only {replays} acknowledgements were dedup replays",
+            acked - explained
+        )));
+    }
     Ok(())
 }
 

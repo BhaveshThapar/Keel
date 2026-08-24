@@ -342,3 +342,66 @@ matrix. Its coverage counters are asserted by
 `simulation::snapshots_are_actually_taken_streamed_and_resumed` over seeds that
 do not hit this, so the snapshot paths are exercised on every run; what is not
 claimed is a clean sweep of the profile.
+
+---
+
+## KEEL-9 — two clients registering at once could be handed each other's identity, and end up sharing one
+
+**Status: fixed.** Found by `scripts/kill-loop.sh`, in the shortfall between
+acknowledged increments and the counter they were incrementing.
+
+**Reproduce with** `keel-chaos kill-loop --cycles 100 --settle-ms 250` against a
+build without the fix. It is intermittent — roughly two collisions per nine
+hundred acknowledgements, in about half of hundred-cycle runs — which is exactly
+why it needed a workload long enough to be worth quantifying over.
+
+**Symptom.** The run acknowledged 855 increments and the counter read 853. Two
+increments looked lost.
+
+**Why that first reading was wrong, and how the harness said so.** Every applied
+`incr --by 1` returns a distinct post-value, so the values acknowledgements
+carried are enough to tell two very different failures apart: a repeated value
+means one acknowledgement did not apply, and an acknowledged value the counter
+never reached means one did apply and was then lost. The output named the
+sessions:
+
+```
+value 120 was reported by sessions [3000000031, 32]
+value 328 was reported by sessions [1000000082, 3000000085]
+```
+
+Two *different* nonces — different clients — each told the counter was 120.
+Nothing was lost. One client was answered from another client's exactly-once
+cache.
+
+**The defect.** A registration is the one request with no `(client, seq)` pair,
+because it is asking for one. `Clients::answer_write` matched a registration
+answer against *the first parked registration*, whatever nonce it was parked
+under, so when two clients registered concurrently, whichever parked first took
+whichever answer applied first.
+
+That alone still looks correct, which is why it survived review: both clients get
+an identity, both identities are distinct, both work. The damage arrives one step
+later. The client whose answer was taken retries its registration; the state
+machine returns the same `ClientId` it minted the first time, because
+registration is idempotent by nonce and correctly so; and now two clients hold
+the same `ClientId`. The next request from either one hits the other's dedup
+cache, is acknowledged, and never applies.
+
+**The fix.** `keel_node::Answer` carries `registration: Option<u64>` — the nonce,
+when the applied proposal was a registration — and `answer_write` matches on it
+and on nothing else. An answer whose nonce nobody is parked under now answers
+nobody, rather than answering whoever is nearest.
+
+**Enforced by** `clients::tests::two_concurrent_registrations_are_answered_by_nonce_and_not_by_arrival`,
+which applies the two registrations in the opposite order to the one they arrived
+in, plus `clients::tests::a_registration_answer_for_an_unknown_nonce_answers_nobody`
+and `clients::tests::a_registration_answer_without_a_nonce_answers_nobody` — the
+last of which is the pre-fix call shape, and now matches nothing.
+
+**What it says about the method.** The simulator has never seen this: it drives
+`keel-node` directly and has no client connections to park. Only a cluster of
+real processes with real clients could produce it, which is what P17 and P18
+exist for. It was also invisible to a run that counted acknowledgements without
+recording what they returned — the shortfall would have read as data loss, and
+the investigation would have started in the wrong place.

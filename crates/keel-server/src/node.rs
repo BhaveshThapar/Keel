@@ -181,7 +181,8 @@ impl Server {
             .map_err(|e| ServerError::Io(std::io::Error::other(e.to_string())))?;
 
         for answer in self.node.take_answers() {
-            self.clients.answer_write(answer.session, &answer.response);
+            self.clients
+                .answer_write(answer.session, answer.registration, &answer.response);
         }
         for (ctx, index) in self.node.take_reads() {
             self.clients.confirm_read(ctx, index);

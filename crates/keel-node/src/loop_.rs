@@ -82,6 +82,18 @@ pub struct Answer {
     pub index: Index,
     /// The `(client, seq)` the proposal carried, when it carried one.
     pub session: Option<(ClientId, Seq)>,
+    /// The nonce, when the proposal was a registration.
+    ///
+    /// A registration is the one request with no session pair — it is asking
+    /// for one — so it has no identity in `session` and a host that matched it
+    /// on anything else would be matching it on nothing. Two clients
+    /// registering at the same moment would then be handed each other's
+    /// identities, and a client that later retried its registration would end
+    /// up *sharing* a `ClientId` with the other one: its next request would hit
+    /// the other's dedup cache, be acknowledged, and never apply. That is
+    /// [KEEL-9](../../../BUGS.md), and this field is why it cannot happen
+    /// again.
+    pub registration: Option<u64>,
     pub response: Response,
 }
 
@@ -400,9 +412,17 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
                 // renumber what follows it, so position is not an identity;
                 // `(client, seq)` is one, and it is already in the entry
                 // because the state machine deduplicates on it.
+                //
+                // A registration has no session pair yet, so its nonce travels
+                // alongside for the same reason.
+                let registration = match &proposal.body {
+                    keel_api::ProposalBody::Register { nonce } => Some(*nonce),
+                    _ => None,
+                };
                 self.answers.push(Answer {
                     index: entry.index,
                     session: proposal.session,
+                    registration,
                     response,
                 });
             }

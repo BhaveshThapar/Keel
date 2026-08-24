@@ -20,13 +20,14 @@
 # not have applied — that is what a timeout means, not a bug — so the final
 # counter may exceed the acknowledgements and may never fall short of them.
 #
-# Usage: scripts/kill-loop.sh [cycles] [sync-mode]
+# Usage: scripts/kill-loop.sh [cycles] [sync-mode] [settle-ms]
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 CYCLES="${1:-1000}"
 SYNC="${2:-durable}"
+SETTLE_MS="${3:-250}"
 
 # shellcheck source=scripts/lib/provenance.sh
 source "$(dirname "$0")/lib/provenance.sh"
@@ -53,10 +54,17 @@ echo 0 >"$TALLY"
     echo "sync mode:  $SYNC"
     echo "nodes:      3"
     echo "cycles:     $CYCLES, round robin"
+    # The settle window is part of the result and not a knob to hide. With none
+    # at all the cluster spends the run in back-to-back elections, commits
+    # almost nothing, and the assertion ends up quantified over a few dozen
+    # writes.
+    echo "settle:     ${SETTLE_MS}ms between a restart and the next kill"
+    echo "writers:    4 concurrent"
     echo
 
     "$(pwd)/target/release/keel-chaos" kill-loop \
         --cycles "$CYCLES" \
+        --settle-ms "$SETTLE_MS" \
         --nodes 3 \
         --dir "$WORK/cluster" \
         --server-bin "$(pwd)/target/release/keel-server" \
