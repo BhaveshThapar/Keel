@@ -20,11 +20,20 @@ low by about three times — and `scripts/check-docs.sh` and
 and committed result to what the tree actually contains. The second found three
 artifacts with no provenance header on the day it was written.
 
-**P2 is done.** `keel-rand`, `keel-api` and `keel-net` are in, `keel-raft` has
+**P2 and P3 are done.** `keel-rand`, `keel-api` and `keel-net` are in, `keel-raft` has
 `Input::StepDown`, `RaftCore::restore(cfg, Restored { .. })` and lease reads
 resolved inside the core, and the decisions are ADR-017 through ADR-019. The
 exit criterion holds: a `Message` round-trips identically through `TcpTransport`
 and `LoopbackPair`, and the dependency allowlist still passes with three names.
+
+P3 went upstream first, as [VENDORED.md](crates/lsm-kv/VENDORED.md) required:
+six pull requests on the engine, then a re-vendor at `44404ec` with `src/` and
+`tests/` byte-identical. The engine now takes an injectable filesystem, spawns
+no threads when asked not to, writes atomic multi-key batches under one CRC,
+scans ranges, keeps every MemTable version, and version-gates its checksum. One
+thing the file asked for did not land there and the reason is recorded: a key
+namespace is not a general-purpose engine's business, and it belongs to
+`keel-sm` at P4.
 
 ---
 
@@ -54,7 +63,7 @@ indistinguishable from a schedule change:
 | # | Phase | Exit criterion |
 |---|---|---|
 | ~~P2~~ | ~~`keel-rand`, `keel-api`, `keel-net`~~ | **Done.** Both transports deliver identical bytes for every message shape; the allowlist still names `bytes`, `serde`, `thiserror` |
-| P3 | `lsm-kv`: write batch, WAL header, sync modes, range scans | Both upstream PRs merged; the vendored copy is a clean diff; a batch costs one fsync and not one per key |
+| ~~P3~~ | ~~`lsm-kv`: write batch, WAL header, sync modes, range scans~~ | **Done.** Six upstream PRs merged (#2–#7); `src/` and `tests/` byte-identical to `44404ec`; a batch of a hundred keys costs one fsync where the same hundred singly cost a hundred |
 | P4 | `keel-sm`: store seam, atomic `applied_index`, sessions | Both stores pass one conformance suite; a retried `(client, seq)` returns the cached response with zero writes |
 | P5 | Kill a node mid-apply | 1,000 `SIGKILL`s, zero double-applies, zero `applied_index` regressions; the split-batch build is caught inside 100 kills |
 | P6 | `keel-node`: the `Ready` loop, group commit, reads | A hundred queued proposals cost one append and one sync; the same hundred driven individually cost a hundred of each |
@@ -141,7 +150,6 @@ the right phase rather than at the last moment:
 | Decision | Binds at |
 |---|---|
 | Linux hardware: bare metal, or cloud in one placement group (which yields Exploratory tier only, and therefore no headline number) | P26 |
-| The vendored engine's injectable filesystem: cancel VENDORED.md's commitment, or accept a much larger upstream diff that also removes `Db::open`'s two threads | P3 |
 | TR-3's "≥ 2,000 seeds": distinct seeds (P19 required) or seed-runs (already met) | P19 |
 | `Command::Incr` as permanent API surface, or demonstrate FR-7 through the cached-response path alone | P4 |
 | `keel-client` blocking or async | P10 |
