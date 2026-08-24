@@ -464,3 +464,154 @@ fn both_stores_apply_the_same_log_to_the_same_state() {
         "the two stores diverged on the same log"
     );
 }
+
+// ----------------------------------------------------------- checkpoints
+
+/// A checkpoint carries everything the state machine keeps, which is the point:
+/// the data, the applied index, and the session table.
+///
+/// A snapshot that carried the data and not the sessions would be one a
+/// client's retries could apply a second time on top of — and both machines'
+/// key/value contents would agree about it.
+#[test]
+fn a_checkpoint_carries_the_sessions_as_well_as_the_data() {
+    let source = tempfile::tempdir().unwrap();
+    let holder = tempfile::tempdir().unwrap();
+    let target = holder.path().join("cp");
+
+    let (client, digest, applied) = {
+        let mut sm = StateMachine::new(LsmStore::open(source.path()).unwrap());
+        let client = sm.register(1, 5_000, 7).unwrap();
+        for seq in 1..=40u64 {
+            sm.apply(
+                seq + 1,
+                &command(client, seq, 5_000, Command::Incr { key: b("n"), by: 1 }),
+            )
+            .unwrap();
+        }
+        sm.store().checkpoint(&target).unwrap();
+        (client, sm.state_digest().unwrap(), sm.applied())
+    };
+
+    let restored = StateMachine::new(LsmStore::open(&target).unwrap());
+    assert_eq!(
+        restored.applied(),
+        applied,
+        "the applied index was not carried"
+    );
+    assert_eq!(restored.counter(b("n").as_ref()).unwrap(), 40);
+    assert_eq!(
+        restored.last_seq(client).unwrap(),
+        Some(40),
+        "the session table was not carried, so a retry would apply twice"
+    );
+    assert_eq!(
+        restored.state_digest().unwrap(),
+        digest,
+        "the checkpoint holds something other than what was checkpointed"
+    );
+}
+
+/// A retry that crosses a checkpoint still applies once. This is the property
+/// the session table exists for, checked on the far side of a snapshot.
+#[test]
+fn a_retry_against_a_restored_checkpoint_still_applies_once() {
+    let source = tempfile::tempdir().unwrap();
+    let holder = tempfile::tempdir().unwrap();
+    let target = holder.path().join("cp");
+
+    let client = {
+        let mut sm = StateMachine::new(LsmStore::open(source.path()).unwrap());
+        let client = sm.register(1, 5_000, 7).unwrap();
+        sm.apply(
+            2,
+            &command(client, 1, 5_000, Command::Incr { key: b("n"), by: 1 }),
+        )
+        .unwrap();
+        sm.store().checkpoint(&target).unwrap();
+        client
+    };
+
+    let mut restored = StateMachine::new(LsmStore::open(&target).unwrap());
+    // The same command again, at a higher index — the shape a retry takes after
+    // a snapshot install, where the log the entry came from has moved on.
+    let response = restored
+        .apply(
+            99,
+            &command(client, 1, 5_000, Command::Incr { key: b("n"), by: 1 }),
+        )
+        .unwrap();
+    assert_eq!(
+        restored.counter(b("n").as_ref()).unwrap(),
+        1,
+        "a retry applied a second time on the far side of a checkpoint"
+    );
+    assert!(
+        matches!(response, Response::Counter(1)),
+        "the retry got {response:?} rather than the cached answer"
+    );
+}
+
+/// The digest notices a difference the key/value contents alone would not.
+#[test]
+fn the_state_digest_covers_the_session_table() {
+    let mut left = StateMachine::new(MemStore::new());
+    let mut right = StateMachine::new(MemStore::new());
+
+    let cl = left.register(1, 0, 7).unwrap();
+    let cr = right.register(1, 0, 7).unwrap();
+    left.apply(
+        2,
+        &command(
+            cl,
+            1,
+            0,
+            Command::Put {
+                key: b("k"),
+                value: b("v"),
+            },
+        ),
+    )
+    .unwrap();
+    right
+        .apply(
+            2,
+            &command(
+                cr,
+                1,
+                0,
+                Command::Put {
+                    key: b("k"),
+                    value: b("v"),
+                },
+            ),
+        )
+        .unwrap();
+    assert_eq!(left.state_digest().unwrap(), right.state_digest().unwrap());
+
+    // Same key, same value — a different position in the client's stream.
+    right
+        .apply(
+            3,
+            &command(
+                cr,
+                2,
+                0,
+                Command::Put {
+                    key: b("k"),
+                    value: b("v"),
+                },
+            ),
+        )
+        .unwrap();
+    assert_eq!(
+        left.get(b("k").as_ref()).unwrap(),
+        right.get(b("k").as_ref()).unwrap(),
+        "the two hold different data, so this test is not about the sessions"
+    );
+    assert_ne!(
+        left.state_digest().unwrap(),
+        right.state_digest().unwrap(),
+        "the digest did not notice two machines whose session tables differ"
+    );
+}

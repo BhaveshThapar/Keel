@@ -315,6 +315,39 @@ impl<S: Store> StateMachine<S> {
         }
     }
 
+    /// A hash of everything this state machine holds.
+    ///
+    /// The number a snapshot transfer carries, so a receiver can say whether
+    /// what it installed is what the sender meant to send. A chunk stream that
+    /// is checksummed per chunk still proves only that each chunk arrived
+    /// intact; this proves the *set* is right, which is the claim that matters
+    /// when a transfer resumes and a chunk could have been skipped.
+    ///
+    /// Deliberately covers the session table as well as the user data. A
+    /// snapshot that carried the data and not the sessions would be one a
+    /// client's retries could apply a second time on top of, and the digests
+    /// would agree about it.
+    pub fn state_digest(&self) -> Result<u64, StateMachineError> {
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let mut mix = |bytes: &[u8]| {
+            for byte in bytes {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        for (key, value) in self.store.scan(Space::User, None, None, usize::MAX)? {
+            mix(&key);
+            mix(&value);
+        }
+        for client in session::all(&self.store)? {
+            mix(&client.to_be_bytes());
+            if let Some(session) = session::read(&self.store, client)? {
+                mix(&session.last_seq.to_be_bytes());
+            }
+        }
+        Ok(hash)
+    }
+
     /// The session for `client`, if it is still open.
     pub fn session(&self, client: ClientId) -> Result<Option<Session>, StateMachineError> {
         session::read(&self.store, client)

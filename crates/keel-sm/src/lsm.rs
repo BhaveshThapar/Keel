@@ -70,6 +70,21 @@ impl LsmStore {
         self.db.pending_work()
     }
 
+    /// Write a checkpoint of this store into `dir`.
+    ///
+    /// The engine hard-links its SSTables, so the cost is proportional to the
+    /// number of tables rather than to the bytes in them — which is what makes
+    /// FR-9's "stalls writes for under 50 ms on a 1 GB state" reachable at all.
+    ///
+    /// Everything the state machine keeps goes with it: user data, the session
+    /// table, the nonce table, and the applied index, all in the same store and
+    /// therefore all in the same checkpoint. A snapshot that carried the data
+    /// and not the sessions would be a snapshot a client's retries could apply
+    /// twice on top of.
+    pub fn checkpoint(&self, dir: impl AsRef<Path>) -> Result<(), StateMachineError> {
+        self.db.checkpoint(dir).map_err(store_err)
+    }
+
     /// `Err` once the engine has latched a failure. A node that sees this must
     /// step down: it can no longer make an entry durable.
     pub fn health(&self) -> Result<(), StateMachineError> {

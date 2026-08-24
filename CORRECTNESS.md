@@ -142,6 +142,11 @@ are for.
 | A client key can never collide with the state machine's own | `conformance::check`'s `the_namespaces_do_not_see_each_other` | enforced |
 | A kill mid-apply never double-applies or regresses the index | `kill_during_apply::a_kill_mid_apply_never_double_applies_or_regresses`, 1,000 cycles in CI | enforced |
 | …and the atomicity is what makes that true | `kill_during_apply::without_the_atomic_index_a_kill_leaves_an_entry_that_will_apply_twice` (`--features negative-demos`); `scripts/negative-demos/split-batch.sh` | enforced |
+| A checkpoint carries the sessions as well as the data | `state_machine::a_checkpoint_carries_the_sessions_as_well_as_the_data` | enforced |
+| A retry against a restored checkpoint still applies once | `state_machine::a_retry_against_a_restored_checkpoint_still_applies_once` | enforced |
+| The state digest notices a session table two machines disagree about | `state_machine::the_state_digest_covers_the_session_table` | enforced |
+| A checkpoint shares its bytes with the source rather than copying them | `checkpoint::a_checkpoint_shares_its_bytes_with_the_source` (same inode, link count ≥ 2) | enforced |
+| A checkpoint survives the source losing the names it linked | `checkpoint::a_checkpoint_survives_the_source_losing_the_names_it_linked` | enforced |
 | Both stores apply the same log to the same state | `state_machine::both_stores_apply_the_same_log_to_the_same_state`; `keel_sm::conformance::check` run against `MemStore` and `LsmStore` | enforced |
 
 ## The durable log

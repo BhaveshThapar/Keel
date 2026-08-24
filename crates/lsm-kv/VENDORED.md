@@ -1,7 +1,7 @@
 # Vendored: `lsm_kv`
 
 Upstream: <https://github.com/BhaveshThapar/LSM-Tree-Key-Value-Storage-Engine>
-Commit: `7cfa882647db7356f4a39246d4b617e5a14bef9b` (2026-08-23)
+Commit: `ad581d4f11b58f7dd570e27913abf75d1bf6f5bf` (2026-08-24)
 
 This is Keel's state machine. It is vendored rather than depended on because
 becoming a Raft state machine requires changes *inside* the engine — the manifest
@@ -119,6 +119,13 @@ Each is listed with the thing it makes possible rather than with what it did.
   Both stacks checksum with the same polynomial now. The gate is the point:
   changing the checksum alone would have made every existing frame fail, which
   for the manifest means the reclamation above.
+- **[#9](https://github.com/BhaveshThapar/LSM-Tree-Key-Value-Storage-Engine/pull/9) — checkpoints.**
+  `Db::checkpoint` hard-links the live SSTables into another directory and writes
+  a manifest naming them, which is FR-9's mechanism: the bytes are not moved, so
+  a checkpoint of a gigabyte costs milliseconds and the source may go on to
+  compact away its own names without taking the data with it. The read-only
+  `Manifest` view this file said was needed turned out not to be — the live set
+  is already in memory under a lock the checkpoint takes anyway.
 - **[#8](https://github.com/BhaveshThapar/LSM-Tree-Key-Value-Storage-Engine/pull/8) — the `fuzzing` module compiles again, and CI checks that it does.**
   Found by Keel: `cargo clippy --workspace --all-targets --all-features` here
   reached a module upstream's own checks never built, because both of them use
@@ -136,12 +143,6 @@ rather than a reserved prefix imposed on every user of the engine.
 ## What still has to change before it can be a Raft state machine
 
 Recorded here so the work is visible rather than discovered.
-
-**Checkpoints (FR-9).** No `checkpoint`/`restore`. Every ingredient exists —
-immutable SSTables, an authoritative manifest, atomic rename discipline — but
-`Manifest` is crate-private and `Manifest::open` *mutates*: it rolls the
-generation forward, deletes the old one, and reclaims any SSTable the manifest
-does not name. There is no read-only view to build a checkpoint from.
 
 ### A naming collision to keep in mind
 
