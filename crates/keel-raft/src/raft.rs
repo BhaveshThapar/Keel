@@ -93,6 +93,24 @@ pub enum Input {
         ok: bool,
     },
     Campaign,
+    /// The host has taken a checkpoint through `meta.index`.
+    ///
+    /// The core drops every in-memory entry at or below it, which is what
+    /// bounds memory on a long-running node: without this the log grows for as
+    /// long as the process does. It also becomes the snapshot a lagging follower
+    /// is offered, which is why `meta` carries the *checkpointed* configuration
+    /// rather than the current one — a follower that installed a snapshot and
+    /// then adopted today's membership would have skipped every configuration
+    /// change between the two.
+    ///
+    /// Refused, with no effect, if the index is above what has been applied or
+    /// at or below a snapshot already held. Both are the host telling the core
+    /// something that is not true: it cannot have checkpointed state it has not
+    /// applied, and a checkpoint that goes backwards would discard entries a
+    /// follower may still need while claiming coverage it does not have.
+    SnapshotTaken {
+        meta: SnapshotMeta,
+    },
     /// Give up leadership without nominating a successor.
     ///
     /// Distinct from [`Input::TransferLeader`], which hands leadership to a
@@ -196,6 +214,12 @@ pub struct Status {
     /// forbids it. Non-zero means the guard was compiled out, which the
     /// negative demonstrations do deliberately.
     pub fig8_bypasses: u64,
+    /// Entries the core is holding in memory above its snapshot floor. What a
+    /// checkpoint bounds, and the number that grows without limit if nothing
+    /// ever takes one.
+    pub in_memory_entries: usize,
+    /// `SnapshotTaken` inputs refused as impossible or stale.
+    pub snapshots_refused: u64,
 }
 
 pub struct RaftCore {
@@ -223,6 +247,13 @@ pub struct RaftCore {
     pending_conf_index: Index,
     uncommitted_bytes: usize,
     fig8_bypasses: u64,
+    /// `SnapshotTaken` inputs the core refused. Non-zero means a host claimed a
+    /// checkpoint it could not have taken, which is worth surfacing rather than
+    /// swallowing.
+    snapshots_refused: u64,
+    /// The configuration as of the last checkpoint, offered to a follower that
+    /// has fallen behind the log's floor.
+    checkpoint_conf: Option<ConfState>,
 
     // Staged for the next Ready.
     msgs: Vec<Message>,
@@ -317,6 +348,8 @@ impl RaftCore {
             pending_conf_index: 0,
             uncommitted_bytes: 0,
             fig8_bypasses: 0,
+            snapshots_refused: 0,
+            checkpoint_conf: None,
             msgs: Vec::new(),
             read_states: Vec::new(),
             dropped: Vec::new(),
@@ -414,6 +447,8 @@ impl RaftCore {
                 .map(|(id, pr)| (*id, pr.matched, pr.state))
                 .collect(),
             fig8_bypasses: self.fig8_bypasses,
+            in_memory_entries: self.log.len(),
+            snapshots_refused: self.snapshots_refused,
         }
     }
 
@@ -512,6 +547,10 @@ impl RaftCore {
             }
             Input::Campaign => {
                 self.campaign(false);
+                Ok(())
+            }
+            Input::SnapshotTaken { meta } => {
+                self.on_snapshot_taken(meta);
                 Ok(())
             }
             Input::StepDown => {
@@ -880,10 +919,18 @@ impl RaftCore {
         let prev_index = pr.next.saturating_sub(1);
         let Some(prev_term) = self.log.term(prev_index) else {
             // The follower needs entries we have already compacted away.
+            // The configuration as of the checkpoint, not today's. A follower
+            // that installed this snapshot and then adopted the current
+            // membership would have skipped every configuration change between
+            // the two, and would be counting quorums against a set the rest of
+            // the cluster has moved on from.
             let meta = SnapshotMeta {
                 index: self.log.snapshot_index(),
                 term: self.log.snapshot_term(),
-                conf: self.tracker.conf().clone(),
+                conf: self
+                    .checkpoint_conf
+                    .clone()
+                    .unwrap_or_else(|| self.tracker.conf().clone()),
             };
             let index = meta.index;
             self.send(to, MessageBody::SnapshotOffer { meta });
@@ -1212,6 +1259,24 @@ impl RaftCore {
             Some(peer) => self.send(peer, MessageBody::ReadIndexResp { ctx, index }),
             None => self.read_states.push(ReadState { ctx, index }),
         }
+    }
+
+    /// Adopt a checkpoint the host says it has taken.
+    fn on_snapshot_taken(&mut self, meta: SnapshotMeta) {
+        // Above what has been applied: the host cannot have checkpointed state
+        // it has not applied, so this is a bug in the host rather than a race.
+        if meta.index > self.log.applied() {
+            self.snapshots_refused += 1;
+            return;
+        }
+        // At or below one already held: stale, and adopting it would replace a
+        // configuration that is newer with one that is older.
+        if meta.index <= self.log.snapshot_index() {
+            self.snapshots_refused += 1;
+            return;
+        }
+        self.log.compact_prefix(meta.index);
+        self.checkpoint_conf = Some(meta.conf);
     }
 
     fn fail_reads(&mut self, reqs: Vec<ReadRequest>) {

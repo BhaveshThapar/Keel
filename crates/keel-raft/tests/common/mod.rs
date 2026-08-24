@@ -30,6 +30,9 @@ pub struct Cluster {
     /// Directed links that drop everything.
     cut: BTreeSet<(NodeId, NodeId)>,
     pub dropped_messages: usize,
+    /// Every snapshot a leader has offered, recorded before delivery so a test
+    /// can assert on what was offered rather than on what was done with it.
+    snapshot_offers: Vec<keel_raft::SnapshotMeta>,
 }
 
 impl Cluster {
@@ -59,6 +62,7 @@ impl Cluster {
             queue: VecDeque::new(),
             cut: BTreeSet::new(),
             dropped_messages: 0,
+            snapshot_offers: Vec::new(),
         }
     }
 
@@ -106,6 +110,7 @@ impl Cluster {
             queue: VecDeque::new(),
             cut: BTreeSet::new(),
             dropped_messages: 0,
+            snapshot_offers: Vec::new(),
         }
     }
 
@@ -227,6 +232,11 @@ impl Cluster {
             });
 
             for m in rd.messages {
+                // Recorded before delivery, so a test can assert on what was
+                // offered rather than on what a follower did with it.
+                if let keel_raft::MessageBody::SnapshotOffer { meta } = &m.body {
+                    self.snapshot_offers.push(meta.clone());
+                }
                 self.queue.push_back(m);
             }
         }
@@ -274,6 +284,11 @@ impl Cluster {
             .iter()
             .map(|(id, n)| (*id, n.core.role(), n.core.term()))
             .collect()
+    }
+
+    /// Every snapshot a leader has offered a follower, in order.
+    pub fn snapshot_offers(&self) -> Vec<keel_raft::SnapshotMeta> {
+        self.snapshot_offers.clone()
     }
 
     pub fn node(&self, id: NodeId) -> &RaftCore {

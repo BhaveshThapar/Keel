@@ -6,6 +6,7 @@ mod common;
 use common::Cluster;
 use keel_raft::{
     ChangeKind, ConfChangeSingle, ConfChangeV2, Config, DropReason, Input, ReadOnlyOption, Role,
+    SnapshotMeta,
 };
 
 fn add_voter(node: u64) -> ConfChangeV2 {
@@ -472,4 +473,188 @@ fn a_leader_that_removes_itself_steps_down() {
         "a leader outside the new configuration must step down once it commits"
     );
     assert!(!c.node(leader).conf().voters.contains(&leader));
+}
+
+// -------------------------------------------------------------- checkpoints
+
+/// A checkpoint is what bounds memory. Without one the log grows for as long as
+/// the process runs, and a node that has been up for a week is holding a week.
+#[test]
+fn a_checkpoint_bounds_what_the_core_holds_in_memory() {
+    let mut c = Cluster::new(&[1, 2, 3]);
+    let leader = c.elect_leader();
+    for i in 0..200 {
+        c.propose(leader, i, &format!("v{i}"));
+    }
+    c.run(8);
+
+    let before = c.node(leader).status();
+    assert!(
+        before.in_memory_entries > 100,
+        "only {} entries were held, so there is nothing to bound",
+        before.in_memory_entries
+    );
+
+    // The host says it has checkpointed through what it has applied.
+    let meta = SnapshotMeta {
+        index: before.applied,
+        term: c.node(leader).status().term,
+        conf: before.conf.clone(),
+    };
+    let _ = c.node_mut(leader).step(Input::SnapshotTaken { meta });
+
+    let after = c.node(leader).status();
+    assert!(
+        after.in_memory_entries < before.in_memory_entries / 2,
+        "a checkpoint through index {} left {} of {} entries in memory",
+        before.applied,
+        after.in_memory_entries,
+        before.in_memory_entries
+    );
+    assert_eq!(
+        after.snapshots_refused, 0,
+        "a legitimate checkpoint was refused"
+    );
+
+    // And the cluster keeps working afterwards, which is the part that would
+    // break if compaction had discarded something still needed.
+    c.propose(leader, 9999, "after the checkpoint");
+    c.run(5);
+    assert!(
+        c.node(leader).status().commit > before.applied,
+        "nothing committed after the checkpoint"
+    );
+}
+
+/// A checkpoint the host cannot have taken is refused, and refused visibly.
+#[test]
+fn a_checkpoint_above_what_was_applied_is_refused() {
+    let mut c = Cluster::new(&[1, 2, 3]);
+    let leader = c.elect_leader();
+    c.propose(leader, 1, "v");
+    c.run(4);
+
+    let status = c.node(leader).status();
+    let before = c.node(leader).status().in_memory_entries;
+    let _ = c.node_mut(leader).step(Input::SnapshotTaken {
+        meta: SnapshotMeta {
+            index: status.applied + 50,
+            term: status.term,
+            conf: status.conf.clone(),
+        },
+    });
+
+    let after = c.node(leader).status();
+    assert_eq!(
+        after.in_memory_entries, before,
+        "a checkpoint above the applied index compacted the log anyway"
+    );
+    assert_eq!(
+        after.snapshots_refused, 1,
+        "the refusal was not counted, so nothing would notice a host claiming \
+         a checkpoint it could not have taken"
+    );
+}
+
+/// A checkpoint that goes backwards is refused. Adopting it would discard
+/// entries a follower may still need while claiming coverage it does not have,
+/// and would replace a newer configuration with an older one.
+#[test]
+fn a_stale_checkpoint_is_refused() {
+    let mut c = Cluster::new(&[1, 2, 3]);
+    let leader = c.elect_leader();
+    for i in 0..50 {
+        c.propose(leader, i, &format!("v{i}"));
+    }
+    c.run(6);
+
+    let status = c.node(leader).status();
+    let conf = status.conf.clone();
+    let _ = c.node_mut(leader).step(Input::SnapshotTaken {
+        meta: SnapshotMeta {
+            index: status.applied,
+            term: status.term,
+            conf: conf.clone(),
+        },
+    });
+    let after_first = c.node(leader).status();
+
+    // The same checkpoint again, and then an older one.
+    for index in [after_first.applied, after_first.applied.saturating_sub(10)] {
+        let _ = c.node_mut(leader).step(Input::SnapshotTaken {
+            meta: SnapshotMeta {
+                index,
+                term: after_first.term,
+                conf: conf.clone(),
+            },
+        });
+    }
+
+    let after = c.node(leader).status();
+    assert_eq!(
+        after.in_memory_entries, after_first.in_memory_entries,
+        "a stale checkpoint changed what the core holds"
+    );
+    assert_eq!(
+        after.snapshots_refused, 2,
+        "both stale checkpoints should have been refused and counted"
+    );
+}
+
+/// A follower that has fallen behind the log's floor is offered the
+/// *checkpointed* configuration.
+///
+/// Offering today's would let it skip every configuration change between the
+/// checkpoint and now, and count quorums against a set the rest of the cluster
+/// has moved on from.
+#[test]
+fn a_snapshot_offer_carries_the_checkpointed_configuration() {
+    let mut c = Cluster::new(&[1, 2, 3]);
+    let leader = c.elect_leader();
+    let follower = [1, 2, 3].into_iter().find(|n| *n != leader).unwrap();
+
+    // Cut a follower off, then write and checkpoint past it.
+    c.isolate(follower);
+    for i in 0..40 {
+        c.propose(leader, i, &format!("v{i}"));
+    }
+    c.run(6);
+
+    let status = c.node(leader).status();
+    let checkpointed = status.conf.clone();
+    let _ = c.node_mut(leader).step(Input::SnapshotTaken {
+        meta: SnapshotMeta {
+            index: status.applied,
+            term: status.term,
+            conf: checkpointed.clone(),
+        },
+    });
+
+    // Now change the membership, so "checkpointed" and "current" differ.
+    let _ = c.node_mut(leader).step(Input::ProposeConfChange {
+        ctx: 77,
+        cc: add_learner(9),
+    });
+    c.pump(leader);
+    c.run(5);
+    assert_ne!(
+        c.node(leader).conf().learners,
+        checkpointed.learners,
+        "the membership did not change, so the two configurations are the same \
+         and this test cannot tell them apart"
+    );
+
+    // Heal, and let the leader discover the follower needs a snapshot.
+    c.heal();
+    c.run(8);
+
+    let offered = c.snapshot_offers();
+    let Some(meta) = offered.into_iter().next() else {
+        panic!("no snapshot was offered to a follower behind the log's floor");
+    };
+    assert_eq!(
+        meta.conf.learners, checkpointed.learners,
+        "the offer carried the current configuration rather than the \
+         checkpointed one"
+    );
 }

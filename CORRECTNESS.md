@@ -45,6 +45,10 @@ row that was never written.
 | A step-down ends leadership without moving the term | `cluster_behaviour::a_leader_told_to_step_down_stops_leading_without_moving_the_term`; `cluster_behaviour::stepping_down_a_follower_does_nothing` | enforced |
 | A step-down fails the reads it can no longer confirm | `cluster_behaviour::a_step_down_fails_the_reads_it_can_no_longer_confirm` | enforced |
 | A restart applies from what the state machine reports, not what the log infers | `paper_scenarios::a_restart_does_not_re_apply_what_the_state_machine_already_applied`; `paper_scenarios::an_applied_index_above_the_commit_index_is_clamped` | enforced |
+| A checkpoint bounds what the core holds in memory | `cluster_behaviour::a_checkpoint_bounds_what_the_core_holds_in_memory` | enforced |
+| A checkpoint above the applied index is refused, and counted | `cluster_behaviour::a_checkpoint_above_what_was_applied_is_refused` | enforced |
+| A checkpoint that goes backwards is refused | `cluster_behaviour::a_stale_checkpoint_is_refused` | enforced |
+| A snapshot offer carries the checkpointed configuration, not the current one | `cluster_behaviour::a_snapshot_offer_carries_the_checkpointed_configuration` | enforced |
 | Joint consensus quorums always intersect | `quorum::tests::quorums_of_both_halves_always_intersect` (exhaustive over subsets) | enforced |
 | Voter changes pass through `C_old,new` and leave it automatically | `cluster_behaviour::adding_voters_goes_through_a_joint_configuration_and_leaves_it_automatically` | enforced |
 | Only one configuration change in flight | `cluster_behaviour::a_second_configuration_change_is_refused_while_one_is_in_flight` | enforced |
