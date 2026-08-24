@@ -12,14 +12,45 @@
 # machine happens to have. A result that cannot be reproduced against a named
 # version is a result about an unnamed program.
 #
-# Usage: scripts/maelstrom.sh [time-limit-seconds] [rate]
+# Two runs, and only the second one is a result. Without a nemesis the run is a
+# floor: a system that cannot pass with no faults will not pass with them, and
+# passing proves only that the adapter speaks the protocol. With `partition` the
+# cluster is cut in half every ten seconds while clients keep writing, and
+# Knossos is asked whether what they saw could have happened in any sequential
+# order at all.
+#
+# Usage: scripts/maelstrom.sh [time-limit-seconds] [rate] [none|partition]
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 TIME_LIMIT="${1:-60}"
 RATE="${2:-30}"
+NEMESIS="${3:-none}"
 NODES=3
+
+case "$NEMESIS" in
+    none)
+        NEMESIS_ARGS=()
+        NEMESIS_TITLE="no nemesis"
+        ARTIFACT=lin-kv.txt
+        ;;
+    partition)
+        # Partition-halves rather than partition-random-node: halves is the
+        # shape that produces a minority holding a leader that does not yet
+        # know it has been deposed, which is the case a linearizability
+        # checker exists to catch. Healing between partitions matters as much
+        # as the partitions: a cluster never allowed to commit is a cluster
+        # whose history contains nothing to check.
+        NEMESIS_ARGS=(--nemesis partition-halves --nemesis-interval 10 --time-limit "$TIME_LIMIT")
+        NEMESIS_TITLE="partition-halves every 10s"
+        ARTIFACT=lin-kv-partition.txt
+        ;;
+    *)
+        echo "unknown nemesis $NEMESIS: expected none or partition" >&2
+        exit 1
+        ;;
+esac
 
 MAELSTROM_VERSION=v0.2.4
 MAELSTROM_SHA256=301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799
@@ -32,7 +63,7 @@ CACHE="${MAELSTROM_HOME:-${TMPDIR:-/tmp}/keel-maelstrom-${MAELSTROM_VERSION}}"
 
 # shellcheck source=scripts/lib/provenance.sh
 source "$(dirname "$0")/lib/provenance.sh"
-OUT=results/maelstrom/lin-kv.txt
+OUT="results/maelstrom/$ARTIFACT"
 mkdir -p "$(dirname "$OUT")"
 provenance_of "$OUT"
 
@@ -79,7 +110,7 @@ BINARY="$PWD/target/release/keel-maelstrom"
 
 {
     echo "=============================================================="
-    echo "Maelstrom lin-kv, no nemesis"
+    echo "Maelstrom lin-kv, $NEMESIS_TITLE"
     echo "  $NODES nodes, ${TIME_LIMIT}s at $RATE ops/s, Maelstrom $MAELSTROM_VERSION"
     echo "=============================================================="
     provenance_header
@@ -87,10 +118,16 @@ BINARY="$PWD/target/release/keel-maelstrom"
     echo "The checker is Knossos, inside Maelstrom. It applies a definition of"
     echo "linearizability nobody here chose to a history it recorded itself."
     echo
-    echo "No nemesis in this run: no partitions, no crashes, no clock skew."
-    echo "That is deliberate and it is a floor rather than a result — a system"
-    echo "that cannot pass without faults will not pass with them. The nemesis"
-    echo "run is M2's."
+    if [ "$NEMESIS" = none ]; then
+        echo "No nemesis in this run: no partitions, no crashes, no clock skew."
+        echo "That is deliberate and it is a floor rather than a result — a system"
+        echo "that cannot pass without faults will not pass with them."
+    else
+        echo "The cluster is cut into halves every ten seconds and healed again."
+        echo "The minority half keeps a leader that has not yet learned it was"
+        echo "deposed, which is the shape that produces a stale read if anything"
+        echo "is going to. A run that never partitioned would not have asked."
+    fi
     echo
 
     (
@@ -101,7 +138,8 @@ BINARY="$PWD/target/release/keel-maelstrom"
             --node-count "$NODES" \
             --time-limit "$TIME_LIMIT" \
             --rate "$RATE" \
-            --concurrency 2n
+            --concurrency 2n \
+            ${NEMESIS_ARGS[@]+"${NEMESIS_ARGS[@]}"}
     ) 2>&1 | grep -vE "^(WARNING|Warning)" | tail -40
     status=${PIPESTATUS[0]}
 

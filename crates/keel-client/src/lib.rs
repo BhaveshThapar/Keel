@@ -117,6 +117,18 @@ impl Client {
         self
     }
 
+    /// Record against a clock somebody else started.
+    ///
+    /// Several clients' histories are merged into one timeline by a checker,
+    /// and each starting from its own `Instant::now()` would place every
+    /// client's first operation at time zero — a claim that everything happened
+    /// at once, which manufactures concurrency out of operations seconds apart
+    /// and makes the checker's job both harder and wrong.
+    pub fn recording_since(mut self, origin: std::time::Instant) -> Self {
+        self.history = Some(History::starting_at(origin));
+        self
+    }
+
     pub fn history(&self) -> Option<&History> {
         self.history.as_ref()
     }

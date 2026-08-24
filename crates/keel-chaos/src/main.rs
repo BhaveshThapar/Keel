@@ -1,14 +1,17 @@
 //! `keel-chaos` — break a real cluster on a seeded schedule.
 //!
-//! Four subcommands, and the split between them is deliberate. `plan` prints
+//! Five subcommands, and the split between them is deliberate. `plan` prints
 //! what a seed would do without doing it, so a schedule can be read before an
-//! hour is spent on it. `run` injects. `probe` and `clock-check` are the two
-//! halves of the one demonstration that needs its own proof: that a clock jump
-//! reached `CLOCK_MONOTONIC` rather than only the wall clock nothing in Raft
-//! reads.
+//! hour is spent on it. `run` injects, and with `--history` records what real
+//! clients observed instead of counting a counter — the file an external
+//! checker is handed. `kill-loop` does one fault a thousand times, because a
+//! window one cycle in five hundred wide is not something a short run should be
+//! trusted to have found. `probe` and `clock-check` are the two halves of the
+//! one demonstration that needs its own proof: that a clock jump reached
+//! `CLOCK_MONOTONIC` rather than only the wall clock nothing in Raft reads.
 
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -64,6 +67,36 @@ enum Verb {
         kv_bin: PathBuf,
         #[arg(long, default_value = "durable")]
         sync: String,
+        /// Record a history here instead of running the counter workload.
+        ///
+        /// The counter workload answers one question — did an acknowledged
+        /// write survive — and answers it with our own arithmetic. A history
+        /// answers a different one, and answers it with somebody else's
+        /// checker: was what these clients observed consistent with *any*
+        /// sequential order at all.
+        #[arg(long)]
+        history: Option<PathBuf>,
+    },
+    /// Kill one node at a time, over and over, while clients keep writing.
+    ///
+    /// A partition is a fault the cluster can wait out. A kill is not: the node
+    /// loses everything it had not made durable, and the question is whether
+    /// the cluster still holds what it told a client it held. Doing it a
+    /// thousand times is how a window one cycle in five hundred wide stops
+    /// being something the test got lucky about.
+    KillLoop {
+        #[arg(long, default_value_t = 1_000)]
+        cycles: u64,
+        #[arg(long, default_value_t = 3)]
+        nodes: usize,
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        server_bin: PathBuf,
+        #[arg(long)]
+        kv_bin: PathBuf,
+        #[arg(long, default_value = "durable")]
+        sync: String,
     },
     /// Print a fixed number of `CLOCK_MONOTONIC` readings. Started by
     /// `clock-check` under the faketime preload.
@@ -97,7 +130,25 @@ fn main() -> ExitCode {
             server_bin,
             kv_bin,
             sync,
-        } => run(seed, nodes, secs, dir, server_bin, kv_bin, sync),
+            history,
+        } => run(RunOptions {
+            seed,
+            nodes,
+            secs,
+            dir,
+            server_bin,
+            kv_bin,
+            sync,
+            history,
+        }),
+        Verb::KillLoop {
+            cycles,
+            nodes,
+            dir,
+            server_bin,
+            kv_bin,
+            sync,
+        } => kill_loop(cycles, nodes, dir, server_bin, kv_bin, sync),
         Verb::Probe { samples, every_ms } => probe(samples, every_ms),
         Verb::ClockCheck { by_secs } => clock_check(by_secs),
     };
@@ -271,8 +322,35 @@ impl Workload {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run(
+/// A history recorded by real clients while the faults are landing.
+///
+/// Started as a child process rather than in a thread, because the recorder is
+/// `kv workload` — the same client a person would use, not a special one
+/// written to be easy to check. A checker handed a history produced by a
+/// purpose-built client is checking the purpose-built client.
+fn start_recorder(
+    kv_bin: &Path,
+    nodes: &[String],
+    secs: u64,
+    out: &Path,
+) -> Result<std::process::Child, ChaosError> {
+    let mut cmd = Command::new(kv_bin);
+    for n in nodes {
+        cmd.arg("--node").arg(n);
+    }
+    cmd.args(["workload", "--clients", "8", "--keys", "4", "--secs"])
+        // Past the last fault, so the history covers the recovery as well as
+        // the damage. A history that stopped at the last kill would never show
+        // whether the cluster came back consistent.
+        .arg((secs + 8).to_string())
+        .arg("--out")
+        .arg(out)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    Ok(cmd.spawn()?)
+}
+
+struct RunOptions {
     seed: u64,
     nodes: usize,
     secs: u64,
@@ -280,7 +358,20 @@ fn run(
     server_bin: PathBuf,
     kv_bin: PathBuf,
     sync: String,
-) -> Result<(), ChaosError> {
+    history: Option<PathBuf>,
+}
+
+fn run(opts: RunOptions) -> Result<(), ChaosError> {
+    let RunOptions {
+        seed,
+        nodes,
+        secs,
+        dir,
+        server_bin,
+        kv_bin,
+        sync,
+        history,
+    } = opts;
     if !server_bin.exists() {
         return Err(ChaosError::NoBinary(server_bin.display().to_string()));
     }
@@ -319,7 +410,16 @@ fn run(
     println!("cluster up: {} nodes", cluster.nodes());
 
     let client_nodes: Vec<String> = cluster.client_addrs.iter().map(|a| a.to_string()).collect();
-    let (workload, handle) = Workload::start(kv_bin.clone(), client_nodes.clone());
+    // One workload or the other, never both: two workloads would make each
+    // other's timings, and the history handed to a checker would be a history
+    // of a cluster busy with something the history does not mention.
+    let mut recorder = match history.as_deref() {
+        Some(path) => Some(start_recorder(&kv_bin, &client_nodes, secs, path)?),
+        None => None,
+    };
+    let counter = recorder
+        .is_none()
+        .then(|| Workload::start(kv_bin.clone(), client_nodes.clone()));
 
     // Inject. Faults that fail because the target is already down are recorded
     // rather than fatal: a schedule drawn before the run cannot know that a
@@ -372,27 +472,16 @@ fn run(
         let _ = cluster.process(i).and_then(|p| p.resume());
     }
     std::thread::sleep(Duration::from_secs(5));
-    workload.finish();
-    let _ = handle.join();
 
-    let acked = workload.acked.load(Ordering::SeqCst);
-    let attempted = workload.attempted.load(Ordering::SeqCst);
     let (carried, refused, severed) = cluster.traffic();
-    println!(
-        "faults injected {injected}, skipped {skipped}; \
-         workload attempted {attempted}, acknowledged {acked}; \
-         proxy carried {carried} bytes, refused {refused} connections, severed {severed}"
-    );
+    println!("faults injected {injected}, skipped {skipped}");
+    println!("proxy carried {carried} bytes, refused {refused} connections, severed {severed}");
 
-    // The two ways this run could have proved nothing, both refused.
+    // The ways this run could have proved nothing, refused before anything is
+    // asserted about the cluster.
     if injected == 0 {
         return Err(ChaosError::Violation(
             "no fault was successfully injected".into(),
-        ));
-    }
-    if acked == 0 {
-        return Err(ChaosError::Violation(
-            "the workload never got an acknowledgement, so there is nothing to check".into(),
         ));
     }
     if refused + severed == 0 && schedule.counts().isolations + schedule.counts().splits > 0 {
@@ -400,6 +489,42 @@ fn run(
             "the schedule contained partitions but the proxy never dropped a connection; \
              the nodes are not talking through the mesh"
                 .into(),
+        ));
+    }
+
+    if let (Some(child), Some(path)) = (recorder.take(), history.as_deref()) {
+        let output = child.wait_with_output()?;
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        if !output.status.success() {
+            return Err(ChaosError::Violation(format!(
+                "the recorder failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let recorded = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        if recorded == 0 {
+            return Err(ChaosError::Violation(
+                "the history file is empty, so there is nothing for a checker to check".into(),
+            ));
+        }
+        println!(
+            "PASS a history of {recorded} bytes is at {}",
+            path.display()
+        );
+        return Ok(());
+    }
+
+    let Some((workload, handle)) = counter else {
+        return Err(ChaosError::Violation("no workload ran".into()));
+    };
+    workload.finish();
+    let _ = handle.join();
+    let acked = workload.acked.load(Ordering::SeqCst);
+    let attempted = workload.attempted.load(Ordering::SeqCst);
+    println!("workload attempted {attempted}, acknowledged {acked}");
+    if acked == 0 {
+        return Err(ChaosError::Violation(
+            "the workload never got an acknowledgement, so there is nothing to check".into(),
         ));
     }
 
@@ -414,6 +539,106 @@ fn run(
         )));
     }
     println!("PASS no acknowledged write was lost");
+    Ok(())
+}
+
+/// Kill one node at a time, a thousand times, while clients keep writing.
+///
+/// Round robin rather than random. A thousand random kills over three nodes
+/// leaves every node killed about three hundred times, which is fine, but it
+/// also leaves the *sequence* different on every run — and the interesting
+/// cycles are the ones where the node killed is the one that had just become
+/// leader. Round robin makes that reachable on a schedule anybody can rerun.
+///
+/// The wait between kill and restart is deliberately short. A loop that waited
+/// for the cluster to settle before each kill would be testing a healthy
+/// cluster a thousand times; killing the next node while the last one is still
+/// catching up is the case where a node's log and its state machine can
+/// disagree about what has been applied.
+fn kill_loop(
+    cycles: u64,
+    nodes: usize,
+    dir: PathBuf,
+    server_bin: PathBuf,
+    kv_bin: PathBuf,
+    sync: String,
+) -> Result<(), ChaosError> {
+    if !server_bin.exists() {
+        return Err(ChaosError::NoBinary(server_bin.display().to_string()));
+    }
+    if !kv_bin.exists() {
+        return Err(ChaosError::NoBinary(kv_bin.display().to_string()));
+    }
+    std::fs::create_dir_all(&dir)?;
+
+    let mut cfg = ClusterConfig::new(nodes, &dir, &server_bin);
+    cfg.sync = sync.clone();
+    let mut cluster = Cluster::start(cfg)?;
+    let client_nodes: Vec<String> = cluster.client_addrs.iter().map(|a| a.to_string()).collect();
+    println!("cluster up: {nodes} nodes, sync {sync}, {cycles} cycles");
+
+    let (workload, handle) = Workload::start(kv_bin.clone(), client_nodes.clone());
+    let started = Instant::now();
+    let mut restart_failures = 0u64;
+
+    for cycle in 0..cycles {
+        let victim = (cycle as usize) % nodes;
+        if let Err(e) = cluster.process(victim).and_then(|p| p.kill()) {
+            // A node that was already down is not a cycle that did nothing:
+            // the previous restart failed, and that is worth counting rather
+            // than swallowing.
+            println!("cycle {cycle}: n{victim} could not be killed: {e}");
+        }
+        if let Err(e) = cluster.start_node(victim) {
+            restart_failures += 1;
+            println!("cycle {cycle}: n{victim} did not come back: {e}");
+            // One that never comes back takes the cluster down with it after
+            // enough cycles, and every later cycle would report the same thing.
+            if restart_failures > 3 {
+                return Err(ChaosError::Violation(format!(
+                    "{restart_failures} nodes failed to restart; the run stopped at cycle {cycle}"
+                )));
+            }
+        }
+        if cycle % 100 == 99 {
+            println!(
+                "  {} cycles, {} acknowledged writes, {:.0}s elapsed",
+                cycle + 1,
+                workload.acked.load(Ordering::SeqCst),
+                started.elapsed().as_secs_f64()
+            );
+        }
+    }
+
+    // Let the last restarted node catch up before the final read, and let the
+    // workload get its last acknowledgement in.
+    std::thread::sleep(Duration::from_secs(5));
+    workload.finish();
+    let _ = handle.join();
+
+    let acked = workload.acked.load(Ordering::SeqCst);
+    let attempted = workload.attempted.load(Ordering::SeqCst);
+    println!(
+        "{cycles} kill cycles in {:.0}s; workload attempted {attempted}, acknowledged {acked}; \
+         {restart_failures} restarts failed",
+        started.elapsed().as_secs_f64()
+    );
+    if acked == 0 {
+        return Err(ChaosError::Violation(
+            "the workload never got an acknowledgement, so there is nothing to check".into(),
+        ));
+    }
+
+    let final_value = read_counter(&kv_bin, &client_nodes)?;
+    println!("counter: acknowledged {acked}, final value {final_value}");
+    if final_value < 0 || (final_value as u64) < acked {
+        return Err(ChaosError::Violation(format!(
+            "{} acknowledged increments were lost over {cycles} kill cycles: \
+             the counter reads {final_value}",
+            acked.saturating_sub(final_value.max(0) as u64)
+        )));
+    }
+    println!("PASS {cycles} kill cycles, no acknowledged write lost");
     Ok(())
 }
 
