@@ -31,7 +31,7 @@ provenance_of "$OUT"
 
 echo "=============================================================="
 echo "Split batch: is the atomic applied index load-bearing?"
-echo "  $CYCLES kill/restart cycles per arm"
+echo "  control: $CYCLES kill/restart cycles; experiment: caught inside 100"
 echo "=============================================================="
 provenance_header
 echo
