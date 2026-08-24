@@ -78,6 +78,34 @@ jobs:
           name: disk-throughput
           path: results/simulator/disk-throughput.txt
 
+  # The simulator finds consensus bugs; this finds the ones it cannot have,
+  # because it replaces the parts they live in — a scheduler, a TCP stack, a
+  # page cache, a SIGSTOP that lands between two instructions. It is nightly
+  # rather than per-PR because each seed costs real seconds of wall clock and
+  # its failures do not replay exactly: the schedule replays, the interleaving
+  # does not.
+  #
+  # And it is here that the clock nemesis runs without a container. The runner
+  # is Linux, so libfaketime can move CLOCK_MONOTONIC directly; the container in
+  # scripts/chaos-clock.sh exists because a macOS laptop cannot host that fault
+  # at all, not because the fault needs one.
+  chaos:
+    name: a real cluster under a seeded fault schedule
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: libfaketime, so the schedule includes clock jumps
+        run: sudo apt-get update && sudo apt-get install -y faketime
+      - run: scripts/chaos.sh 45 1 2 3 4 5 6 7 8
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-real-cluster
+          path: results/chaos/real-cluster.txt
+
   determinism-at-length:
     name: a long run still replays identically
     runs-on: ubuntu-latest
