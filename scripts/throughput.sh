@@ -59,6 +59,30 @@ VERIFY_NODES=5
 
 cargo build --quiet --release -p keel-sim
 
+# A timing taken on a loaded machine is not a measurement, and it is worse than
+# no measurement because it looks like one. This script's whole output is a
+# budget somebody will divide by, and the first run of it that included the
+# verification sweep was taken at a load average of 23 on ten cores: disk-hunt
+# at 5 nodes came out twelve times slower than the same cell an hour earlier,
+# and the extrapolation check reported the table understating costs by half.
+# Both were the laptop, not the simulator.
+#
+# So the run refuses rather than recording. Set KEEL_THROUGHPUT_ANYWAY=1 to
+# override, which stamps the artifact as untrustworthy rather than pretending.
+LOAD="$(uptime | sed 's/.*load averages*: *//' | awk '{print $1}' | tr -d ',')"
+CORES="$( (sysctl -n hw.ncpu 2>/dev/null || nproc) )"
+BUSY="$(awk -v l="$LOAD" -v c="$CORES" 'BEGIN { print (l > c * 0.25) ? 1 : 0 }')"
+LOAD_NOTE=""
+if [ "$BUSY" = 1 ]; then
+    if [ "${KEEL_THROUGHPUT_ANYWAY:-0}" != 1 ]; then
+        echo "refusing to measure: load average $LOAD on $CORES cores." >&2
+        echo "A budget derived from a loaded host is a budget that fails on a quiet one." >&2
+        echo "Close what is running, or set KEEL_THROUGHPUT_ANYWAY=1 to record it anyway." >&2
+        exit 1
+    fi
+    LOAD_NOTE="  ** recorded at load average $LOAD on $CORES cores: NOT a usable budget **"
+fi
+
 # shellcheck source=scripts/lib/provenance.sh
 source "$(dirname "$0")/lib/provenance.sh"
 provenance_of "$OUT"
@@ -138,6 +162,9 @@ budget() {
     echo "Each cell was timed ${REPS} times and the slowest repetition is the one"
     echo "reported, because a budget has to survive the unlucky run."
     echo
+    printf "load average %s on %s cores at the start of the run.\n" "$LOAD" "$CORES"
+    if [ -n "$LOAD_NOTE" ]; then echo "$LOAD_NOTE"; fi
+    echo
     printf "%-12s %5s %7s %8s %9s %12s %14s\n" \
         profile nodes seeds steps seconds steps/s seed-runs/s
     cat "$ROWS"
@@ -200,11 +227,12 @@ budget() {
             printf "  on a runner at the assumed factor of %d  %6.1f minutes\n", f, (measured * f) / 60
         }'
         echo
-        echo "A negative error means the short runs were pessimistic and the"
-        echo "budget has more room than it claims, which is the direction to be"
-        echo "wrong in. A large positive one would mean the whole table above"
-        echo "understates what a long sweep costs, and every number derived from"
-        echo "it is too generous."
+        echo "A positive error means the short runs were pessimistic and the"
+        echo "budget has more room than the table claims, which is the direction"
+        echo "to be wrong in. A negative one means the table understates what a"
+        echo "long sweep costs and every budget derived from it is too generous —"
+        echo "so the number to compare against the job timeout is the measured"
+        echo "one, not the predicted one."
     fi
     echo
     echo "Re-measured whenever a phase changes what a seed costs. P8 put the"
