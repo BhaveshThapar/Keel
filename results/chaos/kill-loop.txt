@@ -1,0 +1,27 @@
+keel-chaos — 1000 kill cycles against a three-node cluster
+host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
+commit: a8e81bd
+date:   2026-08-24T21:42:16Z
+
+sync mode:  durable
+nodes:      3
+cycles:     1000, round robin
+settle:     250ms between a restart and the next kill
+writers:    4 concurrent
+
+cluster up: 3 nodes, sync durable, 1000 cycles, 250ms settle
+  100 cycles, 809 acknowledged writes, 36s elapsed
+  200 cycles, 1604 acknowledged writes, 72s elapsed
+  300 cycles, 2394 acknowledged writes, 108s elapsed
+  400 cycles, 3092 acknowledged writes, 145s elapsed
+  500 cycles, 3745 acknowledged writes, 181s elapsed
+  600 cycles, 4353 acknowledged writes, 216s elapsed
+  700 cycles, 5018 acknowledged writes, 252s elapsed
+  800 cycles, 5806 acknowledged writes, 289s elapsed
+  900 cycles, 6424 acknowledged writes, 326s elapsed
+  1000 cycles, 7075 acknowledged writes, 362s elapsed
+1000 kill cycles in 367s; workload attempted 7311, acknowledged 7311; 0 restarts failed
+counter: acknowledged 7311, 7311 values reported, 7311 distinct (0 answered from the dedup cache), highest 7311, final value 7311
+PASS 1000 kill cycles, no acknowledged write lost
+
+==============================================================

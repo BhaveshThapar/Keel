@@ -1,0 +1,21 @@
+==============================================================
+Maelstrom lin-kv, partition-halves every 10s
+  3 nodes, 60s at 30 ops/s, Maelstrom v0.2.4
+==============================================================
+host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
+commit: a8e81bd
+date:   2026-08-24T21:49:34Z
+
+The checker is Knossos, inside Maelstrom. It applies a definition of
+linearizability nobody here chose to a history it recorded itself.
+
+The cluster is cut into halves every ten seconds and healed again.
+The minority half keeps a leader that has not yet learned it was
+deposed, which is the shape that produces a stale read if anything
+is going to. A run that never partitioned would not have asked.
+
+Failed to validate "--nemesis partition-halves": Must be one of partition
+
+==============================================================
+FAIL: Maelstrom exited 254. The history is in the store/
+      directory under /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-maelstrom-v0.2.4/maelstrom.

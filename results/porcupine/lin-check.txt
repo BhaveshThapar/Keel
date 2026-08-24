@@ -1,0 +1,80 @@
+Keel's history, checked by Porcupine
+host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
+commit: a8e81bd
+date:   2026-08-24T21:48:30Z
+
+checker:    github.com/anishathalye/porcupine v1.3.0 (pinned in tools/porcupine/go.sum)
+model:      one register per key; a get must return what the last linearized put wrote
+seed:       11
+seconds:    40 of faults, plus 8 for the recovery the history has to cover
+sync mode:  durable
+
+--- recording a history while the cluster is being broken ---
+clock nemesis unavailable: no clock control on this host: macOS strips DYLD_INSERT_LIBRARIES under System Integrity Protection, and does not interpose the commpage mach_absolute_time reads; run the clock nemesis in a Linux container
+seed 11, 3 nodes, 40s, 18 events
+     0.820s  pause n0
+     2.091s  resume n0
+     3.693s  kill n1
+     4.730s  restart n1
+     8.635s  split, minority [0]
+    12.050s  heal
+    13.781s  pause n1
+    17.036s  resume n1
+    20.832s  isolate n2 (Backward)
+    21.766s  heal
+    24.180s  pause n0
+    25.626s  resume n0
+    27.624s  isolate n0 (Forward)
+    29.822s  heal
+    31.808s  isolate n2 (Forward)
+    33.776s  heal
+    36.431s  split, minority [1]
+    38.940s  heal
+isolations 3, splits 2, pauses 3, kills 1, clock jumps 0
+cluster up: 3 nodes
+     0.820s  pause n0
+     2.091s  resume n0
+     3.693s  kill n1
+     4.730s  restart n1
+     8.635s  split, minority [0]
+    12.050s  heal
+    13.781s  pause n1
+    17.036s  resume n1
+    20.832s  isolate n2 (Backward)
+    21.766s  heal
+    24.180s  pause n0
+    25.626s  resume n0
+    27.624s  isolate n0 (Forward)
+    29.822s  heal
+    31.808s  isolate n2 (Forward)
+    33.776s  heal
+    36.431s  split, minority [1]
+    38.940s  heal
+faults injected 18, skipped 0
+proxy carried 446243 bytes, refused 234 connections, severed 12
+8696 operations from 8 clients over 4 keys, 0 still pending, written to /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-porcupine-mvTYfb/history.jsonl
+PASS a history of 1073945 bytes is at /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-porcupine-mvTYfb/history.jsonl
+
+--- experiment: the real history must be accepted ---
+history:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-porcupine-mvTYfb/history.jsonl, 8696 entries
+checked:   8696 operations over 4 keys (0 not applicable to a register model)
+  key 6b30             2174 ops   linearizable
+  key 6b31             2174 ops   linearizable
+  key 6b32             2174 ops   linearizable
+  key 6b33             2174 ops   linearizable
+
+PASS the history is linearizable
+
+--- control: one read's result replaced, and it must be rejected ---
+history:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-porcupine-mvTYfb/history.jsonl, 8696 entries
+mutated:   entry 8693, key 6b31, result replaced with a value nothing wrote
+checked:   8696 operations over 4 keys (0 not applicable to a register model)
+  key 6b30             2174 ops   linearizable
+  key 6b31             2174 ops   NOT linearizable
+  key 6b32             2174 ops   linearizable
+  key 6b33             2174 ops   linearizable
+
+PASS the checker rejected the corrupted history, so its acceptance means something
+
+==============================================================
+PASS accepted the real history and rejected the corrupted one

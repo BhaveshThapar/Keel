@@ -42,8 +42,11 @@ case "$NEMESIS" in
         # checker exists to catch. Healing between partitions matters as much
         # as the partitions: a cluster never allowed to commit is a cluster
         # whose history contains nothing to check.
-        NEMESIS_ARGS=(--nemesis partition-halves --nemesis-interval 10 --time-limit "$TIME_LIMIT")
-        NEMESIS_TITLE="partition-halves every 10s"
+        # `partition` is the only fault this Maelstrom version injects, and it
+        # is the one worth having: it cuts the cluster into halves, so the
+        # minority keeps a leader that has not yet learned it was deposed.
+        NEMESIS_ARGS=(--nemesis partition --nemesis-interval 10)
+        NEMESIS_TITLE="partition every 10s"
         ARTIFACT=lin-kv-partition.txt
         ;;
     *)
@@ -123,7 +126,7 @@ BINARY="$PWD/target/release/keel-maelstrom"
         echo "That is deliberate and it is a floor rather than a result — a system"
         echo "that cannot pass without faults will not pass with them."
     else
-        echo "The cluster is cut into halves every ten seconds and healed again."
+        echo "The cluster is cut in half every ten seconds and healed again."
         echo "The minority half keeps a leader that has not yet learned it was"
         echo "deposed, which is the shape that produces a stale read if anything"
         echo "is going to. A run that never partitioned would not have asked."
