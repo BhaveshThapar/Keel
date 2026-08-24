@@ -147,6 +147,12 @@ are for.
 | The state digest notices a session table two machines disagree about | `state_machine::the_state_digest_covers_the_session_table` | enforced |
 | A checkpoint shares its bytes with the source rather than copying them | `checkpoint::a_checkpoint_shares_its_bytes_with_the_source` (same inode, link count ≥ 2) | enforced |
 | A checkpoint survives the source losing the names it linked | `checkpoint::a_checkpoint_survives_the_source_losing_the_names_it_linked` | enforced |
+| A transfer cut at **any** chunk resumes and completes | `snapshot_transfer::a_transfer_cut_at_any_chunk_resumes_and_completes` — every chunk boundary in turn, not one that worked | enforced |
+| A corrupt chunk is rejected and the position does not advance past it | `snapshot_transfer::a_corrupt_chunk_is_rejected_and_the_position_does_not_advance` | enforced |
+| An installed snapshot whose digest disagrees is thrown away, not published | `snapshot_transfer::a_snapshot_whose_digest_disagrees_is_thrown_away_rather_than_published` | enforced |
+| A partial transfer cannot be published | `snapshot_transfer::an_incomplete_transfer_refuses_to_publish` | enforced |
+| Publishing replaces an existing snapshot whole | `snapshot_transfer::publishing_over_an_existing_snapshot_replaces_it_whole` | enforced |
+| A chunk cannot name a path outside the snapshot | `snapshot_transfer::a_chunk_that_names_an_escape_is_refused`; `transfer::tests::a_name_that_could_escape_the_directory_is_refused` | enforced |
 | Both stores apply the same log to the same state | `state_machine::both_stores_apply_the_same_log_to_the_same_state`; `keel_sm::conformance::check` run against `MemStore` and `LsmStore` | enforced |
 
 ## The durable log

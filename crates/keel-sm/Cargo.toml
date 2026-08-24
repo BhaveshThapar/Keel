@@ -15,6 +15,8 @@ keel-raft = { workspace = true }
 bytes = { workspace = true }
 # Session holds a keel-api Response, so it needs the same derives.
 serde = { workspace = true }
+# The chunk stream checksums with the same polynomial as the log and the engine.
+crc32c = { workspace = true }
 thiserror = { workspace = true }
 lsm_kv = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
@@ -38,6 +40,8 @@ keel-sm = { path = ".", features = ["conformance", "lsm"] }
 # The kill loop configures the engine directly: a small MemTable so a few dozen
 # entries cross a flush and the crash lands in real storage work.
 lsm_kv = { workspace = true }
+# The escape-rejection test builds a chunk by hand, checksum and all.
+crc32c = { workspace = true }
 
 [lints]
 workspace = true

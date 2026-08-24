@@ -407,6 +407,7 @@ name = "keel-sm"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "crc32c",
  "keel-api",
  "keel-raft",
  "keel-sm",

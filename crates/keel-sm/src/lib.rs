@@ -44,6 +44,7 @@ pub mod conformance;
 mod lsm;
 mod session;
 mod store;
+pub mod transfer;
 
 use bytes::Bytes;
 use keel_api::{ApiError, ClientId, Command, Proposal, ProposalBody, Response, Seq};
@@ -53,6 +54,7 @@ use keel_raft::Index;
 pub use lsm::LsmStore;
 pub use session::{SESSION_TIMEOUT_MS, Session};
 pub use store::{Batch, MemStore, Mutation, Space, Store, tagged, untagged};
+pub use transfer::{Accepted, CHUNK_BYTES, Chunk, Receiver, Sender};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StateMachineError {
