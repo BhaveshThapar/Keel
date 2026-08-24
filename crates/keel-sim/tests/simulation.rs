@@ -224,33 +224,34 @@ fn the_profile_list_and_the_named_constructor_cannot_drift() {
 /// later, and it is what turns "the simulator grew a feature" into a red build
 /// the moment that feature shifts a draw some existing consumer sees.
 ///
-/// A change here is not automatically a bug. Two phases ahead are expected to
-/// move every one of these numbers, and both must regenerate every committed
-/// artifact in the same commit:
+/// A change here is not automatically a bug, and one of the two phases that was
+/// expected to move these numbers has now done so. **These values are P8's**:
+/// every node drives the real state machine, so every committed entry is really
+/// decoded, deduplicated against a session table, and written into a store.
 ///
-///   * P8, when the simulator drives the real state machine as well as the real
-///     log, so every node does strictly more work per event;
-///   * P16, when a profile first takes a snapshot.
+/// One phase ahead is still expected to move them, and must regenerate every
+/// committed artifact in the same commit: P16, when a profile first takes a
+/// snapshot.
 ///
-/// Outside those, a diff in this table means a draw moved. The rule ADR-007
+/// Outside that, a diff in this table means a draw moved. The rule ADR-007
 /// records is that a new consumer takes a *new* split rather than sharing an
 /// existing stream, precisely so that adding one cannot do this.
 const PINNED: &[(&str, u64, u64)] = &[
-    ("default", 0, 0x96ad_2d7f_5030_10b0),
-    ("default", 7, 0xb84d_4b55_95ad_3735),
-    ("default", 42, 0x584f_2ce8_38a0_c2d3),
-    ("chaos", 0, 0xac99_bd0f_6037_3d6c),
-    ("chaos", 7, 0xc567_f9cb_6c01_c885),
-    ("chaos", 42, 0xd55b_688a_cbd3_8f29),
-    ("fig8-hunt", 0, 0x29cd_3289_bfcd_7f1d),
-    ("fig8-hunt", 7, 0x8b3d_d0cc_7739_cfc2),
-    ("fig8-hunt", 42, 0x1bac_c384_9327_dd5f),
-    ("disk-chaos", 0, 0xd049_0e8c_5f6a_b459),
-    ("disk-chaos", 7, 0xee96_157d_f836_3ca5),
-    ("disk-chaos", 42, 0xabee_a44f_9933_fbc6),
-    ("disk-hunt", 0, 0xdb74_b18f_d036_2b7d),
-    ("disk-hunt", 7, 0xe198_335e_d092_cf59),
-    ("disk-hunt", 42, 0xa503_3ad6_6fca_b70f),
+    ("default", 0, 0x226d_9f9d_c643_aeb0),
+    ("default", 7, 0x9e58_618b_a7c9_7f6f),
+    ("default", 42, 0xa2b0_21e0_b0ea_c5b1),
+    ("chaos", 0, 0xa1ff_817f_b49e_fb72),
+    ("chaos", 7, 0xcf74_26a0_5a5d_2168),
+    ("chaos", 42, 0x2fba_57b7_7e26_6f4b),
+    ("fig8-hunt", 0, 0x249e_71e2_0aa6_d7e4),
+    ("fig8-hunt", 7, 0xe931_e924_0bce_a6df),
+    ("fig8-hunt", 42, 0xcca8_73ce_70a1_8902),
+    ("disk-chaos", 0, 0xb0f4_6e30_7980_46c0),
+    ("disk-chaos", 7, 0x54d9_d6fe_1454_43cd),
+    ("disk-chaos", 42, 0x4772_e7d2_0c82_0486),
+    ("disk-hunt", 0, 0x5f33_8ea9_2dc7_43b5),
+    ("disk-hunt", 7, 0x0b38_a8d8_75ab_1ba0),
+    ("disk-hunt", 42, 0xa47f_001d_52a6_eb2c),
 ];
 
 #[test]
@@ -289,11 +290,18 @@ fn the_committed_profiles_still_replay_to_their_pinned_fingerprints() {
 ///
 /// An allowlist rather than a denylist, for the reason `keel-raft`'s own gate
 /// gives: a denylist only catches the names somebody thought to write down.
-const ALLOWED_DEPENDENCIES: [&str; 5] = [
+const ALLOWED_DEPENDENCIES: [&str; 7] = [
     "keel-raft", // the core under test
     "keel-log",  // the real log, driven over a fault-injecting filesystem
     "keel-rand", // seeded generator, no entropy source
-    "bytes",     // byte buffers
+    // The real state machine, on its in-memory store. It owns no thread, opens
+    // no file, and reads no clock — session expiry runs on the timestamp the
+    // proposing leader stamped into the entry, which is part of the run rather
+    // than outside it. The `lsm` feature is deliberately not enabled: that store
+    // reaches a real disk, and this crate has its own.
+    "keel-sm",
+    "keel-api", // wire types, encode and decode only
+    "bytes",    // byte buffers
     // argv parsing for `src/main.rs`. It reads no file, opens no socket, and
     // nothing in the library calls it — but Cargo has no way to say "this
     // dependency belongs to the binary target", so it is allowlisted here with
@@ -343,4 +351,38 @@ fn the_simulator_cannot_reach_a_socket_or_a_storage_engine() {
              to ALLOWED_DEPENDENCIES with the reason."
         );
     }
+}
+
+/// A sweep in which no seed ever opened a session tested the apply path and
+/// nothing about exactly-once delivery — and it would look exactly like a clean
+/// run. Same reasoning as `heavy_faults_actually_reach_the_interesting_states`,
+/// and the same reason: [KEEL-4](../../BUGS.md) was a fault schedule that could
+/// not reach the state it was meant to test.
+#[test]
+fn the_state_machine_is_actually_exercised() {
+    let mut sessions = 0;
+    let mut commands = 0;
+    let mut refused = 0;
+    for seed in 0..12 {
+        let outcome = run_seed(seed, 30_000, SimConfig::default());
+        assert!(outcome.passed(), "{}", outcome.report.unwrap_or_default());
+        sessions += outcome.stats.sessions_opened;
+        commands += outcome.stats.commands_applied;
+        refused += outcome.stats.commands_without_a_session;
+    }
+    assert!(
+        sessions > 0,
+        "no seed ever opened a session, so every command was refused and the \
+         session table went untested"
+    );
+    assert!(
+        commands > 0,
+        "no command was ever accepted by a session, so nothing was ever written \
+         through the real apply path"
+    );
+    assert!(
+        refused > 0,
+        "no command was ever refused for having no session, so the refusal path \
+         went untested"
+    );
 }

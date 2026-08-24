@@ -205,6 +205,12 @@ fn main() -> ExitCode {
             println!("  crashes          {}", s.crashes);
             println!("  partitions       {}", s.partitions);
             println!("  proposals        {}", s.proposals);
+            println!("  sessions opened  {}", s.sessions_opened);
+            println!("  commands applied {}", s.commands_applied);
+            println!(
+                "  commands refused no-session/stale {}/{}",
+                s.commands_without_a_session, s.commands_with_a_stale_sequence
+            );
             println!("  committed index  {}", s.committed);
             println!("  applied index    {}", s.applied);
             println!("  live nodes       {}/{nodes}", world.live_nodes());

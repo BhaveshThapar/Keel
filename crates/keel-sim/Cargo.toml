@@ -13,6 +13,13 @@ keywords = ["raft", "simulation", "deterministic", "testing", "distributed"]
 keel-raft = { workspace = true }
 keel-log = { workspace = true }
 keel-rand = { workspace = true }
+# The real state machine, on MemStore. No thread, no file descriptor, no clock:
+# it applies what it is handed and keeps the result in a BTreeMap. Driving a
+# model of it instead would leave the one component whose bugs are hardest to
+# see — apply — untested by every seed.
+keel-sm = { workspace = true }
+# The wire types the workload proposes and the state machine applies.
+keel-api = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true }
 

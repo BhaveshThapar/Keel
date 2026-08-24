@@ -33,6 +33,10 @@ pub struct Oracle {
     committed: BTreeMap<Index, (Term, u64)>,
     /// Every index that has ever been applied, and its cumulative digest.
     applied: BTreeMap<Index, (Term, u64)>,
+    /// The state machine digest anyone has held at a given applied index, and
+    /// which node held it. Not the log's digest: this is what applying those
+    /// entries produced.
+    applied_state: BTreeMap<Index, (NodeId, u64)>,
     pub max_committed: Index,
     pub max_applied: Index,
 }
@@ -130,6 +134,43 @@ impl Oracle {
 
     /// State Machine Safety: no two nodes apply different entries at the same
     /// index.
+    /// Two nodes that have applied to the same index must hold the same state.
+    ///
+    /// The log-prefix check below says they applied the same *entries*. This
+    /// says applying them produced the same *result*, which is a different
+    /// claim and the one State Machine Safety is actually about: a session
+    /// table that deduplicated on one node and not on another, or an entry that
+    /// applied twice somewhere, agrees on every log digest and disagrees here.
+    ///
+    /// Keyed on the applied index, so nodes are compared only where they are
+    /// comparable. A node that has applied further is not wrong for holding
+    /// more.
+    pub fn observe_applied_state(
+        &mut self,
+        id: NodeId,
+        applied: Index,
+        state: u64,
+    ) -> Option<Violation> {
+        if applied == 0 {
+            return None;
+        }
+        match self.applied_state.get(&applied) {
+            Some((other, expected)) if *expected != state => Some(Violation {
+                property: "State Machine Safety",
+                detail: format!(
+                    "nodes {other} and {id} both applied through index {applied} and hold \
+                     different state: {expected:016x} against {state:016x}. They agree about \
+                     which entries they applied, so applying them produced different results"
+                ),
+            }),
+            Some(_) => None,
+            None => {
+                self.applied_state.insert(applied, (id, state));
+                None
+            }
+        }
+    }
+
     pub fn observe_applied(
         &mut self,
         id: NodeId,

@@ -145,6 +145,9 @@ comparison, which is what makes per-event checking affordable.
 | The cluster actually makes progress | `simulation::the_cluster_makes_progress` | enforced |
 | A leader never commits an earlier term's entry by counting | `simulation::no_leader_ever_commits_an_old_term_entry_by_counting` (must be exactly zero) | enforced |
 | Every node drives the real log over a disk that can tear | `dependencies::the_simulated_disk_is_the_only_place_the_log_writes`; the `disk-*` profiles sweeping clean | enforced |
+| Every node drives the real state machine | `simulation::the_state_machine_is_actually_exercised` — sessions opened, commands applied, and commands refused all non-zero | enforced |
+| Two nodes at the same applied index hold the same state | `Oracle::observe_applied_state`, after every event. Not the same *entries* — the same result of applying them | enforced |
+| An entry is never handed to a state machine below its watermark | asserted inside `apply_entry`: an entry handed back below the watermark is skipped and its effect lost | enforced |
 | A crash never leaves a log that will not open | `log_over_faultfs::a_log_that_crashed_can_always_be_reopened`; a failed reopen is a violation in the sweep, not a panic | enforced |
 | A cut is always at a sector boundary from the start of the file | `fault_fs::the_cut_falls_at_a_multiple_of_the_sector_size_from_the_start_of_the_file` | enforced |
 | A sector a write only partly covers keeps the bytes it did not touch | `fault_fs::a_sector_a_write_only_partly_covers_keeps_the_bytes_it_did_not_touch` | enforced |
@@ -247,6 +250,14 @@ Named here so the gaps are visible rather than discovered:
   and there is no server to halt yet (M1 Phase 5).
 - **fsync loss.** A `Durable` sync that reports success and does not stick.
   Modelled by nothing, and the other half of TR-5.
+- **The state machine's own store under the disk fault model.** The simulator
+  drives the real state machine, and its store is `MemStore` — memory, which a
+  simulated crash takes, so every restart replays the whole log into a fresh
+  one. That is a sound pairing and a strong exercise of the apply path, but it
+  is not the pairing a real node has: `LsmStore` is durable and can lose
+  unsynced writes of its own. Putting the engine over `FaultFs` is now possible
+  — the upstream filesystem seam and `Db::open_manual` exist for exactly this —
+  and it is not done.
 - **A lease read served by a leader whose own no-op has not committed.** The
   guard exists and sits upstream of the lease branch in `request_read_index`, so
   there is one check rather than two. The window itself is not reachable from the

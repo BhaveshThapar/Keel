@@ -5,9 +5,12 @@ use std::path::PathBuf;
 use bytes::Bytes;
 use keel_log::{Log, LogOptions, SyncMode};
 use keel_raft::{
-    Advance, ConfState, Config, Entry, Index, Input, Message, NodeId, RaftCore, Ready, Restored,
-    Role, SnapshotMeta, Term,
+    Advance, ConfState, Config, Entry, EntryPayload, Index, Input, Message, NodeId, RaftCore,
+    Ready, Restored, Role, SnapshotMeta, Term,
 };
+
+use keel_api::{Command, Proposal, ProposalBody, Response, decode, encode};
+use keel_sm::{MemStore, StateMachine};
 
 use crate::digest::LogDigest;
 use crate::faultfs::{FaultFs, FaultStats, TearPolicy};
@@ -268,6 +271,111 @@ impl SimConfig {
     }
 }
 
+/// A hash of everything a state machine holds, so two nodes can be compared in
+/// one number.
+///
+/// Order-independent it is not, and must not be: the store iterates in key
+/// order, so two nodes holding the same pairs hash the same and two holding
+/// different pairs do not. Including the applied index would make the digest
+/// trivially different whenever the indexes differ, which is the case the
+/// comparison already excludes.
+fn state_digest(sm: &StateMachine<MemStore>) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut mix = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    // User keys, then the session table. Both are state that two nodes applying
+    // the same log must agree about: a session that deduplicated on one node and
+    // not on another is exactly the divergence this is looking for.
+    if let Ok(rows) = sm.scan(None, None, usize::MAX) {
+        for (key, value) in rows {
+            mix(&key);
+            mix(&value);
+        }
+    }
+    if let Ok(clients) = sm.open_sessions() {
+        for client in clients {
+            mix(&client.to_be_bytes());
+            if let Ok(Some(seq)) = sm.last_seq(client) {
+                mix(&seq.to_be_bytes());
+            }
+        }
+    }
+    hash
+}
+
+/// Apply one committed entry to a node's state machine.
+///
+/// A `Noop` or a configuration change moves the applied index and changes
+/// nothing else — but it still has to be committed to the store, or the log
+/// would hand it back on every restart.
+///
+/// An entry whose payload does not decode is a violation rather than something
+/// to skip. Every payload in this simulation was encoded by this build, so one
+/// that will not decode means the log handed back bytes that are not the bytes
+/// that went in — which is exactly the class of failure the disk model exists to
+/// produce, and skipping it would let the simulator report a clean run over a
+/// corrupted log.
+fn apply_entry(node: &mut SimNode, entry: &Entry) -> Result<AppliedKind, String> {
+    let proposal = match &entry.payload {
+        EntryPayload::Noop | EntryPayload::ConfChange(_) => Proposal {
+            stamped_ms: 0,
+            session: None,
+            body: ProposalBody::KeepAlive,
+        },
+        EntryPayload::Normal(data) => decode::<Proposal>(data)
+            .map_err(|e| format!("entry {} did not decode as a proposal: {e}", entry.index))?,
+    };
+    let before = node.sm.applied();
+    let response = node
+        .sm
+        .apply(entry.index, &proposal)
+        .map_err(|e| format!("entry {} would not apply: {e}", entry.index))?;
+    if node.sm.applied() != entry.index {
+        return Err(format!(
+            "entry {} was handed to a state machine already at {before}; it moved to {} \
+             instead. An entry handed back below the watermark is skipped, and its effect \
+             is lost",
+            entry.index,
+            node.sm.applied()
+        ));
+    }
+    Ok(AppliedKind::of(&proposal, &response))
+}
+
+/// What applying an entry turned out to be, so a run can report whether it
+/// reached the state machine's interesting paths at all.
+///
+/// A sweep in which nothing ever opened a session, or in which no command was
+/// ever refused for having none, is a sweep that tested the apply path and not
+/// the session table — and it would look exactly like a clean run.
+#[derive(Debug, Clone, Copy)]
+enum AppliedKind {
+    /// A no-op, a configuration change, or a keep-alive.
+    Bookkeeping,
+    SessionOpened,
+    Committed,
+    /// Refused because the session had expired or never existed.
+    NoSession,
+    /// A sequence number at or below the session's floor.
+    Stale,
+}
+
+impl AppliedKind {
+    fn of(proposal: &Proposal, response: &Response) -> Self {
+        match (&proposal.body, response) {
+            (_, Response::Registered { .. }) => AppliedKind::SessionOpened,
+            (_, Response::Error(keel_api::ApiError::SessionExpired)) => AppliedKind::NoSession,
+            (_, Response::Error(keel_api::ApiError::SequenceTooOld { .. })) => AppliedKind::Stale,
+            (ProposalBody::Command(_), _) => AppliedKind::Committed,
+            _ => AppliedKind::Bookkeeping,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 enum Event {
     Tick(NodeId),
@@ -343,6 +451,26 @@ struct SimNode {
     /// Bumped on every crash so that fsyncs scheduled before it are discarded.
     epoch: u64,
     tick_period: u64,
+    /// The real state machine, on its in-memory store.
+    ///
+    /// Not a counter and not a model. The apply path is where a session table
+    /// deduplicates, where an index is written with the data it describes, and
+    /// where two nodes either agree about what a log means or do not — and a
+    /// model of it can only be wrong in ways somebody thought of.
+    sm: StateMachine<MemStore>,
+    /// Committed entries waiting for their predecessors.
+    ///
+    /// A `Ready` is written when it is pumped and made durable when its fsync
+    /// fires (ADR-016), and fsyncs have independent latencies — so a later
+    /// batch's fsync can complete before an earlier one's, and the committed
+    /// entries arrive out of order. Watermarks do not care, because they are
+    /// maxima. Applying does: an entry handed to the state machine below its
+    /// watermark is skipped and its effect is lost.
+    ///
+    /// A real host applies in `Ready` order on one thread and never sees this.
+    /// The buffer reassembles the order the model's fsync scheduling scrambled,
+    /// rather than pretending the scrambling does not happen.
+    pending_apply: BTreeMap<Index, Entry>,
     applied_count: usize,
     was_leader: bool,
     fsync_rng: Rng,
@@ -357,6 +485,16 @@ pub struct Stats {
     pub crashes: u64,
     pub partitions: u64,
     pub proposals: u64,
+    /// Sessions opened by an applied registration. Zero means no seed ever
+    /// reached the session table, and every command was refused for having no
+    /// session — a clean run that tested nothing about exactly-once delivery.
+    pub sessions_opened: u64,
+    /// Commands that a session accepted and that changed the store.
+    pub commands_applied: u64,
+    /// Commands refused because the session had expired or never existed.
+    pub commands_without_a_session: u64,
+    /// Commands whose sequence number was at or below the session's floor.
+    pub commands_with_a_stale_sequence: u64,
     pub committed: Index,
     pub applied: Index,
 
@@ -521,6 +659,8 @@ impl World {
                     alive: true,
                     epoch: 0,
                     tick_period,
+                    sm: StateMachine::new(MemStore::new()),
+                    pending_apply: BTreeMap::new(),
                     applied_count: 0,
                     was_leader: false,
                     fsync_rng: node_rng.split("fsync"),
@@ -685,18 +825,50 @@ impl World {
             self.send(msg);
         }
 
-        // 3. Apply, then report how far.
+        // 3. Apply, in index order, then report how far.
+        let mut apply_failure = None;
+        let mut applied_kinds = Vec::new();
         if let Some(node) = self.nodes.get_mut(&id) {
-            let applied = batch.committed.last().map(|e| e.index);
             node.applied_count += batch.committed.len();
-            if applied.is_some() {
+            for entry in batch.committed {
+                node.pending_apply.insert(entry.index, entry);
+            }
+            // Drain only the contiguous run. Anything above a gap waits for the
+            // fsync that is still in flight beneath it.
+            while let Some(entry) = node.pending_apply.remove(&(node.sm.applied() + 1)) {
+                match apply_entry(node, &entry) {
+                    Ok(kind) => applied_kinds.push(kind),
+                    Err(why) => {
+                        apply_failure = Some(why);
+                        break;
+                    }
+                }
+            }
+            let applied = node.sm.applied();
+            if applied > 0 {
                 node.core.advance(Advance {
                     ready_number: batch.ready_number,
                     persisted: None,
-                    applied,
+                    applied: Some(applied),
                     snapshot_installed: None,
                 });
             }
+        }
+        for kind in applied_kinds {
+            match kind {
+                AppliedKind::SessionOpened => self.stats.sessions_opened += 1,
+                AppliedKind::Committed => self.stats.commands_applied += 1,
+                AppliedKind::NoSession => self.stats.commands_without_a_session += 1,
+                AppliedKind::Stale => self.stats.commands_with_a_stale_sequence += 1,
+                AppliedKind::Bookkeeping => {}
+            }
+        }
+        if let Some(detail) = apply_failure {
+            self.violations.push(Violation {
+                property: "a committed entry applies",
+                detail: format!("node {id}: {detail}"),
+            });
+            return;
         }
 
         self.pump(id);
@@ -721,13 +893,51 @@ impl World {
 
         let ctx = self.next_ctx;
         self.next_ctx += 1;
-        let mut payload = format!("c{client}:{ctx}").into_bytes();
-        // Padded, not replaced, so the identifying prefix a trace shows is
-        // still the first thing in the record.
-        payload.resize(payload.len().max(self.cfg.proposal_bytes), b'.');
-        let payload = Bytes::from(payload);
+
+        // A real proposal, encoded the way a real client's would be, because
+        // the state machine on the other end is the real one. The sequence
+        // number is the context, which is monotonic across the whole run, so a
+        // client's stream never goes backwards even across a leadership change.
+        //
+        // The session is opened lazily by the state machine: `client` here is a
+        // small integer and every node's `StateMachine` allocates ids in the
+        // same order from the same log, so a client that has not registered
+        // simply has its command refused — which is a response like any other
+        // and not a violation.
+        let mut value = format!("c{client}:{ctx}").into_bytes();
+        // Padded, not replaced, so the identifying prefix a trace shows is still
+        // the first thing in the record, and so the record is the size the
+        // profile chose — a write only tears when it straddles a sector.
+        value.resize(value.len().max(self.cfg.proposal_bytes), b'.');
+
+        let proposal = if ctx % 32 == 1 {
+            // Every so often, open a session. A run in which nothing ever
+            // registers exercises the refusal path and nothing else.
+            Proposal {
+                stamped_ms: self.now / 1_000_000,
+                session: None,
+                body: ProposalBody::Register {
+                    nonce: client as u64,
+                },
+            }
+        } else {
+            Proposal {
+                stamped_ms: self.now / 1_000_000,
+                session: Some((client as u64 + 1, ctx)),
+                body: ProposalBody::Command(Command::Put {
+                    key: Bytes::from(format!("c{client}")),
+                    value: Bytes::from(value),
+                }),
+            }
+        };
+        let Ok(encoded) = encode(&proposal) else {
+            return;
+        };
         if let Some(node) = self.nodes.get_mut(&target) {
-            let _ = node.core.step(Input::Propose { ctx, data: payload });
+            let _ = node.core.step(Input::Propose {
+                ctx,
+                data: Bytes::from(encoded),
+            });
             self.stats.proposals += 1;
         }
         self.pump(target);
@@ -783,14 +993,33 @@ impl World {
                 hard_state: recovered.hard_state,
                 snapshot: recovered.snapshot,
                 entries: recovered.entries,
-                // Zero because there is no state machine here yet, so nothing
-                // has applied anything the log does not already know about.
-                // P8 replaces this with what the real state machine reports.
+                // Zero, and the state machine below is rebuilt empty, because
+                // this state machine's store is memory and a crash takes it.
+                // The log is then the whole source of truth and every restart
+                // replays it — which is more work per restart and a stronger
+                // exercise of the apply path than a store that survived.
+                //
+                // Carrying the old store over was tried and is unsound here: it
+                // survives a crash the log does not, so its applied index can
+                // outrun what the recovered log can prove was committed. The
+                // core clamps its own floor to the recovered commit index and
+                // the state machine does not, so the entries between the two
+                // are handed back, skipped as already-applied, and their effect
+                // is lost. That is not a bug in either component — it is a bug
+                // in pairing a volatile store with a durable log, and the model
+                // has to pick one. It picks volatile, and CORRECTNESS.md records
+                // that the disk fault model reaches the Raft log and stops
+                // there.
                 applied: 0,
             },
         );
         node.log = Some(log);
         node.digest = LogDigest::new();
+        // The store is memory, and a crash takes memory. Rebuilt empty, so the
+        // log replays into it from the floor.
+        node.sm = StateMachine::new(MemStore::new());
+        // Entries buffered behind an fsync that never fired are gone with it.
+        node.pending_apply.clear();
         node.alive = true;
         node.was_leader = false;
         self.trace(format!("node {id} restarted"));
@@ -1035,6 +1264,11 @@ impl World {
         let last_index = node.core.log().last_index();
         let commit = node.core.log().committed();
         let applied = node.core.log().applied();
+        // A hash of everything the state machine holds. Cheap enough to take on
+        // every check because the store is a BTreeMap and the run is small; the
+        // alternative — comparing whole stores between nodes — is the same
+        // information at far greater cost.
+        let state_digest = state_digest(&node.sm);
         let became_leader = role == Role::Leader && !node.was_leader;
         node.was_leader = role == Role::Leader;
         let old_term_window = role == Role::Leader
@@ -1075,6 +1309,9 @@ impl World {
         let digest = self.nodes[&id].digest.clone();
         if let Some(v) = self.oracle.observe_commit(id, commit, &digest) {
             found.push(v);
+        }
+        if let Some(v) = self.oracle.observe_applied_state(id, applied, state_digest) {
+            self.violations.push(v);
         }
         if let Some(v) = self.oracle.observe_applied(id, applied, &digest) {
             found.push(v);

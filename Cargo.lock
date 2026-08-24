@@ -362,9 +362,11 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "clap",
+ "keel-api",
  "keel-log",
  "keel-raft",
  "keel-rand",
+ "keel-sm",
 ]
 
 [[package]]
