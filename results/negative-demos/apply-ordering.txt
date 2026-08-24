@@ -3,8 +3,8 @@ Apply ordering: is the model oracle watching what applying produced?
   profile default, 3 nodes, 25 seeds x 30000 steps
 ==============================================================
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
-commit: 3a347aa
-date:   2026-08-24T23:11:07Z
+commit: a53612b
+date:   2026-08-24T23:44:46Z
 
 --- CONTROL: entries applied in index order. Expect every seed to pass.
 
@@ -20,9 +20,9 @@ seed 0 failed after 542 events
   recent events:
     [   286421390ns] node 1 role=Follower term=1 last=34 commit=31 applied=31
   node state:
-    node 1 alive=true role=Follower term=1 last=34 commit=31 applied=31
-    node 2 alive=true role=Follower term=1 last=32 commit=25 applied=25
-    node 3 alive=true role=Leader term=1 last=37 commit=33 applied=33
+    node 1 alive=true role=Follower term=1 last=34 commit=31 applied=31 voters=[1, 2, 3]
+    node 2 alive=true role=Follower term=1 last=32 commit=25 applied=25 voters=[1, 2, 3]
+    node 3 alive=true role=Leader term=1 last=37 commit=33 applied=33 voters=[1, 2, 3]
 
 seed 1 failed after 307 events
   violation: State Machine Safety: nodes 2 and 1 both applied through index 8 and hold different state: 5949b1f59ac8a65c against cbf29ce484222325. They agree about which entries they applied, so applying them produced different results
@@ -31,9 +31,9 @@ seed 1 failed after 307 events
   recent events:
     [   247284163ns] node 1 role=Follower term=1 last=12 commit=9 applied=8
   node state:
-    node 1 alive=true role=Follower term=1 last=12 commit=9 applied=8
-    node 2 alive=true role=Leader term=1 last=13 commit=9 applied=8
-    node 3 alive=true role=Follower term=1 last=9 commit=5 applied=5
+    node 1 alive=true role=Follower term=1 last=12 commit=9 applied=8 voters=[1, 2, 3]
+    node 2 alive=true role=Leader term=1 last=13 commit=9 applied=8 voters=[1, 2, 3]
+    node 3 alive=true role=Follower term=1 last=9 commit=5 applied=5 voters=[1, 2, 3]
 
 seed 2 failed after 463 events
   violation: State Machine Safety: node 1 applied through index 27 and holds d37aec48737ae9f0; a reference state machine fed the same committed entries in order, once each, holds 981de866c01a2488. The cluster and the model disagree about what this log means
@@ -41,9 +41,9 @@ seed 2 failed after 463 events
   recent events:
     [   258428413ns] node 1 role=Follower term=1 last=27 commit=27 applied=27
   node state:
-    node 1 alive=true role=Follower term=1 last=27 commit=27 applied=27
-    node 2 alive=true role=Follower term=1 last=26 commit=23 applied=23
-    node 3 alive=true role=Leader term=1 last=29 commit=27 applied=25
+    node 1 alive=true role=Follower term=1 last=27 commit=27 applied=27 voters=[1, 2, 3]
+    node 2 alive=true role=Follower term=1 last=26 commit=23 applied=23 voters=[1, 2, 3]
+    node 3 alive=true role=Leader term=1 last=29 commit=27 applied=25 voters=[1, 2, 3]
 
 seed 3 failed after 329 events
   violation: State Machine Safety: node 2 applied through index 6 and holds cbf29ce484222325; a reference state machine fed the same committed entries in order, once each, holds 5949b1f59ac8a65c. The cluster and the model disagree about what this log means
@@ -51,9 +51,9 @@ seed 3 failed after 329 events
   recent events:
     [   270018691ns] node 2 role=Follower term=1 last=9 commit=9 applied=6
   node state:
-    node 1 alive=true role=Follower term=1 last=9 commit=5 applied=5
-    node 2 alive=true role=Follower term=1 last=9 commit=9 applied=6
-    node 3 alive=true role=Leader term=1 last=13 commit=9 applied=5
+    node 1 alive=true role=Follower term=1 last=9 commit=5 applied=5 voters=[1, 2, 3]
+    node 2 alive=true role=Follower term=1 last=9 commit=9 applied=6 voters=[1, 2, 3]
+    node 3 alive=true role=Leader term=1 last=13 commit=9 applied=5 voters=[1, 2, 3]
 
 seed 4 failed after 370 events
   violation: State Machine Safety: nodes 2 and 3 both applied through index 14 and hold different state: 723032766625ed39 against 0b60d59ab4eb1f5c. They agree about which entries they applied, so applying them produced different results
@@ -62,9 +62,9 @@ seed 4 failed after 370 events
   recent events:
     [   260494230ns] node 3 role=Follower term=1 last=17 commit=14 applied=14
   node state:
-    node 1 alive=true role=Follower term=1 last=17 commit=13 applied=13
-    node 2 alive=true role=Leader term=1 last=21 commit=15 applied=14
-    node 3 alive=true role=Follower term=1 last=17 commit=14 applied=14
+    node 1 alive=true role=Follower term=1 last=17 commit=13 applied=13 voters=[1, 2, 3]
+    node 2 alive=true role=Leader term=1 last=21 commit=15 applied=14 voters=[1, 2, 3]
+    node 3 alive=true role=Follower term=1 last=17 commit=14 applied=14 voters=[1, 2, 3]
 
 seed 5 failed after 385 events
   violation: State Machine Safety: nodes 2 and 1 both applied through index 7 and hold different state: 5949b1f59ac8a65c against cbf29ce484222325. They agree about which entries they applied, so applying them produced different results
@@ -73,9 +73,9 @@ seed 5 failed after 385 events
   recent events:
     [   319064260ns] node 1 role=Follower term=1 last=10 commit=7 applied=7
   node state:
-    node 1 alive=true role=Follower term=1 last=10 commit=7 applied=7
-    node 2 alive=true role=Leader term=1 last=13 commit=9 applied=9
-    node 3 alive=true role=Follower term=1 last=13 commit=9 applied=7
+    node 1 alive=true role=Follower term=1 last=10 commit=7 applied=7 voters=[1, 2, 3]
+    node 2 alive=true role=Leader term=1 last=13 commit=9 applied=9 voters=[1, 2, 3]
+    node 3 alive=true role=Follower term=1 last=13 commit=9 applied=7 voters=[1, 2, 3]
 
 seed 6 failed after 1172 events
   violation: State Machine Safety: nodes 1 and 3 both applied through index 99 and hold different state: 6c9b9db783f6b979 against a7f8a19937577ee1. They agree about which entries they applied, so applying them produced different results
@@ -84,9 +84,9 @@ seed 6 failed after 1172 events
   recent events:
     [   331398495ns] node 3 role=Follower term=1 last=101 commit=99 applied=99
   node state:
-    node 1 alive=true role=Leader term=1 last=105 commit=99 applied=99
-    node 2 alive=true role=Follower term=1 last=101 commit=99 applied=99
-    node 3 alive=true role=Follower term=1 last=101 commit=99 applied=99
+    node 1 alive=true role=Leader term=1 last=105 commit=99 applied=99 voters=[1, 2, 3]
+    node 2 alive=true role=Follower term=1 last=101 commit=99 applied=99 voters=[1, 2, 3]
+    node 3 alive=true role=Follower term=1 last=101 commit=99 applied=99 voters=[1, 2, 3]
 
 seed 7 failed after 258 events
   violation: State Machine Safety: node 1 applied through index 5 and holds cbf29ce484222325; a reference state machine fed the same committed entries in order, once each, holds 5949b1f59ac8a65c. The cluster and the model disagree about what this log means
@@ -94,9 +94,9 @@ seed 7 failed after 258 events
   recent events:
     [   225517574ns] node 1 role=Leader term=1 last=9 commit=5 applied=5
   node state:
-    node 1 alive=true role=Leader term=1 last=9 commit=5 applied=5
-    node 2 alive=true role=Follower term=1 last=5 commit=1 applied=1
-    node 3 alive=true role=Follower term=1 last=5 commit=1 applied=1
+    node 1 alive=true role=Leader term=1 last=9 commit=5 applied=5 voters=[1, 2, 3]
+    node 2 alive=true role=Follower term=1 last=5 commit=1 applied=1 voters=[1, 2, 3]
+    node 3 alive=true role=Follower term=1 last=5 commit=1 applied=1 voters=[1, 2, 3]
 
 seed 8 failed after 535 events
   violation: State Machine Safety: nodes 2 and 3 both applied through index 27 and hold different state: 981de866c01a2488 against d37aec48737ae9f0. They agree about which entries they applied, so applying them produced different results
@@ -105,9 +105,9 @@ seed 8 failed after 535 events
   recent events:
     [   301894515ns] node 3 role=Follower term=1 last=30 commit=27 applied=27
   node state:
-    node 1 alive=true role=Follower term=1 last=29 commit=25 applied=23
-    node 2 alive=true role=Leader term=1 last=33 commit=29 applied=27
-    node 3 alive=true role=Follower term=1 last=30 commit=27 applied=27
+    node 1 alive=true role=Follower term=1 last=29 commit=25 applied=23 voters=[1, 2, 3]
+    node 2 alive=true role=Leader term=1 last=33 commit=29 applied=27 voters=[1, 2, 3]
+    node 3 alive=true role=Follower term=1 last=30 commit=27 applied=27 voters=[1, 2, 3]
 
 seed 9 failed after 412 events
   violation: State Machine Safety: nodes 1 and 2 both applied through index 18 and hold different state: 36d33e94b2c54301 against 723032766625ed39. They agree about which entries they applied, so applying them produced different results
@@ -116,9 +116,9 @@ seed 9 failed after 412 events
   recent events:
     [   275881271ns] node 2 role=Follower term=1 last=21 commit=18 applied=18
   node state:
-    node 1 alive=true role=Leader term=1 last=25 commit=18 applied=18
-    node 2 alive=true role=Follower term=1 last=21 commit=18 applied=18
-    node 3 alive=true role=Follower term=1 last=17 commit=14 applied=14
+    node 1 alive=true role=Leader term=1 last=25 commit=18 applied=18 voters=[1, 2, 3]
+    node 2 alive=true role=Follower term=1 last=21 commit=18 applied=18 voters=[1, 2, 3]
+    node 3 alive=true role=Follower term=1 last=17 commit=14 applied=14 voters=[1, 2, 3]
 
 seed 10 failed after 266 events
   violation: State Machine Safety: nodes 3 and 2 both applied through index 6 and hold different state: 5949b1f59ac8a65c against cbf29ce484222325. They agree about which entries they applied, so applying them produced different results
@@ -127,9 +127,9 @@ seed 10 failed after 266 events
   recent events:
     [   217097918ns] node 2 role=Follower term=1 last=9 commit=6 applied=6
   node state:
-    node 1 alive=true role=Follower term=1 last=9 commit=5 applied=1
-    node 2 alive=true role=Follower term=1 last=9 commit=6 applied=6
-    node 3 alive=true role=Leader term=1 last=13 commit=8 applied=8
+    node 1 alive=true role=Follower term=1 last=9 commit=5 applied=1 voters=[1, 2, 3]
+    node 2 alive=true role=Follower term=1 last=9 commit=6 applied=6 voters=[1, 2, 3]
+    node 3 alive=true role=Leader term=1 last=13 commit=8 applied=8 voters=[1, 2, 3]
 
 seed 11 failed after 288 events
   violation: State Machine Safety: nodes 3 and 1 both applied through index 6 and hold different state: 5949b1f59ac8a65c against cbf29ce484222325. They agree about which entries they applied, so applying them produced different results
@@ -138,9 +138,9 @@ seed 11 failed after 288 events
   recent events:
     [   232141490ns] node 1 role=Follower term=1 last=10 commit=6 applied=6
   node state:
-    node 1 alive=true role=Follower term=1 last=10 commit=6 applied=6
-    node 2 alive=true role=Follower term=1 last=10 commit=6 applied=5
-    node 3 alive=true role=Leader term=1 last=13 commit=7 applied=6
+    node 1 alive=true role=Follower term=1 last=10 commit=6 applied=6 voters=[1, 2, 3]
+    node 2 alive=true role=Follower term=1 last=10 commit=6 applied=5 voters=[1, 2, 3]
+    node 3 alive=true role=Leader term=1 last=13 commit=7 applied=6 voters=[1, 2, 3]
 
 seed 12 failed after 559 events
   violation: State Machine Safety: nodes 1 and 2 both applied through index 39 and hold different state: ed167dc5e7f59da3 against b1b971e43494caa3. They agree about which entries they applied, so applying them produced different results
@@ -149,9 +149,9 @@ seed 12 failed after 559 events
   recent events:
     [   276468831ns] node 2 role=Follower term=1 last=43 commit=39 applied=39
   node state:
-    node 1 alive=true role=Leader term=1 last=45 commit=39 applied=39
-    node 2 alive=true role=Follower term=1 last=43 commit=39 applied=39
-    node 3 alive=true role=Follower term=1 last=36 commit=36 applied=32
+    node 1 alive=true role=Leader term=1 last=45 commit=39 applied=39 voters=[1, 2, 3]
+    node 2 alive=true role=Follower term=1 last=43 commit=39 applied=39 voters=[1, 2, 3]
+    node 3 alive=true role=Follower term=1 last=36 commit=36 applied=32 voters=[1, 2, 3]
 
 seed 13 failed after 1165 events
   violation: State Machine Safety: node 3 applied through index 86 and holds 8e5d3c1bc2dd15f2; a reference state machine fed the same committed entries in order, once each, holds 5300303a0f7c42f2. The cluster and the model disagree about what this log means
@@ -159,9 +159,9 @@ seed 13 failed after 1165 events
   recent events:
     [   366884215ns] node 3 role=Leader term=1 last=93 commit=86 applied=86
   node state:
-    node 1 alive=true role=Follower term=1 last=79 commit=79 applied=79
-    node 2 alive=true role=Follower term=1 last=86 commit=81 applied=81
-    node 3 alive=true role=Leader term=1 last=93 commit=86 applied=86
+    node 1 alive=true role=Follower term=1 last=79 commit=79 applied=79 voters=[1, 2, 3]
+    node 2 alive=true role=Follower term=1 last=86 commit=81 applied=81 voters=[1, 2, 3]
+    node 3 alive=true role=Leader term=1 last=93 commit=86 applied=86 voters=[1, 2, 3]
 
 seed 14 failed after 603 events
   violation: State Machine Safety: node 2 applied through index 51 and holds 53f5a856d77990ee; a reference state machine fed the same committed entries in order, once each, holds 8f52a4388ada48be. The cluster and the model disagree about what this log means
@@ -169,9 +169,9 @@ seed 14 failed after 603 events
   recent events:
     [   276845929ns] node 2 role=Leader term=1 last=57 commit=51 applied=51
   node state:
-    node 1 alive=true role=Follower term=1 last=20 commit=20 applied=20
-    node 2 alive=true role=Leader term=1 last=57 commit=51 applied=51
-    node 3 alive=true role=Follower term=1 last=51 commit=47 applied=47
+    node 1 alive=true role=Follower term=1 last=20 commit=20 applied=20 voters=[1, 2, 3]
+    node 2 alive=true role=Leader term=1 last=57 commit=51 applied=51 voters=[1, 2, 3]
+    node 3 alive=true role=Follower term=1 last=51 commit=47 applied=47 voters=[1, 2, 3]
 
 seed 15 failed after 971 events
   violation: State Machine Safety: nodes 3 and 1 both applied through index 58 and hold different state: 6d917dd44bf4b82d against 323469f29893d795. They agree about which entries they applied, so applying them produced different results
@@ -181,9 +181,9 @@ seed 15 failed after 971 events
     [   400000000ns] isolated node 2
     [   715779618ns] node 1 role=Follower term=2 last=61 commit=58 applied=58
   node state:
-    node 1 alive=true role=Follower term=2 last=61 commit=58 applied=58
-    node 2 alive=true role=PreCandidate term=1 last=0 commit=0 applied=0
-    node 3 alive=true role=Leader term=2 last=65 commit=58 applied=58
+    node 1 alive=true role=Follower term=2 last=61 commit=58 applied=58 voters=[1, 2, 3]
+    node 2 alive=true role=PreCandidate term=1 last=0 commit=0 applied=0 voters=[1, 2, 3]
+    node 3 alive=true role=Leader term=2 last=65 commit=58 applied=58 voters=[1, 2, 3]
 
 seed 16 failed after 348 events
   violation: State Machine Safety: node 1 applied through index 14 and holds 0b60d59ab4eb1f5c; a reference state machine fed the same committed entries in order, once each, holds 723032766625ed39. The cluster and the model disagree about what this log means
@@ -191,9 +191,9 @@ seed 16 failed after 348 events
   recent events:
     [   230866101ns] node 1 role=Follower term=1 last=18 commit=14 applied=14
   node state:
-    node 1 alive=true role=Follower term=1 last=18 commit=14 applied=14
-    node 2 alive=true role=Leader term=1 last=21 commit=15 applied=13
-    node 3 alive=true role=Follower term=1 last=17 commit=13 applied=13
+    node 1 alive=true role=Follower term=1 last=18 commit=14 applied=14 voters=[1, 2, 3]
+    node 2 alive=true role=Leader term=1 last=21 commit=15 applied=13 voters=[1, 2, 3]
+    node 3 alive=true role=Follower term=1 last=17 commit=13 applied=13 voters=[1, 2, 3]
 
 seed 17 failed after 316 events
   violation: State Machine Safety: nodes 1 and 3 both applied through index 6 and hold different state: 5949b1f59ac8a65c against cbf29ce484222325. They agree about which entries they applied, so applying them produced different results
@@ -202,9 +202,9 @@ seed 17 failed after 316 events
   recent events:
     [   260684664ns] node 3 role=Follower term=1 last=9 commit=6 applied=6
   node state:
-    node 1 alive=true role=Leader term=1 last=13 commit=6 applied=6
-    node 2 alive=true role=Follower term=1 last=9 commit=5 applied=1
-    node 3 alive=true role=Follower term=1 last=9 commit=6 applied=6
+    node 1 alive=true role=Leader term=1 last=13 commit=6 applied=6 voters=[1, 2, 3]
+    node 2 alive=true role=Follower term=1 last=9 commit=5 applied=1 voters=[1, 2, 3]
+    node 3 alive=true role=Follower term=1 last=9 commit=6 applied=6 voters=[1, 2, 3]
 
 seed 18 failed after 792 events
   violation: State Machine Safety: node 1 applied through index 50 and holds 53f5a856d77990ee; a reference state machine fed the same committed entries in order, once each, holds 8f52a4388ada48be. The cluster and the model disagree about what this log means
@@ -212,9 +212,9 @@ seed 18 failed after 792 events
   recent events:
     [   366378101ns] node 1 role=Leader term=1 last=57 commit=50 applied=50
   node state:
-    node 1 alive=true role=Leader term=1 last=57 commit=50 applied=50
-    node 2 alive=true role=Follower term=1 last=53 commit=49 applied=47
-    node 3 alive=true role=Follower term=1 last=52 commit=48 applied=44
+    node 1 alive=true role=Leader term=1 last=57 commit=50 applied=50 voters=[1, 2, 3]
+    node 2 alive=true role=Follower term=1 last=53 commit=49 applied=47 voters=[1, 2, 3]
+    node 3 alive=true role=Follower term=1 last=52 commit=48 applied=44 voters=[1, 2, 3]
 
 seed 19 failed after 437 events
   violation: State Machine Safety: nodes 2 and 1 both applied through index 22 and hold different state: d37aec48737ae9f0 against 36d33e94b2c54301. They agree about which entries they applied, so applying them produced different results
@@ -223,9 +223,9 @@ seed 19 failed after 437 events
   recent events:
     [   268918537ns] node 1 role=Follower term=1 last=25 commit=22 applied=22
   node state:
-    node 1 alive=true role=Follower term=1 last=25 commit=22 applied=22
-    node 2 alive=true role=Leader term=1 last=25 commit=22 applied=22
-    node 3 alive=true role=Follower term=1 last=23 commit=17 applied=17
+    node 1 alive=true role=Follower term=1 last=25 commit=22 applied=22 voters=[1, 2, 3]
+    node 2 alive=true role=Leader term=1 last=25 commit=22 applied=22 voters=[1, 2, 3]
+    node 3 alive=true role=Follower term=1 last=23 commit=17 applied=17 voters=[1, 2, 3]
 
 seed 20 failed after 275 events
   violation: State Machine Safety: node 3 applied through index 6 and holds cbf29ce484222325; a reference state machine fed the same committed entries in order, once each, holds 5949b1f59ac8a65c. The cluster and the model disagree about what this log means
@@ -233,9 +233,9 @@ seed 20 failed after 275 events
   recent events:
     [   225521508ns] node 3 role=Leader term=1 last=13 commit=8 applied=6
   node state:
-    node 1 alive=true role=Follower term=1 last=8 commit=1 applied=1
-    node 2 alive=true role=Follower term=1 last=7 commit=1 applied=1
-    node 3 alive=true role=Leader term=1 last=13 commit=8 applied=6
+    node 1 alive=true role=Follower term=1 last=8 commit=1 applied=1 voters=[1, 2, 3]
+    node 2 alive=true role=Follower term=1 last=7 commit=1 applied=1 voters=[1, 2, 3]
+    node 3 alive=true role=Leader term=1 last=13 commit=8 applied=6 voters=[1, 2, 3]
 
 seed 21 failed after 417 events
   violation: State Machine Safety: nodes 2 and 3 both applied through index 18 and hold different state: 36d33e94b2c54301 against 723032766625ed39. They agree about which entries they applied, so applying them produced different results
@@ -244,9 +244,9 @@ seed 21 failed after 417 events
   recent events:
     [   274480176ns] node 3 role=Follower term=1 last=18 commit=18 applied=18
   node state:
-    node 1 alive=true role=Follower term=1 last=23 commit=18 applied=17
-    node 2 alive=true role=Leader term=1 last=25 commit=21 applied=18
-    node 3 alive=true role=Follower term=1 last=18 commit=18 applied=18
+    node 1 alive=true role=Follower term=1 last=23 commit=18 applied=17 voters=[1, 2, 3]
+    node 2 alive=true role=Leader term=1 last=25 commit=21 applied=18 voters=[1, 2, 3]
+    node 3 alive=true role=Follower term=1 last=18 commit=18 applied=18 voters=[1, 2, 3]
 
 seed 22 failed after 1447 events
   violation: State Machine Safety: nodes 2 and 3 both applied through index 106 and hold different state: dff1e8df3c3289bb against 1b4eecc0ef934f23. They agree about which entries they applied, so applying them produced different results
@@ -255,9 +255,9 @@ seed 22 failed after 1447 events
   recent events:
     [   417441564ns] node 3 role=Follower term=1 last=110 commit=106 applied=106
   node state:
-    node 1 alive=true role=Follower term=1 last=109 commit=105 applied=105
-    node 2 alive=true role=Leader term=1 last=113 commit=106 applied=106
-    node 3 alive=true role=Follower term=1 last=110 commit=106 applied=106
+    node 1 alive=true role=Follower term=1 last=109 commit=105 applied=105 voters=[1, 2, 3]
+    node 2 alive=true role=Leader term=1 last=113 commit=106 applied=106 voters=[1, 2, 3]
+    node 3 alive=true role=Follower term=1 last=110 commit=106 applied=106 voters=[1, 2, 3]
 
 seed 23 failed after 328 events
   violation: State Machine Safety: node 2 applied through index 5 and holds cbf29ce484222325; a reference state machine fed the same committed entries in order, once each, holds 5949b1f59ac8a65c. The cluster and the model disagree about what this log means
@@ -265,9 +265,9 @@ seed 23 failed after 328 events
   recent events:
     [   296507985ns] node 2 role=Leader term=1 last=9 commit=5 applied=5
   node state:
-    node 1 alive=true role=Follower term=1 last=5 commit=1 applied=0
-    node 2 alive=true role=Leader term=1 last=9 commit=5 applied=5
-    node 3 alive=true role=Follower term=1 last=5 commit=1 applied=1
+    node 1 alive=true role=Follower term=1 last=5 commit=1 applied=0 voters=[1, 2, 3]
+    node 2 alive=true role=Leader term=1 last=9 commit=5 applied=5 voters=[1, 2, 3]
+    node 3 alive=true role=Follower term=1 last=5 commit=1 applied=1 voters=[1, 2, 3]
 
 seed 24 failed after 1160 events
   violation: State Machine Safety: nodes 3 and 1 both applied through index 86 and hold different state: 5300303a0f7c42f2 against 8e5d3c1bc2dd15f2. They agree about which entries they applied, so applying them produced different results
@@ -276,9 +276,9 @@ seed 24 failed after 1160 events
   recent events:
     [   391759054ns] node 1 role=Follower term=1 last=86 commit=86 applied=86
   node state:
-    node 1 alive=true role=Follower term=1 last=86 commit=86 applied=86
-    node 2 alive=true role=Follower term=1 last=86 commit=82 applied=82
-    node 3 alive=true role=Leader term=1 last=93 commit=86 applied=86
+    node 1 alive=true role=Follower term=1 last=86 commit=86 applied=86 voters=[1, 2, 3]
+    node 2 alive=true role=Follower term=1 last=86 commit=82 applied=82 voters=[1, 2, 3]
+    node 3 alive=true role=Leader term=1 last=93 commit=86 applied=86 voters=[1, 2, 3]
 
 25 seeds x 30000 steps, 3 nodes, default profile: 0 passed, 25 failed (mean 32 entries committed per run)
 failing seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]

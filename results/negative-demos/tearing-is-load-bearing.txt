@@ -4,8 +4,8 @@ Tearing: does the fault model earn its cost?
   3 nodes, 25 seeds x 40000 steps
 ==============================================================
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
-commit: 3a347aa
-date:   2026-08-24T23:12:42Z
+commit: a53612b
+date:   2026-08-24T23:46:17Z
 
 --- WITH TEARS (disk-hunt): the broken build. Expect seeds to fail.
 
@@ -69,9 +69,9 @@ seed 3 failed after 14103 events
     [  3040000000ns] node 3 restarted
     [  3040000000ns] node 3 role=Follower term=4 last=34 commit=7 applied=0
   node state:
-    node 1 alive=true role=Follower term=4 last=38 commit=6 applied=6
-    node 2 alive=true role=Leader term=4 last=2614 commit=6 applied=6
-    node 3 alive=true role=Follower term=4 last=34 commit=7 applied=0
+    node 1 alive=true role=Follower term=4 last=38 commit=6 applied=6 voters=[1, 2, 3]
+    node 2 alive=true role=Leader term=4 last=2614 commit=6 applied=6 voters=[1, 2, 3]
+    node 3 alive=true role=Follower term=4 last=34 commit=7 applied=0 voters=[1, 2, 3]
 
 seed 6 failed after 19761 events
   violation: Log Matching: node 3 has a different prefix at index 64 term 1 than another node did (digest abbcdde3b21945b5 vs 8497103cc1314afb)
@@ -138,9 +138,9 @@ seed 6 failed after 19761 events
     [  3580000000ns] node 3 restarted
     [  3580000000ns] node 3 role=Follower term=4 last=64 commit=27 applied=0
   node state:
-    node 1 alive=true role=Follower term=4 last=94 commit=27 applied=27
-    node 2 alive=true role=Leader term=4 last=6891 commit=27 applied=27
-    node 3 alive=true role=Follower term=4 last=64 commit=27 applied=0
+    node 1 alive=true role=Follower term=4 last=94 commit=27 applied=27 voters=[1, 2, 3]
+    node 2 alive=true role=Leader term=4 last=6891 commit=27 applied=27 voters=[1, 2, 3]
+    node 3 alive=true role=Follower term=4 last=64 commit=27 applied=0 voters=[1, 2, 3]
 
 seed 7 failed after 31628 events
   violation: Log Matching: node 1 has a different prefix at index 80 term 3 than another node did (digest bc9e25f4081fc20c vs e32165dcde416fb6)
@@ -211,9 +211,9 @@ seed 7 failed after 31628 events
     [  6880000000ns] node 1 restarted
     [  6880000000ns] node 1 role=Follower term=7 last=80 commit=15 applied=0
   node state:
-    node 1 alive=true role=Follower term=7 last=80 commit=15 applied=0
-    node 2 alive=true role=Leader term=7 last=7595 commit=15 applied=15
-    node 3 alive=true role=Follower term=7 last=56 commit=15 applied=15
+    node 1 alive=true role=Follower term=7 last=80 commit=15 applied=0 voters=[1, 2, 3]
+    node 2 alive=true role=Leader term=7 last=7595 commit=15 applied=15 voters=[1, 2, 3]
+    node 3 alive=true role=Follower term=7 last=56 commit=15 applied=15 voters=[1, 2, 3]
 
 seed 8 failed after 7563 events
   violation: Log Matching: node 1 has a different prefix at index 20 term 1 than another node did (digest a58b059112dd6f90 vs 95f9607a08a8cc7a)
@@ -247,9 +247,9 @@ seed 8 failed after 7563 events
     [  1600000000ns] node 1 restarted
     [  1600000000ns] node 1 role=Follower term=2 last=20 commit=14 applied=0
   node state:
-    node 1 alive=true role=Follower term=2 last=20 commit=14 applied=0
-    node 2 alive=true role=Follower term=2 last=10 commit=10 applied=9
-    node 3 alive=true role=Leader term=2 last=2204 commit=14 applied=14
+    node 1 alive=true role=Follower term=2 last=20 commit=14 applied=0 voters=[1, 2, 3]
+    node 2 alive=true role=Follower term=2 last=10 commit=10 applied=9 voters=[1, 2, 3]
+    node 3 alive=true role=Leader term=2 last=2204 commit=14 applied=14 voters=[1, 2, 3]
 
 seed 11 failed after 4916 events
   violation: Log Matching: node 1 has a different prefix at index 31 term 1 than another node did (digest d2b9f913e7c46093 vs 77d78b5411c7dc93)
@@ -266,9 +266,9 @@ seed 11 failed after 4916 events
     [   820000000ns] node 1 restarted
     [   820000000ns] node 1 role=Follower term=1 last=31 commit=30 applied=0
   node state:
-    node 1 alive=true role=Follower term=1 last=31 commit=30 applied=0
-    node 2 alive=true role=Follower term=1 last=34 commit=34 applied=34
-    node 3 alive=true role=Leader term=1 last=1801 commit=34 applied=34
+    node 1 alive=true role=Follower term=1 last=31 commit=30 applied=0 voters=[1, 2, 3]
+    node 2 alive=true role=Follower term=1 last=34 commit=34 applied=34 voters=[1, 2, 3]
+    node 3 alive=true role=Leader term=1 last=1801 commit=34 applied=34 voters=[1, 2, 3]
 
 seed 15 failed after 21795 events
   violation: Log Matching: node 1 has a different prefix at index 81 term 1 than another node did (digest e8b5f480ac1dc51b vs f93a57428209bf95)
@@ -339,9 +339,9 @@ seed 15 failed after 21795 events
     [  5020000000ns] node 1 restarted
     [  5020000000ns] node 1 role=Follower term=6 last=81 commit=18 applied=0
   node state:
-    node 1 alive=true role=Follower term=6 last=81 commit=18 applied=0
-    node 2 alive=true role=Leader term=6 last=4565 commit=18 applied=18
-    node 3 alive=true role=PreCandidate term=5 last=35 commit=18 applied=18
+    node 1 alive=true role=Follower term=6 last=81 commit=18 applied=0 voters=[1, 2, 3]
+    node 2 alive=true role=Leader term=6 last=4565 commit=18 applied=18 voters=[1, 2, 3]
+    node 3 alive=true role=PreCandidate term=5 last=35 commit=18 applied=18 voters=[1, 2, 3]
 
 25 seeds x 40000 steps, 3 nodes, disk-hunt profile: 19 passed, 6 failed (mean 79 entries committed per run)
 failing seeds: [3, 6, 7, 8, 11, 15]

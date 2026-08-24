@@ -101,15 +101,20 @@ prefix — which is what makes per-event checking affordable at this scale.
 
 ```
 $ scripts/sweep.sh
-500 seeds x 60000 steps, 3 nodes, default    profile: 500 passed, 0 failed
-500 seeds x 60000 steps, 5 nodes, default    profile: 500 passed, 0 failed
-500 seeds x 60000 steps, 3 nodes, chaos      profile: 500 passed, 0 failed
-500 seeds x 60000 steps, 5 nodes, chaos      profile: 500 passed, 0 failed
-500 seeds x 80000 steps, 3 nodes, fig8-hunt  profile: 500 passed, 0 failed
-100 seeds x 60000 steps, 3 nodes, disk-chaos profile: 100 passed, 0 failed
-100 seeds x 60000 steps, 5 nodes, disk-chaos profile: 100 passed, 0 failed
-100 seeds x 60000 steps, 3 nodes, disk-hunt  profile: 100 passed, 0 failed
-100 seeds x 60000 steps, 5 nodes, disk-hunt  profile: 100 passed, 0 failed
+500 seeds x 60000 steps, 3 nodes, default         profile: 500 passed, 0 failed
+500 seeds x 60000 steps, 5 nodes, default         profile: 500 passed, 0 failed
+500 seeds x 60000 steps, 3 nodes, chaos           profile: 500 passed, 0 failed
+500 seeds x 60000 steps, 5 nodes, chaos           profile: 500 passed, 0 failed
+500 seeds x 60000 steps, 3 nodes, read-hunt       profile: 500 passed, 0 failed
+500 seeds x 60000 steps, 5 nodes, read-hunt       profile: 500 passed, 0 failed
+500 seeds x 60000 steps, 3 nodes, lease-drift     profile: 500 passed, 0 failed
+500 seeds x 60000 steps, 5 nodes, lease-drift     profile: 500 passed, 0 failed
+500 seeds x 60000 steps, 5 nodes, membership-hunt profile: 500 passed, 0 failed
+500 seeds x 80000 steps, 3 nodes, fig8-hunt       profile: 500 passed, 0 failed
+100 seeds x 60000 steps, 3 nodes, disk-chaos      profile: 100 passed, 0 failed
+100 seeds x 60000 steps, 5 nodes, disk-chaos      profile: 100 passed, 0 failed
+100 seeds x 60000 steps, 3 nodes, disk-hunt       profile: 100 passed, 0 failed
+100 seeds x 60000 steps, 5 nodes, disk-hunt       profile: 100 passed, 0 failed
 100 seeds replayed identically
  60 seeds replayed identically, disk in the fingerprint
 ```
@@ -119,6 +124,14 @@ log, and the real state machine. A committed entry is decoded, deduplicated
 against a session table and written into a store — so two nodes that have applied
 to the same index are compared on what applying produced, not only on which
 entries they applied.
+
+`read-hunt` additionally issues linearizable reads under a wandering clock and
+checks what a *client* observed, which is a different claim from what the nodes
+agree about. `lease-drift` is the control arm of a demonstration that leases are
+safe only inside their clock assumption. `membership-hunt` proposes membership
+changes and leader transfers under the fault schedule, reaching thirty thousand
+joint-configuration observations in a single seed — and it found
+[KEEL-10](BUGS.md).
 
 The `disk-*` profiles additionally put a tearing disk under the log: every record
 really encoded, checksummed, written and parsed, and every restart going through
