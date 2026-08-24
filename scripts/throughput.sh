@@ -149,9 +149,12 @@ budget() {
     echo "red build nobody can attribute to a code change is worse than a sweep"
     echo "that is narrower than it could be."
     echo
-    echo "The measurement's finding is that the counts these replace — 250 per"
-    echo "shard and 120 on the disk job — were low by roughly a factor of three,"
-    echo "not high. Sizing by eye was conservative rather than reckless, but it"
-    echo "was still unsupported, and P19's distinct-seed target spends against"
-    echo "this same file rather than against another guess."
+    echo "Re-measured whenever a phase changes what a seed costs. P8 put the"
+    echo "real state machine under every node — every committed entry is now"
+    echo "decoded, deduplicated and written rather than counted — and the"
+    echo "network profiles got about fifteen per cent slower per event for it."
+    echo "The budget follows the measurement rather than the other way round."
+    echo
+    echo "P19's distinct-seed target spends against this same file rather than"
+    echo "against another guess."
 } | tee "$OUT"
