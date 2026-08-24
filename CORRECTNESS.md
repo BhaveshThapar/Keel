@@ -62,21 +62,33 @@ row that was never written.
 |---|---|---|
 | A three-node cluster's history is linearizable, without a nemesis | `scripts/maelstrom.sh` — Jepsen's Maelstrom driving `lin-kv`, checked by Knossos; committed output in [`results/maelstrom/`](results/maelstrom/) | enforced |
 | The same core runs under a third transport with no conditional compilation | the adapter in `keel-maelstrom` constructs the same `RaftCore` (FR-12) | enforced |
-| Under partition, crash and clock skew | — | planned (M2 Phase 18) |
-| A real cluster's history, checked by Porcupine | — | planned (M2 Phase 18) |
+| The same, with the cluster cut into halves every ten seconds | `scripts/maelstrom.sh 60 30 partition`; committed output in [`results/maelstrom/`](results/maelstrom/) | enforced |
+| A real cluster's history, recorded while it is partitioned, paused and killed, is linearizable | `scripts/porcupine.sh` — [Porcupine](https://github.com/anishathalye/porcupine) v1.3.0 over a history `kv workload` recorded; committed output in [`results/porcupine/`](results/porcupine/) | enforced |
+| …and the same checker rejects that history with one read's result replaced | the control arm of the same script, which is what makes the experiment arm evidence | enforced |
+| A read records what it returned, so a model has something to contradict | `history::tests::a_read_records_what_it_returned` | enforced |
+| An unanswered read carries no result, so it is not read as "the key was absent" | `history::tests::an_unanswered_operation_carries_no_result` | enforced |
+| Several clients' histories merge into one timeline with one origin | `history::tests::merged_histories_share_an_origin_and_come_out_in_order` | enforced |
+| A thousand kill cycles against a real cluster lose no acknowledged write | `scripts/kill-loop.sh`; committed output in [`results/chaos/`](results/chaos/) | enforced |
+| Clock skew, under an external checker | — | not planned: Maelstrom's clock nemesis moves the wall clock, and Keel reads `CLOCK_MONOTONIC`. The clock fault is [`keel-chaos`](crates/keel-chaos/)'s, with its own probe |
 
 The distinction that makes this worth having: every other check in this file is
 one we wrote, against a property we chose. Knossos applies a definition of
 linearizability nobody here chose to a history it recorded itself, and it does
 not care what anyone here believes about the code.
 
-Two things the run does not establish, stated because a passing external checker
-invites more confidence than it has earned. There is **no nemesis** — no
-partitions, no crashes, no clock skew — so it is a floor rather than a result: a
-system that cannot pass without faults will not pass with them. And the adapter
-**does not persist**, because Maelstrom does not restart nodes with their storage
-intact; crash recovery is what the simulator's disk profiles and the kill loop
-are for.
+What the Maelstrom runs do not establish, stated because a passing external
+checker invites more confidence than it has earned: the adapter **does not
+persist**, because Maelstrom does not restart nodes with their storage intact.
+Crash recovery is what the simulator's disk profiles, the kill loop and the
+Porcupine run are for — the last of these records its history from real
+`keel-server` processes that are being killed while the clients write.
+
+And a note on the control arm, because it is easy to skip and it is the half
+that matters. A checker that accepted everything would also accept a correct
+history, so an acceptance on its own says nothing about the checker. The control
+takes the same history, replaces one completed read's returned value with a
+value nothing in the run ever wrote, and requires a rejection. Both arms are in
+the committed output, side by side.
 
 ## A cluster of real processes
 

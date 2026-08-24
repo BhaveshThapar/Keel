@@ -100,11 +100,63 @@ jobs:
       - name: libfaketime, so the schedule includes clock jumps
         run: sudo apt-get update && sudo apt-get install -y faketime
       - run: scripts/chaos.sh 45 1 2 3 4 5 6 7 8
+      # The kill loop is the other half, and it is a different question. The
+      # schedule above asks whether the cluster survives faults it can wait out;
+      # this asks whether it still holds what it said it held after a thousand
+      # crashes. It found KEEL-9.
+      - run: scripts/kill-loop.sh 1000 durable 250
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: chaos-real-cluster
-          path: results/chaos/real-cluster.txt
+          path: |
+            results/chaos/real-cluster.txt
+            results/chaos/kill-loop.txt
+
+  # The external checker, and the control arm that makes its acceptance mean
+  # something. Nightly rather than per-PR because the run needs a real cluster
+  # under faults for long enough to record a history worth checking, and
+  # porcupine's search is exponential in the worst case.
+  porcupine:
+    name: a real cluster's history, checked by somebody else
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - uses: Swatinem/rust-cache@v2
+      - run: scripts/porcupine.sh 11 40
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: porcupine
+          path: results/porcupine/lin-check.txt
+
+  # Maelstrom with the partition nemesis. Java and gnuplot are both required:
+  # without gnuplot the run reports :unknown while every correctness check
+  # passes, which is an inconclusive result nobody can tell from a real one.
+  maelstrom:
+    name: Maelstrom lin-kv under partition
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - run: sudo apt-get update && sudo apt-get install -y gnuplot
+      - uses: Swatinem/rust-cache@v2
+      - run: scripts/maelstrom.sh 60 30 partition
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maelstrom-partition
+          path: results/maelstrom/lin-kv-partition.txt
 
   determinism-at-length:
     name: a long run still replays identically

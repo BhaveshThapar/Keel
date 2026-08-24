@@ -3,11 +3,12 @@
 A Raft-replicated key-value store in Rust, built on an LSM storage engine, and
 verified by a deterministic simulator that replays any failure from a seed.
 
-> **Status: in development (M1).** A three-node cluster of real processes serves
-> traffic, survives its leader being killed, and is driven by the same consensus
-> core the simulator sweeps. Snapshots and external linearizability checking are
-> not built. No performance number is claimed, because none has been measured.
-> See [Not claimed](#not-claimed).
+> **Status: in development (M2).** A three-node cluster of real processes serves
+> traffic, takes and streams snapshots, and survives being partitioned, paused,
+> killed a thousand times and clock-jumped — with the history it produced checked
+> by Porcupine and by Knossos, and by a control arm that proves those checkers
+> reject a corrupted one. No performance number is claimed, because none has been
+> measured. See [Not claimed](#not-claimed).
 
 ## What is here today
 
@@ -69,7 +70,9 @@ well as `SIGKILL`, because a paused process holds its sockets open and answers
 nothing, which is the fault a crash does not produce; and a `CLOCK_MONOTONIC`
 jump with a probe that checks the jump was a discontinuity rather than elapsed
 time. A run that injects no fault, or gets no acknowledgement, fails rather than
-reporting a pass.
+reporting a pass. Its kill loop — a thousand cycles, 7,311 acknowledged writes,
+none lost — found [KEEL-9](BUGS.md), a session-identity collision the simulator
+could not have found, because the simulator has no client connections to park.
 
 The consensus core exists to make the simulator possible. Because the core is a pure function
 of its inputs, a run is a pure function of `(seed, config)`: any failure is
@@ -203,23 +206,29 @@ hardware and no commit behind it. Both run in CI.
   latency, and etcd-comparison figures this project intends to publish will be
   measured on stated Linux hardware with fsync on, or they will not be published.
 - **Not Jepsen-tested.** Jepsen's *Maelstrom* drives a three-node cluster on the
-  `lin-kv` workload and Knossos finds the history linearizable
-  ([`results/maelstrom/`](results/maelstrom/)) — but with no nemesis, so it is a
-  floor rather than a result. A real Jepsen run is a different artifact again,
-  and the distinction matters. Partitions, crashes and clock skew are M2.
-- **No Porcupine yet.** The client records a history in the shape a checker
-  wants, including the indeterminate outcome; nothing has checked one (M2).
-- **Durability is not proven end to end under a real nemesis.** A node has been
-  killed a thousand times mid-apply and a leader killed under a live client, both
-  with nothing lost. What has not happened is a partition proxy, a clock jump, or
-  a kill loop against a real cluster under load (M2).
+  `lin-kv` workload, with and without a partition nemesis, and Knossos finds both
+  histories linearizable ([`results/maelstrom/`](results/maelstrom/)). A real
+  Jepsen run is a different artifact again, and the distinction matters: Jepsen
+  runs against real nodes on real machines with real disks, and Maelstrom's
+  adapter does not persist at all.
+- **The clock nemesis has not run on this laptop, and cannot.** macOS strips
+  `DYLD_INSERT_LIBRARIES` under System Integrity Protection and does not
+  interpose the commpage `mach_absolute_time` reads, so `libfaketime` cannot move
+  `CLOCK_MONOTONIC` here. That arm runs in a Linux container
+  ([`results/chaos/clock-jump.txt`](results/chaos/clock-jump.txt), with both
+  machines named in its header), and every schedule drawn on macOS says out loud
+  that it contains no clock jumps.
 - **No membership changes from an operator.** The core does joint consensus and
   the in-process tests exercise it, but the simulator issues no configuration
   change, so the admin verbs that would drive one are deferred until it does
   (ADR-024).
-- **No linearizability checking yet.** The simulator checks Raft's internal
-  safety properties. It does not yet check that clients observe a linearizable
-  history; that needs the state machine and a history export (M1/M2).
+- **Linearizability is checked outside the simulator, not inside it.** Porcupine
+  and Knossos check histories from real clusters. The simulator itself still
+  checks only Raft's internal safety properties; it has no client and records no
+  history.
+- **One snapshot profile is not claimed clean.** `snapshot-hunt` passes 59 of 60
+  seeds and seed 14 is [KEEL-8](BUGS.md), open. It is out of the sweep and out of
+  CI's matrix rather than quietly excluded.
 - **Single Raft group.** No sharding, no cross-shard transactions, no
   geo-replication, no Byzantine fault tolerance, no TLS or authentication.
 
