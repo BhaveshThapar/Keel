@@ -15,6 +15,7 @@ keel-log = { workspace = true }
 keel-net = { workspace = true }
 keel-raft = { workspace = true }
 keel-sm = { workspace = true }
+tempfile = { workspace = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
 

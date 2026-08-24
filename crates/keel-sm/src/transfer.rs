@@ -81,6 +81,13 @@ fn is_safe_name(name: &str) -> bool {
 /// Reads a checkpoint directory as a stream of chunks.
 pub struct Sender {
     dir: PathBuf,
+    /// How much of a file goes in one chunk.
+    ///
+    /// A parameter rather than a constant because it is a real trade-off — a
+    /// larger chunk costs less per byte and more to re-send after a failure —
+    /// and because a test that wants to exercise a resume needs more than three
+    /// chunks without building a gigabyte to get them.
+    chunk_bytes: usize,
     /// Every file in the snapshot and its length, in a fixed order so a resumed
     /// transfer walks them the same way.
     files: Vec<(String, u64)>,
@@ -89,8 +96,17 @@ pub struct Sender {
 }
 
 impl Sender {
-    /// Read the directory and prepare to send it.
+    /// Read the directory and prepare to send it, at [`CHUNK_BYTES`].
     pub fn new(dir: impl AsRef<Path>) -> Result<Self, StateMachineError> {
+        Self::with_chunk_bytes(dir, CHUNK_BYTES)
+    }
+
+    /// The same, at a chosen chunk size.
+    pub fn with_chunk_bytes(
+        dir: impl AsRef<Path>,
+        chunk_bytes: usize,
+    ) -> Result<Self, StateMachineError> {
+        let chunk_bytes = chunk_bytes.max(1);
         let dir = dir.as_ref().to_path_buf();
         let mut files = Vec::new();
         let entries = std::fs::read_dir(&dir)
@@ -114,6 +130,7 @@ impl Sender {
         files.sort();
         Ok(Self {
             dir,
+            chunk_bytes,
             files,
             at: (0, 0),
         })
@@ -152,7 +169,7 @@ impl Sender {
                 continue;
             }
 
-            let take = CHUNK_BYTES.min((len - offset) as usize);
+            let take = self.chunk_bytes.min((len - offset) as usize);
             let bytes = read_at(&self.dir.join(&name), offset, take)?;
             let next_offset = offset + bytes.len() as u64;
             let finished_file = next_offset >= len;

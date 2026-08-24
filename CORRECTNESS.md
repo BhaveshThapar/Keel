@@ -153,6 +153,9 @@ are for.
 | A partial transfer cannot be published | `snapshot_transfer::an_incomplete_transfer_refuses_to_publish` | enforced |
 | Publishing replaces an existing snapshot whole | `snapshot_transfer::publishing_over_an_existing_snapshot_replaces_it_whole` | enforced |
 | A chunk cannot name a path outside the snapshot | `snapshot_transfer::a_chunk_that_names_an_escape_is_refused`; `transfer::tests::a_name_that_could_escape_the_directory_is_refused` | enforced |
+| A fresh node is brought up past a compacted floor, killed mid-stream, and **resumes** | `snapshot_end_to_end::a_fresh_node_is_brought_up_by_a_snapshot_that_is_killed_mid_stream` — asserts the second attempt sent fewer chunks than the whole snapshot, and that the two attempts together cover it exactly once | enforced |
+| A transfer interrupted repeatedly still converges, re-sending nothing verified | `snapshot_end_to_end::a_transfer_interrupted_repeatedly_still_converges` | enforced |
+| A checkpoint is due by entries applied, not by time passed | `snapshots::tests::a_checkpoint_is_due_by_entries_applied_rather_than_by_time` | enforced |
 | Both stores apply the same log to the same state | `state_machine::both_stores_apply_the_same_log_to_the_same_state`; `keel_sm::conformance::check` run against `MemStore` and `LsmStore` | enforced |
 
 ## The durable log
