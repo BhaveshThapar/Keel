@@ -14,6 +14,7 @@ use keel_sm::{MemStore, StateMachine};
 
 use crate::digest::LogDigest;
 use crate::faultfs::{FaultFs, FaultStats, TearPolicy};
+use crate::invariants::state_digest;
 use crate::invariants::{Oracle, Violation};
 use crate::network::{Delivery, NetConfig, Network};
 use keel_rand::Rng;
@@ -52,6 +53,12 @@ pub struct SimConfig {
     pub skip_tail_erase: bool,
     /// Accept a record whose checksum does not match.
     pub skip_record_crc: bool,
+    /// Apply committed entries in the order their fsyncs completed rather than
+    /// in index order. That is ADR-016's ordering removed, and it is what the
+    /// model oracle exists to catch: watermarks are maxima and do not notice,
+    /// but an entry handed to a state machine below its watermark is skipped
+    /// and its effect is lost. Requires `--features negative-demos`.
+    pub skip_apply_ordering: bool,
     /// What a crash does to bytes no fsync covered.
     ///
     /// The default lands no sectors, so a crash takes every staged write back
@@ -112,6 +119,7 @@ impl Default for SimConfig {
             disable_fig8_guard: false,
             skip_tail_erase: false,
             skip_record_crc: false,
+            skip_apply_ordering: false,
             tear: TearPolicy::default(),
             segment_bytes: 8 << 10,
             max_record_bytes: 4 << 10,
@@ -271,40 +279,31 @@ impl SimConfig {
     }
 }
 
-/// A hash of everything a state machine holds, so two nodes can be compared in
-/// one number.
+/// The proposal an entry carries, or a bookkeeping stand-in for the entries
+/// that carry none.
 ///
-/// Order-independent it is not, and must not be: the store iterates in key
-/// order, so two nodes holding the same pairs hash the same and two holding
-/// different pairs do not. Including the applied index would make the digest
-/// trivially different whenever the indexes differ, which is the case the
-/// comparison already excludes.
-fn state_digest(sm: &StateMachine<MemStore>) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    let mut mix = |bytes: &[u8]| {
-        for byte in bytes {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
+/// Only used by the negative-demonstration path, which does not care why an
+/// entry would not decode: the ordinary path reports that as a violation.
+#[cfg(feature = "negative-demos")]
+fn decoded_or_bookkeeping(entry: &Entry) -> Proposal {
+    let bookkeeping = Proposal {
+        stamped_ms: 0,
+        session: None,
+        body: ProposalBody::KeepAlive,
     };
-    // User keys, then the session table. Both are state that two nodes applying
-    // the same log must agree about: a session that deduplicated on one node and
-    // not on another is exactly the divergence this is looking for.
-    if let Ok(rows) = sm.scan(None, None, usize::MAX) {
-        for (key, value) in rows {
-            mix(&key);
-            mix(&value);
-        }
+    match &entry.payload {
+        EntryPayload::Normal(data) => decode::<Proposal>(data).unwrap_or(bookkeeping),
+        _ => bookkeeping,
     }
-    if let Ok(clients) = sm.open_sessions() {
-        for client in clients {
-            mix(&client.to_be_bytes());
-            if let Ok(Some(seq)) = sm.last_seq(client) {
-                mix(&seq.to_be_bytes());
-            }
-        }
+}
+
+#[cfg(not(feature = "negative-demos"))]
+fn decoded_or_bookkeeping(_entry: &Entry) -> Proposal {
+    Proposal {
+        stamped_ms: 0,
+        session: None,
+        body: ProposalBody::KeepAlive,
     }
-    hash
 }
 
 /// Apply one committed entry to a node's state machine.
@@ -718,6 +717,14 @@ impl World {
         self.trace.push_back(format!("[{:>12}ns] {line}", self.now));
     }
 
+    /// How many entries the reference state machine has applied.
+    ///
+    /// Exposed so a test can refuse a run in which the model saw nothing and
+    /// every comparison against it was vacuous.
+    pub fn oracle_model_applied(&self) -> u64 {
+        self.oracle.model_applied
+    }
+
     pub fn now(&self) -> u64 {
         self.now
     }
@@ -828,13 +835,37 @@ impl World {
         // 3. Apply, in index order, then report how far.
         let mut apply_failure = None;
         let mut applied_kinds = Vec::new();
+        let mut committed_for_model = Vec::new();
+        let skip_apply_ordering = self.cfg.skip_apply_ordering;
         if let Some(node) = self.nodes.get_mut(&id) {
             node.applied_count += batch.committed.len();
+            for entry in &batch.committed {
+                committed_for_model.push(entry.clone());
+            }
             for entry in batch.committed {
                 node.pending_apply.insert(entry.index, entry);
             }
             // Drain only the contiguous run. Anything above a gap waits for the
             // fsync that is still in flight beneath it.
+            //
+            // With the ordering removed, everything buffered is applied in
+            // whatever order it arrived — which is the map's key order, so an
+            // entry below the watermark is silently skipped.
+            if skip_apply_ordering {
+                let arrived: Vec<Entry> = node.pending_apply.values().cloned().collect();
+                node.pending_apply.clear();
+                for entry in arrived {
+                    let before = node.sm.applied();
+                    if node
+                        .sm
+                        .apply(entry.index, &decoded_or_bookkeeping(&entry))
+                        .is_ok()
+                    {
+                        let _ = before;
+                        applied_kinds.push(AppliedKind::Bookkeeping);
+                    }
+                }
+            }
             while let Some(entry) = node.pending_apply.remove(&(node.sm.applied() + 1)) {
                 match apply_entry(node, &entry) {
                     Ok(kind) => applied_kinds.push(kind),
@@ -853,6 +884,9 @@ impl World {
                     snapshot_installed: None,
                 });
             }
+        }
+        for entry in &committed_for_model {
+            self.oracle.observe_committed_entry(entry);
         }
         for kind in applied_kinds {
             match kind {
@@ -1308,6 +1342,12 @@ impl World {
         }
         let digest = self.nodes[&id].digest.clone();
         if let Some(v) = self.oracle.observe_commit(id, commit, &digest) {
+            found.push(v);
+        }
+        // Against the model first: it is the stronger check, and naming it in
+        // the report is more use than "two nodes disagree" when all of them are
+        // wrong in the same way.
+        if let Some(v) = self.oracle.check_against_model(id, applied, state_digest) {
             found.push(v);
         }
         if let Some(v) = self.oracle.observe_applied_state(id, applied, state_digest) {

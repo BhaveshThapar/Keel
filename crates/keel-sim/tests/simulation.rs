@@ -386,3 +386,18 @@ fn the_state_machine_is_actually_exercised() {
          went untested"
     );
 }
+
+/// The model has to have applied something, or every comparison against it was
+/// vacuous and the oracle was a no-op that passed.
+#[test]
+fn the_model_oracle_actually_applies_the_log() {
+    let mut world = World::new(3, SimConfig::default());
+    world.run(30_000);
+    assert!(!world.is_broken(), "{}", world.failure_report());
+    assert!(
+        world.oracle_model_applied() > 100,
+        "the reference state machine applied {} entries, so comparing nodes \
+         against it established almost nothing",
+        world.oracle_model_applied()
+    );
+}

@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use keel_raft::{Index, NodeId, Term};
+use keel_api::{Proposal, ProposalBody, decode};
+use keel_raft::{Entry, EntryPayload, Index, NodeId, Term};
+use keel_sm::{MemStore, StateMachine};
 
 use crate::digest::{ChangedEntry, DiscardedEntry, LogDigest};
 
@@ -21,7 +23,6 @@ impl std::fmt::Display for Violation {
 ///
 /// Each of the five Raft safety properties reduces to a digest comparison here,
 /// which is what makes checking after *every* event affordable.
-#[derive(Debug, Default)]
 pub struct Oracle {
     /// Election Safety: at most one leader per term.
     leaders: BTreeMap<Term, NodeId>,
@@ -37,13 +38,48 @@ pub struct Oracle {
     /// which node held it. Not the log's digest: this is what applying those
     /// entries produced.
     applied_state: BTreeMap<Index, (NodeId, u64)>,
+    /// A reference state machine, fed the committed log in index order.
+    ///
+    /// This is the model in "model oracle". Comparing nodes against each other
+    /// catches a divergence between them and nothing else: five nodes that all
+    /// double-apply the same entry agree perfectly. Comparing against a machine
+    /// that applied the same entries exactly once, in order, with no crashes and
+    /// no restarts, catches the case where they are all wrong together.
+    model: StateMachine<MemStore>,
+    /// Committed entries waiting for their predecessors, so the model applies in
+    /// index order however the cluster discovered them.
+    model_pending: BTreeMap<Index, Entry>,
+    /// What the model held after applying through each index.
+    model_digests: BTreeMap<Index, u64>,
     pub max_committed: Index,
     pub max_applied: Index,
+    /// Entries the model has applied. Zero after a run means the model saw
+    /// nothing and every comparison against it was vacuous.
+    pub model_applied: u64,
+}
+
+impl Default for Oracle {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Oracle {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            leaders: BTreeMap::new(),
+            leader_high_water: BTreeMap::new(),
+            log_digests: BTreeMap::new(),
+            committed: BTreeMap::new(),
+            applied: BTreeMap::new(),
+            applied_state: BTreeMap::new(),
+            model: StateMachine::new(MemStore::new()),
+            model_pending: BTreeMap::new(),
+            model_digests: BTreeMap::new(),
+            max_committed: 0,
+            max_applied: 0,
+            model_applied: 0,
+        }
     }
 
     pub fn terms_with_leaders(&self) -> u64 {
@@ -134,6 +170,65 @@ impl Oracle {
 
     /// State Machine Safety: no two nodes apply different entries at the same
     /// index.
+    /// Feed a committed entry to the model.
+    ///
+    /// Buffered until its predecessors have arrived, because the cluster
+    /// discovers commitment in whatever order its fsyncs complete and the model
+    /// must apply in index order — that being the whole of what it models.
+    ///
+    /// An entry that will not decode is not reported here. `apply_entry` in the
+    /// world already treats that as a violation at the node that met it, which
+    /// names the node; the model would only say it a second time.
+    pub fn observe_committed_entry(&mut self, entry: &Entry) {
+        if entry.index <= self.model.applied() {
+            return;
+        }
+        self.model_pending.insert(entry.index, entry.clone());
+        while let Some(entry) = self.model_pending.remove(&(self.model.applied() + 1)) {
+            let proposal = match &entry.payload {
+                EntryPayload::Noop | EntryPayload::ConfChange(_) => Proposal {
+                    stamped_ms: 0,
+                    session: None,
+                    body: ProposalBody::KeepAlive,
+                },
+                EntryPayload::Normal(data) => match decode::<Proposal>(data) {
+                    Ok(proposal) => proposal,
+                    Err(_) => return,
+                },
+            };
+            if self.model.apply(entry.index, &proposal).is_err() {
+                return;
+            }
+            self.model_applied += 1;
+            self.model_digests
+                .insert(entry.index, state_digest(&self.model));
+        }
+    }
+
+    /// A node that has applied through `index` must hold what the model holds
+    /// there.
+    ///
+    /// The model applied the same entries, in order, exactly once, with no
+    /// crashes and no restarts. Any difference is the cluster's.
+    pub fn check_against_model(&self, id: NodeId, applied: Index, state: u64) -> Option<Violation> {
+        // The model only knows indexes it has been told about *and* whose
+        // predecessors arrived. A node ahead of the model is not wrong; it has
+        // simply seen a commitment the oracle has not been shown yet.
+        let expected = self.model_digests.get(&applied)?;
+        if *expected == state {
+            return None;
+        }
+        Some(Violation {
+            property: "State Machine Safety",
+            detail: format!(
+                "node {id} applied through index {applied} and holds {state:016x}; a \
+                 reference state machine fed the same committed entries in order, once \
+                 each, holds {expected:016x}. The cluster and the model disagree about \
+                 what this log means"
+            ),
+        })
+    }
+
     /// Two nodes that have applied to the same index must hold the same state.
     ///
     /// The log-prefix check below says they applied the same *entries*. This
@@ -275,4 +370,34 @@ impl Oracle {
         }
         None
     }
+}
+
+/// A hash of everything a state machine holds.
+///
+/// Shared with the world's own digest of a node, because the two are compared
+/// against each other and a second implementation would only be a second thing
+/// that could be wrong.
+pub(crate) fn state_digest(sm: &StateMachine<MemStore>) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut mix = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    if let Ok(rows) = sm.scan(None, None, usize::MAX) {
+        for (key, value) in rows {
+            mix(&key);
+            mix(&value);
+        }
+    }
+    if let Ok(clients) = sm.open_sessions() {
+        for client in clients {
+            mix(&client.to_be_bytes());
+            if let Ok(Some(seq)) = sm.last_seq(client) {
+                mix(&seq.to_be_bytes());
+            }
+        }
+    }
+    hash
 }

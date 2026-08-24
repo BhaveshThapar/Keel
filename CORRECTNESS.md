@@ -147,6 +147,8 @@ comparison, which is what makes per-event checking affordable.
 | Every node drives the real log over a disk that can tear | `dependencies::the_simulated_disk_is_the_only_place_the_log_writes`; the `disk-*` profiles sweeping clean | enforced |
 | Every node drives the real state machine | `simulation::the_state_machine_is_actually_exercised` — sessions opened, commands applied, and commands refused all non-zero | enforced |
 | Two nodes at the same applied index hold the same state | `Oracle::observe_applied_state`, after every event. Not the same *entries* — the same result of applying them | enforced |
+| …and both agree with a model that applied the same entries once, in order | `Oracle::check_against_model`; `simulation::the_model_oracle_actually_applies_the_log` refuses a vacuous comparison | enforced |
+| Applying in index order is load-bearing | `scripts/negative-demos/apply-ordering.sh` (control clean, experiment dirty on the same seeds) | enforced |
 | An entry is never handed to a state machine below its watermark | asserted inside `apply_entry`: an entry handed back below the watermark is skipped and its effect lost | enforced |
 | A crash never leaves a log that will not open | `log_over_faultfs::a_log_that_crashed_can_always_be_reopened`; a failed reopen is a violation in the sweep, not a panic | enforced |
 | A cut is always at a sector boundary from the start of the file | `fault_fs::the_cut_falls_at_a_multiple_of_the_sector_size_from_the_start_of_the_file` | enforced |
@@ -186,13 +188,22 @@ sweeping clean and proving nothing.
 
 ### Does the checker catch anything?
 
-Three demonstrations, each control-then-experiment, each with committed output
-under `results/negative-demos/`. Two remove a rule and require the simulator to
-find the violation. The third holds the bug fixed and varies the *fault model*
+Five demonstrations, each control-then-experiment, each with committed output
+under `results/negative-demos/`. Three remove a rule and require the harness to
+find the violation: the Figure 8 current-term commit rule, the record checksum,
+and applying committed entries in index order. A fourth removes the atomicity
+between an applied index and the data it describes and requires a kill loop to
+catch the double-apply. The fifth holds a bug fixed and varies the *fault model*
 instead — `tearing-is-load-bearing.sh` runs the same checksum-removed build with
 tears on and with writes lost whole, and requires it to be caught under the
 first and invisible under the second. Three of the seven bugs so far were in the
 harness, so the harness is checked the same way the code is.
+
+`apply-ordering.sh` is the one worth reading twice. Its failure is invisible to
+everything else in this file: the watermarks are maxima and do not notice, and
+the log digests agree because the nodes really did apply the same entries. Only
+a check on what applying them *produced* can tell — which is why the model
+oracle exists, and why removing the ordering is how it is kept honest.
 
 One rule has a test and no demonstration, and that is worth stating rather than
 leaving as a gap in the pattern: removing the torn-tail erase produces no

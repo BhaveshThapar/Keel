@@ -50,6 +50,10 @@ enum Command {
         /// --features negative-demos.
         #[arg(long)]
         skip_record_crc: bool,
+        /// Apply committed entries in fsync-completion order rather than index
+        /// order. Requires --features negative-demos.
+        #[arg(long)]
+        skip_apply_ordering: bool,
     },
     /// Replay one seed and print what it did.
     Repro {
@@ -67,6 +71,8 @@ enum Command {
         skip_tail_erase: bool,
         #[arg(long)]
         skip_record_crc: bool,
+        #[arg(long)]
+        skip_apply_ordering: bool,
     },
     /// Run a seed twice and require identical results.
     Determinism {
@@ -92,10 +98,12 @@ struct Removed {
     fig8_guard: bool,
     tail_erase: bool,
     record_crc: bool,
+    apply_ordering: bool,
 }
 
 fn config_with_guard(profile: &str, nodes: usize, removed: Removed) -> Option<SimConfig> {
-    let any = removed.fig8_guard || removed.tail_erase || removed.record_crc;
+    let any =
+        removed.fig8_guard || removed.tail_erase || removed.record_crc || removed.apply_ordering;
     if any && !cfg!(feature = "negative-demos") {
         eprintln!(
             "a --skip/--disable flag does nothing unless keel-sim is built with \
@@ -106,6 +114,7 @@ fn config_with_guard(profile: &str, nodes: usize, removed: Removed) -> Option<Si
     cfg.disable_fig8_guard = removed.fig8_guard;
     cfg.skip_tail_erase = removed.tail_erase;
     cfg.skip_record_crc = removed.record_crc;
+    cfg.skip_apply_ordering = removed.apply_ordering;
     Some(cfg)
 }
 
@@ -121,11 +130,13 @@ fn main() -> ExitCode {
             disable_fig8_guard,
             skip_tail_erase,
             skip_record_crc,
+            skip_apply_ordering,
         } => {
             let removed = Removed {
                 fig8_guard: disable_fig8_guard,
                 tail_erase: skip_tail_erase,
                 record_crc: skip_record_crc,
+                apply_ordering: skip_apply_ordering,
             };
             let Some(cfg) = config_with_guard(&profile, nodes, removed) else {
                 eprintln!(
@@ -174,11 +185,13 @@ fn main() -> ExitCode {
             disable_fig8_guard,
             skip_tail_erase,
             skip_record_crc,
+            skip_apply_ordering,
         } => {
             let removed = Removed {
                 fig8_guard: disable_fig8_guard,
                 tail_erase: skip_tail_erase,
                 record_crc: skip_record_crc,
+                apply_ordering: skip_apply_ordering,
             };
             let Some(cfg) = config_with_guard(&profile, nodes, removed) else {
                 eprintln!(
