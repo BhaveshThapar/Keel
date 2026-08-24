@@ -20,7 +20,7 @@ low by about three times — and `scripts/check-docs.sh` and
 and committed result to what the tree actually contains. The second found three
 artifacts with no provenance header on the day it was written.
 
-**P2 through P5 are done.** `keel-rand`, `keel-api` and `keel-net` are in, `keel-raft` has
+**P2 through P6 are done.** `keel-rand`, `keel-api` and `keel-net` are in, `keel-raft` has
 `Input::StepDown`, `RaftCore::restore(cfg, Restored { .. })` and lease reads
 resolved inside the core, and the decisions are ADR-017 through ADR-019. The
 exit criterion holds: a `Message` round-trips identically through `TcpTransport`
@@ -72,7 +72,7 @@ indistinguishable from a schedule change:
 | ~~P3~~ | ~~`lsm-kv`: write batch, WAL header, sync modes, range scans~~ | **Done.** Six upstream PRs merged (#2–#7); `src/` and `tests/` byte-identical to `44404ec`; a batch of a hundred keys costs one fsync where the same hundred singly cost a hundred |
 | ~~P4~~ | ~~`keel-sm`: store seam, atomic `applied_index`, sessions~~ | **Done.** `MemStore` and `LsmStore` pass one suite; a retried `(client, seq)` returns the cached response with zero writes; a hundred increments retried once each leave the counter at a hundred |
 | ~~P5~~ | ~~Kill a node mid-apply~~ | **Done.** 1,000 kill cycles clean; the split-batch build is caught at cycle one, the window being aimed at rather than waited for |
-| P6 | `keel-node`: the `Ready` loop, group commit, reads | A hundred queued proposals cost one append and one sync; the same hundred driven individually cost a hundred of each |
+| ~~P6~~ | ~~`keel-node`: the `Ready` loop, group commit, reads~~ | **Done.** Measured from the log's own counters: a hundred queued cost one append and one sync, a hundred singly cost a hundred of each |
 | P7 | `keel-server`: daemon, `/status`, `/metrics`, admin | A node starts, writes its ready file, reports `sync_mode: "durable"`, and `/metrics` parses as Prometheus text exposition |
 | P8 | **The simulator drives the real stack** | Every profile sweeps clean over the real log *and* the real state machine; every committed artifact was regenerated in this commit |
 | P9 | Model oracles, three demonstrations they have teeth | All three experiments fail, all three controls pass, on the same seeds; every coverage counter non-zero |
@@ -83,7 +83,9 @@ indistinguishable from a schedule change:
 before P4 (`LsmStore` needs the batch); P4 before P5 and P6; P6 before P7 and
 P8; P8 before P9 (the oracles need the real stack under them).
 
-**P8 carries the crate-graph fix.** Cargo's `resolver = "3"` computes one
+**P8 no longer carries the crate-graph fix; P6 did.** `Node` lives in its own
+crate and `keel-sim` has a manifest allowlist naming four crates plus `clap`.
+The reasoning is unchanged and worth keeping: Cargo's `resolver = "3"` computes one
 feature set per package per invocation, so `cargo test --workspace` would build
 `keel-server` with `lsm,tcp` and let `keel-sim` link it — defeating the
 `cargo tree` isolation gate. The fix is structural: `Node` moves to its own
