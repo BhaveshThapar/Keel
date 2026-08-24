@@ -1,0 +1,200 @@
+keel-chaos — a real cluster under a seeded fault schedule
+host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
+commit: 5c4d217
+date:   2026-08-24T18:51:49Z
+
+sync mode:  durable
+nodes:      3
+seconds:    45 per seed
+seeds:      1 2 3 4
+
+==============================================================
+seed 1
+==============================================================
+clock nemesis unavailable: no clock control on this host: macOS strips DYLD_INSERT_LIBRARIES under System Integrity Protection, and does not interpose the commpage mach_absolute_time reads; run the clock nemesis in a Linux container
+seed 1, 3 nodes, 45s, 18 events
+     0.889s  isolate n0 (Forward)
+     3.087s  heal
+     5.590s  isolate n1 (Backward)
+     9.320s  heal
+    12.406s  kill n2
+    13.548s  restart n2
+    16.383s  split, minority [0]
+    20.322s  heal
+    23.473s  split, minority [2]
+    25.824s  heal
+    28.645s  kill n2
+    29.509s  restart n2
+    31.834s  pause n1
+    32.795s  resume n1
+    35.227s  kill n0
+    37.958s  restart n0
+    40.158s  kill n1
+    44.077s  restart n1
+isolations 2, splits 2, pauses 1, kills 4, clock jumps 0
+cluster up: 3 nodes
+     0.889s  isolate n0 (Forward)
+     3.087s  heal
+     5.590s  isolate n1 (Backward)
+     9.320s  heal
+    12.406s  kill n2
+    13.548s  restart n2
+    16.383s  split, minority [0]
+    20.322s  heal
+    23.473s  split, minority [2]
+    25.824s  heal
+    28.645s  kill n2
+    29.509s  restart n2
+    31.834s  pause n1
+    32.795s  resume n1
+    35.227s  kill n0
+    37.958s  restart n0
+    40.158s  kill n1
+    44.077s  restart n1
+faults injected 18, skipped 0; workload attempted 1024, acknowledged 1024; proxy carried 245245 bytes, refused 312 connections, severed 12
+counter: acknowledged 1024, final value 1024
+PASS no acknowledged write was lost
+
+==============================================================
+seed 2
+==============================================================
+clock nemesis unavailable: no clock control on this host: macOS strips DYLD_INSERT_LIBRARIES under System Integrity Protection, and does not interpose the commpage mach_absolute_time reads; run the clock nemesis in a Linux container
+seed 2, 3 nodes, 45s, 18 events
+     0.596s  pause n1
+     3.717s  resume n1
+     5.908s  isolate n2 (Backward)
+     9.430s  heal
+    12.761s  pause n2
+    14.998s  resume n2
+    17.122s  split, minority [1]
+    19.020s  heal
+    21.485s  isolate n2 (Backward)
+    25.043s  heal
+    26.901s  kill n1
+    28.613s  restart n1
+    31.555s  pause n2
+    33.296s  resume n2
+    35.223s  kill n2
+    37.624s  restart n2
+    41.525s  split, minority [1]
+    43.037s  heal
+isolations 2, splits 2, pauses 3, kills 2, clock jumps 0
+cluster up: 3 nodes
+     0.596s  pause n1
+     3.717s  resume n1
+     5.908s  isolate n2 (Backward)
+     9.430s  heal
+    12.761s  pause n2
+    14.998s  resume n2
+    17.122s  split, minority [1]
+    19.020s  heal
+    21.485s  isolate n2 (Backward)
+    25.043s  heal
+    26.901s  kill n1
+    28.613s  restart n1
+    31.555s  pause n2
+    33.296s  resume n2
+    35.223s  kill n2
+    37.624s  restart n2
+    41.525s  split, minority [1]
+    43.037s  heal
+faults injected 18, skipped 0; workload attempted 1197, acknowledged 1197; proxy carried 294833 bytes, refused 303 connections, severed 7
+counter: acknowledged 1197, final value 1197
+PASS no acknowledged write was lost
+
+==============================================================
+seed 3
+==============================================================
+clock nemesis unavailable: no clock control on this host: macOS strips DYLD_INSERT_LIBRARIES under System Integrity Protection, and does not interpose the commpage mach_absolute_time reads; run the clock nemesis in a Linux container
+seed 3, 3 nodes, 45s, 18 events
+     0.779s  kill n1
+     2.170s  restart n1
+     4.318s  isolate n0 (Forward)
+     5.212s  heal
+     8.541s  isolate n2 (Backward)
+    12.372s  heal
+    13.961s  kill n1
+    17.866s  restart n1
+    21.726s  kill n2
+    23.795s  restart n2
+    25.994s  pause n2
+    28.225s  resume n2
+    29.802s  split, minority [2]
+    30.861s  heal
+    34.518s  pause n0
+    36.468s  resume n0
+    40.070s  isolate n0 (Backward)
+    42.544s  heal
+isolations 3, splits 1, pauses 2, kills 3, clock jumps 0
+cluster up: 3 nodes
+     0.779s  kill n1
+     2.170s  restart n1
+     4.318s  isolate n0 (Forward)
+     5.212s  heal
+     8.541s  isolate n2 (Backward)
+    12.372s  heal
+    13.961s  kill n1
+    17.866s  restart n1
+    21.726s  kill n2
+    23.795s  restart n2
+    25.994s  pause n2
+    28.225s  resume n2
+    29.802s  split, minority [2]
+    30.861s  heal
+    34.518s  pause n0
+    36.468s  resume n0
+    40.070s  isolate n0 (Backward)
+    42.544s  heal
+faults injected 18, skipped 0; workload attempted 991, acknowledged 991; proxy carried 253668 bytes, refused 231 connections, severed 7
+counter: acknowledged 991, final value 991
+PASS no acknowledged write was lost
+
+==============================================================
+seed 4
+==============================================================
+clock nemesis unavailable: no clock control on this host: macOS strips DYLD_INSERT_LIBRARIES under System Integrity Protection, and does not interpose the commpage mach_absolute_time reads; run the clock nemesis in a Linux container
+seed 4, 3 nodes, 45s, 18 events
+     1.058s  isolate n2 (Backward)
+     2.730s  heal
+     5.293s  split, minority [0]
+     9.067s  heal
+    10.972s  isolate n1 (Both)
+    13.812s  heal
+    15.793s  kill n2
+    17.720s  restart n2
+    20.298s  split, minority [0]
+    24.218s  heal
+    27.722s  split, minority [2]
+    29.879s  heal
+    32.775s  isolate n1 (Backward)
+    35.336s  heal
+    37.350s  kill n2
+    38.469s  restart n2
+    40.544s  split, minority [2]
+    43.318s  heal
+isolations 3, splits 4, pauses 0, kills 2, clock jumps 0
+cluster up: 3 nodes
+     1.058s  isolate n2 (Backward)
+     2.730s  heal
+     5.293s  split, minority [0]
+     9.067s  heal
+    10.972s  isolate n1 (Both)
+    13.812s  heal
+    15.793s  kill n2
+    17.720s  restart n2
+    20.298s  split, minority [0]
+    24.218s  heal
+    27.722s  split, minority [2]
+    29.879s  heal
+    32.775s  isolate n1 (Backward)
+    35.336s  heal
+    37.350s  kill n2
+    38.469s  restart n2
+    40.544s  split, minority [2]
+    43.318s  heal
+faults injected 18, skipped 0; workload attempted 1138, acknowledged 1138; proxy carried 273598 bytes, refused 562 connections, severed 20
+counter: acknowledged 1138, final value 1138
+PASS no acknowledged write was lost
+
+==============================================================
+PASS 4 seeds, no acknowledged write lost

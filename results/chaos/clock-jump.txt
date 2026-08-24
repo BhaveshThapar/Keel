@@ -1,0 +1,117 @@
+keel-chaos — the clock nemesis, inside a Linux container
+host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
+commit: b2e8cdb
+date:   2026-08-24T19:01:30Z
+
+why a container: macOS strips DYLD_INSERT_LIBRARIES under System Integrity
+                 Protection and does not interpose the commpage that
+                 mach_absolute_time reads, so libfaketime cannot move
+                 CLOCK_MONOTONIC there at all.
+image:           keel-chaos-linux (rust:1-slim-bookworm + faketime)
+sync mode:       durable
+nodes:           3
+seconds:         45 per seed
+seeds:           1 2
+
+guest kernel: Linux 6.10.14-linuxkit aarch64
+libfaketime:  0.9.10-2.1
+
+   Compiling keel-node v0.1.0 (/work/crates/keel-node)
+   Compiling keel-server v0.1.0 (/work/crates/keel-server)
+    Finished `release` profile [optimized] target(s) in 9.10s
+
+--- the probe: does a jump reach CLOCK_MONOTONIC ---
+probe: 60 readings, CLOCK_MONOTONIC advanced 33184 ms in 3237 ms of real time
+PASS the jump reached CLOCK_MONOTONIC
+
+--- the full schedule, with clock jumps in it ---
+==============================================================
+seed 1
+==============================================================
+seed 1, 3 nodes, 45s, 17 events
+     0.889s  isolate n0 (Forward)
+     3.087s  heal
+     5.590s  isolate n1 (Backward)
+     9.320s  heal
+    12.406s  clock forward 45s
+    16.087s  split, minority [2]
+    17.138s  heal
+    20.289s  split, minority [0]
+    22.410s  heal
+    26.374s  kill n2
+    27.399s  restart n2
+    30.660s  pause n2
+    31.492s  resume n2
+    33.123s  kill n1
+    34.523s  restart n1
+    36.942s  kill n0
+    39.487s  restart n0
+isolations 2, splits 2, pauses 1, kills 3, clock jumps 1
+cluster up: 3 nodes
+     0.889s  isolate n0 (Forward)
+     3.087s  heal
+     5.590s  isolate n1 (Backward)
+     9.320s  heal
+    12.406s  clock forward 45s (offset now +45s)
+    16.087s  split, minority [2]
+    17.138s  heal
+    20.289s  split, minority [0]
+    22.410s  heal
+    26.374s  kill n2
+    27.399s  restart n2
+    30.660s  pause n2
+    31.492s  resume n2
+    33.123s  kill n1
+    34.523s  restart n1
+    36.942s  kill n0
+    39.487s  restart n0
+faults injected 17, skipped 0; workload attempted 2844, acknowledged 2844; proxy carried 594821 bytes, refused 252 connections, severed 11
+counter: acknowledged 2844, final value 2844
+PASS no acknowledged write was lost
+
+==============================================================
+seed 2
+==============================================================
+seed 2, 3 nodes, 45s, 17 events
+     0.596s  pause n1
+     3.717s  resume n1
+     5.908s  isolate n2 (Backward)
+     9.430s  heal
+    12.761s  pause n2
+    14.998s  resume n2
+    17.122s  split, minority [1]
+    19.020s  heal
+    21.485s  isolate n2 (Backward)
+    25.043s  heal
+    26.901s  kill n1
+    28.613s  restart n1
+    31.555s  pause n2
+    33.296s  resume n2
+    35.223s  clock forward 21s
+    39.236s  split, minority [2]
+    41.039s  heal
+isolations 2, splits 2, pauses 3, kills 1, clock jumps 1
+cluster up: 3 nodes
+     0.596s  pause n1
+     3.717s  resume n1
+     5.908s  isolate n2 (Backward)
+     9.430s  heal
+    12.761s  pause n2
+    14.998s  resume n2
+    17.122s  split, minority [1]
+    19.020s  heal
+    21.485s  isolate n2 (Backward)
+    25.043s  heal
+    26.901s  kill n1
+    28.613s  restart n1
+    31.555s  pause n2
+    33.296s  resume n2
+    35.223s  clock forward 21s (offset now +21s)
+    39.236s  split, minority [2]
+    41.039s  heal
+faults injected 17, skipped 0; workload attempted 3274, acknowledged 3274; proxy carried 680916 bytes, refused 317 connections, severed 8
+counter: acknowledged 3274, final value 3274
+PASS no acknowledged write was lost
+
+==============================================================
+PASS the jump reached CLOCK_MONOTONIC, and 2 seeds lost no acknowledged write

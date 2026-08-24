@@ -3,3 +3,4 @@ tools/maelstrom/
 store/
 *.profraw
 .DS_Store
+target-linux/

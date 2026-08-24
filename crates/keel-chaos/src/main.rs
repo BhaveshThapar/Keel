@@ -65,11 +65,16 @@ enum Verb {
         #[arg(long, default_value = "durable")]
         sync: String,
     },
-    /// Print `CLOCK_MONOTONIC` readings until told to stop. Started by
+    /// Print a fixed number of `CLOCK_MONOTONIC` readings. Started by
     /// `clock-check` under the faketime preload.
     Probe {
-        #[arg(long, default_value_t = 5_000)]
-        ms: u64,
+        /// A count rather than a duration, and that is the whole subtlety. A
+        /// probe that ran "for four seconds" would measure the deadline against
+        /// the clock being faked, so the jump it exists to observe would push it
+        /// past its own deadline and it would exit at the moment of the jump —
+        /// having recorded every reading except the one that matters.
+        #[arg(long, default_value_t = 60)]
+        samples: u64,
         #[arg(long, default_value_t = 50)]
         every_ms: u64,
     },
@@ -93,7 +98,7 @@ fn main() -> ExitCode {
             kv_bin,
             sync,
         } => run(seed, nodes, secs, dir, server_bin, kv_bin, sync),
-        Verb::Probe { ms, every_ms } => probe(ms, every_ms),
+        Verb::Probe { samples, every_ms } => probe(samples, every_ms),
         Verb::ClockCheck { by_secs } => clock_check(by_secs),
     };
     match outcome {
@@ -119,13 +124,12 @@ fn plan(seed: u64, nodes: usize, secs: u64) -> Result<(), ChaosError> {
     Ok(())
 }
 
-fn probe(ms: u64, every_ms: u64) -> Result<(), ChaosError> {
-    let deadline = Instant::now() + Duration::from_millis(ms);
+fn probe(samples: u64, every_ms: u64) -> Result<(), ChaosError> {
     let mut out = std::io::stdout();
     // Flushed every line: the parent reads this stream while the child is still
     // alive, and a buffered probe would deliver every reading at once, after
     // the jump it was supposed to bracket.
-    while Instant::now() < deadline {
+    for _ in 0..samples {
         writeln!(out, "t={}", clock::monotonic_ms())?;
         out.flush()?;
         std::thread::sleep(Duration::from_millis(every_ms));
@@ -142,7 +146,7 @@ fn clock_check(by_secs: u64) -> Result<(), ChaosError> {
 
     let me = std::env::current_exe()?;
     let mut cmd = Command::new(&me);
-    cmd.args(["probe", "--ms", "4000", "--every-ms", "50"])
+    cmd.args(["probe", "--samples", "60", "--every-ms", "50"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     for (k, v) in faketime.env() {
