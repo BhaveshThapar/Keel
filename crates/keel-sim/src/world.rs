@@ -6,7 +6,7 @@ use bytes::Bytes;
 use keel_log::{Log, LogOptions, SyncMode};
 use keel_raft::{
     Advance, ConfState, Config, Entry, EntryPayload, Index, Input, Message, NodeId, RaftCore,
-    Ready, Restored, Role, SnapshotMeta, Term,
+    ReadOnlyOption, Ready, Restored, Role, SnapshotMeta, Term,
 };
 
 use keel_api::{Command, Proposal, ProposalBody, Response, decode, encode};
@@ -215,6 +215,35 @@ pub struct SimConfig {
     /// Zero draws nothing at all, which is what keeps the committed profiles'
     /// fingerprints where they are.
     pub clock_drift_pct: u64,
+    /// Give node 1 the slowest clock in the cluster and everybody else the
+    /// fastest, instead of drawing each node's skew independently.
+    ///
+    /// [ADR-007]'s reasoning applied to clocks. The lease hazard needs a
+    /// conjunction — the leader's clock slower than its followers', the leader
+    /// cut off, a follower's election timeout expiring while the leader's lease
+    /// still holds, and a client reading from the old leader inside that gap —
+    /// and independent draws reach it about as often as they reach anything
+    /// that needs four coincidences. Measured, a uniform schedule served
+    /// **zero** lease reads with a rival leader in twenty seeds, so a build
+    /// with leases and a build without were indistinguishable.
+    ///
+    /// Node 1 is chosen because it wins the first election in most runs, so the
+    /// slow clock lands on the leader without anything having to aim at it
+    /// afterwards.
+    ///
+    /// [ADR-007]: https://github.com/BhaveshThapar/Keel/blob/main/DESIGN.md
+    pub slowest_node_first: bool,
+    /// Serve reads from the leader's lease instead of confirming each one with
+    /// a heartbeat round, assuming clock drift between nodes stays under this
+    /// percentage.
+    ///
+    /// `None` is `ReadOnlyOption::ReadIndex`, which is safe under any clock
+    /// behaviour. `Some(bound)` is the faster path and is correct *only while
+    /// the assumption holds* — which is a statement about the deployment, not
+    /// about the algorithm, and is therefore the one thing in the read path a
+    /// demonstration can falsify by breaking the deployment instead of the
+    /// code.
+    pub lease_read_drift_bound: Option<u8>,
     /// What fraction of client operations are linearizable reads rather than
     /// writes.
     ///
@@ -260,6 +289,8 @@ impl Default for SimConfig {
             nemesis_weights: NemesisWeights::default(),
             clock_drift_pct: 0,
             read_pct: 0,
+            lease_read_drift_bound: None,
+            slowest_node_first: false,
         }
     }
 }
@@ -442,6 +473,49 @@ impl SimConfig {
         }
     }
 
+    /// A calm cluster whose leader has the slowest clock, cut off and restored.
+    ///
+    /// Built for one window and nothing else: a leader that still holds a
+    /// lease while somebody else has already replaced it. Every setting here is
+    /// aimed at the conjunction that window needs.
+    ///
+    /// *Calm*, because a lease is only issued to a leader whose own term no-op
+    /// has committed, and under `chaos` that almost never happens — measured,
+    /// 35 of 3,633 reads were confirmed at all, so the lease path was barely
+    /// reached and a run over it said nothing about leases.
+    ///
+    /// *Slowest node first*, because the hazard is the leader's clock running
+    /// slower than its followers': its lease is counted in its own ticks and
+    /// their election timeout in theirs.
+    ///
+    /// *Isolate and heal, aimed at the leader*, because the rival has to be
+    /// elected while the old leader is still counting down a lease it can no
+    /// longer refresh — which means cutting the leader off and leaving the
+    /// others able to talk.
+    ///
+    /// With `ReadOnlyOption::ReadIndex` this profile is safe and sweeps clean,
+    /// which is what makes it usable as the control arm of the lease
+    /// demonstration.
+    pub fn lease_drift(nodes: usize) -> Self {
+        Self {
+            read_pct: 40,
+            clock_skew_pct: 50,
+            slowest_node_first: true,
+            target_leader_pct: 100,
+            nemesis_period_ns: 150_000_000,
+            nemesis_weights: NemesisWeights {
+                split: 5,
+                one_way: 0,
+                isolate: 45,
+                heal: 50,
+                crash: 0,
+                restart: 0,
+            },
+            nodes,
+            ..Self::default()
+        }
+    }
+
     /// Every profile `named` accepts. Kept next to it so an error message
     /// listing the choices cannot drift from the choices themselves, and a
     /// slice rather than a fixed-size array so adding one is a single edit
@@ -453,6 +527,7 @@ impl SimConfig {
         "disk-chaos",
         "disk-hunt",
         "read-hunt",
+        "lease-drift",
         "snapshot-hunt",
     ];
 
@@ -468,6 +543,7 @@ impl SimConfig {
             "disk-hunt" => Some(Self::disk_hunt(nodes)),
             "snapshot-hunt" => Some(Self::snapshot_hunt(nodes)),
             "read-hunt" => Some(Self::read_hunt(nodes)),
+            "lease-drift" => Some(Self::lease_drift(nodes)),
             _ => None,
         }
     }
@@ -750,6 +826,28 @@ pub struct Stats {
     pub old_term_commit_windows: u64,
     /// Distinct terms that produced a leader.
     pub terms_with_leaders: u64,
+    /// The highest term any node reached.
+    ///
+    /// Read next to `terms_with_leaders`, the two say what pre-vote is worth. A
+    /// term that was entered and produced no leader is a term somebody burned:
+    /// a node campaigning where nobody could hear it, raising its term each
+    /// time, and carrying the total back into a healthy cluster when it
+    /// reconnects. With pre-vote the two numbers track each other; without it
+    /// the gap is the disruption.
+    pub highest_term: Term,
+    /// Leaders that stopped leading while they could still reach a majority.
+    ///
+    /// What pre-vote exists to prevent (TR-8a). A node that was partitioned
+    /// away campaigns, raises its own term with nobody to hear it, and on
+    /// rejoining carries that inflated term into the first message it sends —
+    /// at which point a healthy leader with a full quorum steps down for a node
+    /// that has no more log than it does. Check-quorum does not stop this: it
+    /// filters vote *requests*, and the term arrives in an ordinary response.
+    ///
+    /// A leader that steps down while genuinely cut off is not counted, because
+    /// that is correct behaviour and counting it would make the two arms of the
+    /// demonstration look alike.
+    pub leaders_deposed_with_a_quorum: u64,
     /// Times a leader committed an earlier term's entry on replica count alone.
     /// Zero unless the Figure 8 guard was compiled out.
     pub fig8_bypasses: u64,
@@ -788,6 +886,30 @@ pub struct Stats {
     // never got one answered is distinguishable from one where they worked.
     /// Linearizable reads asked for.
     pub reads_issued: u64,
+    /// Reads a leader was entitled to answer out of its own lease, without a
+    /// heartbeat round.
+    ///
+    /// The coverage counter for the lease demonstration. A run configured for
+    /// lease reads whose leaders never actually held a lease has taken the fast
+    /// path zero times, and whatever it found or did not find says nothing
+    /// about leases.
+    pub lease_reads_served: u64,
+    /// Lease reads served by a node that some other live node had already
+    /// overtaken.
+    ///
+    /// The window the lease hazard lives in, counted rather than assumed —
+    /// [KEEL-4](BUGS.md)'s lesson applied to reads. A demonstration that
+    /// reports "no violation" with this at zero has not tested leases; it has
+    /// tested a cluster that never got into the state where leases are
+    /// dangerous.
+    ///
+    /// The condition is *behind the cluster*, not *a second leader exists*, and
+    /// the difference is the thing this counter taught. The first version
+    /// counted rival leaders and read zero on runs that were producing stale
+    /// reads by the hundred: the hazard does not need two nodes claiming
+    /// leadership at the same instant, only one lease-holder answering out of a
+    /// commit index the cluster has already moved past.
+    pub lease_reads_behind_the_cluster: u64,
     /// Reads the core confirmed an index for. A read issued to a node that then
     /// lost its leadership is never confirmed, which is correct and not a
     /// violation — but a run where none were confirmed checked nothing.
@@ -933,10 +1055,24 @@ impl World {
                 unsafe_disable_fig8_guard: cfg.disable_fig8_guard,
                 max_entries_per_msg: cfg.max_entries_per_msg,
                 max_inflight_msgs: cfg.max_inflight_msgs,
+                read_only: match cfg.lease_read_drift_bound {
+                    None => ReadOnlyOption::ReadIndex,
+                    Some(drift_bound_pct) => ReadOnlyOption::LeaseBased { drift_bound_pct },
+                },
                 ..Config::new(*id)
             };
             let skew = cfg.clock_skew_pct.min(50);
-            let tick_period = if skew == 0 {
+            let tick_period = if cfg.slowest_node_first {
+                // Assigned rather than drawn, so the conjunction the lease
+                // hazard needs is reached by construction instead of by luck.
+                // No draw at all, which is why this cannot be switched on for a
+                // profile that already has a pinned fingerprint.
+                if *id == 1 {
+                    cfg.tick_ns * (100 + skew) / 100
+                } else {
+                    cfg.tick_ns * (100 - skew) / 100
+                }
+            } else if skew == 0 {
                 cfg.tick_ns
             } else {
                 let low = cfg.tick_ns * (100 - skew) / 100;
@@ -1349,6 +1485,28 @@ impl World {
             .unwrap_or(0);
 
         let key = format!("c{client}").into_bytes();
+        // Counted before the step, because `lease_valid()` is the state that
+        // decides whether the core may answer locally, and the step is what
+        // consumes it.
+        if self
+            .nodes
+            .get(&target)
+            .is_some_and(|n| n.core.lease_valid())
+        {
+            self.stats.lease_reads_served += 1;
+            let mine = self
+                .nodes
+                .get(&target)
+                .map(|n| n.core.log().committed())
+                .unwrap_or(0);
+            if self
+                .nodes
+                .values()
+                .any(|n| n.alive && n.id != target && n.core.log().committed() > mine)
+            {
+                self.stats.lease_reads_behind_the_cluster += 1;
+            }
+        }
         match self.nodes.get_mut(&target) {
             // A read the core refuses — no leader, or a leader whose no-op has
             // not committed — is a refusal like any other and not a violation.
@@ -2079,6 +2237,7 @@ impl World {
         // information at far greater cost.
         let state_digest = state_digest(&node.sm);
         let became_leader = role == Role::Leader && !node.was_leader;
+        let stopped_leading = role != Role::Leader && node.was_leader;
         node.was_leader = role == Role::Leader;
         let old_term_window = role == Role::Leader
             && commit > 0
@@ -2112,6 +2271,30 @@ impl World {
             });
         }
 
+        // A leader that stepped down while it could still reach a majority.
+        // Counted here rather than reported as a violation: it costs
+        // availability, not safety, and a rule that costs only availability is
+        // demonstrated by comparing two arms rather than by failing one.
+        if stopped_leading {
+            let ids: Vec<NodeId> = self.nodes.keys().copied().collect();
+            let quorum = ids.len() / 2 + 1;
+            let reachable = ids
+                .iter()
+                .filter(|other| {
+                    **other == id
+                        || (self.nodes.get(*other).is_some_and(|n| n.alive)
+                            && !self.net.is_cut(id, **other)
+                            && !self.net.is_cut(**other, id))
+                })
+                .count();
+            if reachable >= quorum {
+                self.stats.leaders_deposed_with_a_quorum += 1;
+                self.trace(format!(
+                    "node {id} lost leadership while it still had a quorum"
+                ));
+            }
+        }
+        self.stats.highest_term = self.stats.highest_term.max(term);
         if became_leader {
             self.stats.elections += 1;
             let digest = &self.nodes[&id].digest;

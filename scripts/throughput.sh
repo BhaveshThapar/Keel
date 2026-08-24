@@ -112,7 +112,7 @@ measure() {
     }' >>"$ROWS"
 }
 
-for profile in default chaos fig8-hunt read-hunt; do
+for profile in default chaos fig8-hunt read-hunt lease-drift; do
     for nodes in 3 5; do measure "$profile" "$nodes"; done
 done
 # The disk profiles are the reason this file exists. Every record is really
@@ -185,7 +185,7 @@ budget() {
     echo "measurement and this paragraph goes away."
     echo
 
-    read -r net_rate net_row <<<"$(slowest_steps_per_s '^(default|chaos|fig8-hunt|read-hunt)$')"
+    read -r net_rate net_row <<<"$(slowest_steps_per_s '^(default|chaos|fig8-hunt|read-hunt|lease-drift)$')"
     read -r disk_rate disk_row <<<"$(slowest_steps_per_s '^disk-')"
 
     printf "simulator job    slowest cell %-24s %9s steps/s\n" "$net_row" "$net_rate"

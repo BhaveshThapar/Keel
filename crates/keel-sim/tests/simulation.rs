@@ -263,6 +263,9 @@ const PINNED: &[(&str, u64, u64)] = &[
     ("read-hunt", 0, 0x67af_feb9_5ead_cae0),
     ("read-hunt", 7, 0xfe39_4c8c_485a_9157),
     ("read-hunt", 42, 0x11cf_bdd1_963e_eb4e),
+    ("lease-drift", 0, 0xe454_41a7_ceaa_13e5),
+    ("lease-drift", 7, 0x92b3_606e_4e93_f6be),
+    ("lease-drift", 42, 0x7a5f_1f9c_2e46_0e6f),
 ];
 
 #[test]
@@ -621,5 +624,104 @@ fn clock_drift_is_off_unless_a_profile_asks_for_it() {
         without.fingerprint(),
         with.fingerprint(),
         "turning drift on changed nothing, so the clock stream is never drawn"
+    );
+}
+
+/// The lease demonstration's two arms, as a test rather than only as a script.
+///
+/// The script is the artifact; this is the gate. A demonstration that stopped
+/// demonstrating would otherwise be noticed only when somebody next ran the
+/// script by hand, and the failure it is guarding against — a lease that
+/// silently stopped being reachable — looks exactly like success.
+#[test]
+fn leases_are_only_safe_inside_their_clock_assumption() {
+    let control_seeds = 12;
+
+    // Control: the same profile, the same seeds, confirming every read with a
+    // heartbeat round. Safe under any clock behaviour, and it has to be clean
+    // or the experiment below is measuring the profile rather than the lease.
+    for seed in 0..control_seeds {
+        let cfg = SimConfig::named("lease-drift", 3).expect("lease-drift exists");
+        assert!(
+            cfg.lease_read_drift_bound.is_none(),
+            "the control holds a lease"
+        );
+        let mut world = World::new(seed, cfg);
+        world.run(40_000);
+        assert!(
+            !world.is_broken(),
+            "the control arm failed on seed {seed}, so the experiment proves nothing:\n{}",
+            world.failure_report()
+        );
+        assert!(
+            world.stats.reads_answered > 0,
+            "the control answered no reads on seed {seed}"
+        );
+    }
+
+    // Experiment: the same runs, serving reads from a lease that assumes no
+    // clock drift at all, on a cluster whose leader's clock is the slowest in
+    // it. The assumption is false and the reads go stale.
+    let mut dirty = 0;
+    let mut lease_reads = 0;
+    for seed in 0..control_seeds {
+        let mut cfg = SimConfig::named("lease-drift", 3).expect("lease-drift exists");
+        cfg.lease_read_drift_bound = Some(0);
+        let mut world = World::new(seed, cfg);
+        world.run(40_000);
+        lease_reads += world.stats.lease_reads_served;
+        if world.is_broken() {
+            dirty += 1;
+        }
+    }
+    assert!(
+        lease_reads > 0,
+        "no read was ever served from a lease, so the experiment exercised nothing"
+    );
+    assert!(
+        dirty > 0,
+        "serving reads from a lease on a cluster whose clocks are half a period \
+         apart found nothing in {control_seeds} seeds; either the window stopped \
+         being reachable or the read oracles stopped looking"
+    );
+}
+
+/// Pre-vote's cost, measured rather than asserted.
+///
+/// Unlike every other demonstration in this repository, what pre-vote buys is
+/// availability rather than safety — a run without it is not *wrong*, it is
+/// disrupted. So this compares two arms instead of failing one, and the number
+/// it compares is terms that were entered and produced no leader: a node
+/// campaigning where nobody can hear it, raising its term each time, and
+/// carrying the total back into a healthy cluster when it reconnects.
+#[test]
+fn pre_vote_stops_a_partitioned_node_from_burning_terms() {
+    let seeds = 20;
+    let burned = |pre_vote: bool| {
+        let mut total = 0u64;
+        for seed in 0..seeds {
+            let mut cfg = SimConfig::named("chaos", 3).expect("chaos exists");
+            cfg.pre_vote = pre_vote;
+            let mut world = World::new(seed, cfg);
+            world.run(40_000);
+            total += world
+                .stats
+                .highest_term
+                .saturating_sub(world.stats.terms_with_leaders);
+        }
+        total
+    };
+    let with = burned(true);
+    let without = burned(false);
+    assert!(
+        without >= with * 3,
+        "turning pre-vote off burned {without} terms against {with} with it on — \
+         less than the threefold margin this demonstration claims, so it is no \
+         longer showing what pre-vote is for"
+    );
+    assert!(
+        without > 50,
+        "only {without} terms were burned without pre-vote across {seeds} seeds, \
+         which is too few to be a margin rather than noise"
     );
 }

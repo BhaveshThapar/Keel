@@ -117,6 +117,8 @@ node answered and when.
 | Turning clock drift on changes the run; leaving it off draws nothing | `clock_drift_is_off_unless_a_profile_asks_for_it` | enforced |
 | The default nemesis weights select exactly the ranges they replaced, for every roll | `the_default_weights_reproduce_the_ranges_they_replaced` | enforced |
 | A roll never falls off the end of the weight table, whatever the weights | `every_roll_selects_an_action_whatever_the_weights_are` | enforced |
+| A lease read is safe only inside its clock assumption, and unsafe outside it | `leases_are_only_safe_inside_their_clock_assumption`; `scripts/negative-demos/lease-drift.sh` — control clean, experiment dirty on the same seeds | enforced |
+| Pre-vote stops a partitioned node burning terms nobody can hear | `pre_vote_stops_a_partitioned_node_from_burning_terms`; `scripts/negative-demos/pre-vote.sh` — a margin, because what pre-vote costs is availability rather than safety | enforced |
 | A client's read observed under a real cluster's faults | `scripts/porcupine.sh` — see [Checked by somebody else's checker](#checked-by-somebody-elses-checker) | enforced |
 
 ## A cluster under chaos

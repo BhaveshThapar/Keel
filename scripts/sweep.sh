@@ -57,6 +57,16 @@ provenance_of "$OUT"
             --nodes "$nodes" --profile read-hunt | tail -2
     done
 
+    # A calm cluster whose leader has the slowest clock in it. Clean here
+    # because reads are confirmed by a heartbeat round; the lease arm, which is
+    # not clean, is scripts/negative-demos/lease-drift.sh.
+    for nodes in 3 5; do
+        echo "--- profile=lease-drift nodes=$nodes"
+        ./target/release/keel-sim run \
+            --from 0 --count "$SEEDS" --steps "$STEPS" \
+            --nodes "$nodes" --profile lease-drift | tail -2
+    done
+
     echo "--- profile=fig8-hunt nodes=3"
     ./target/release/keel-sim run \
         --from 0 --count "$SEEDS" --steps $(( STEPS + 20000 )) \

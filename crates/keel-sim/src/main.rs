@@ -54,6 +54,36 @@ enum Command {
         /// order. Requires --features negative-demos.
         #[arg(long)]
         skip_apply_ordering: bool,
+        /// Turn pre-vote off.
+        ///
+        /// Not a removed safety rule and not behind a feature: pre-vote is a
+        /// shipped option, and what it buys is availability rather than safety.
+        /// The demonstration is therefore a comparison of two arms rather than
+        /// one arm failing.
+        #[arg(long)]
+        no_pre_vote: bool,
+        /// Serve reads from the leader's lease, assuming clock drift stays
+        /// under this percentage.
+        ///
+        /// Also a shipped option. A smaller bound means a *longer* lease, so
+        /// `--lease-reads 0` is the most optimistic setting there is and the
+        /// one a clock that actually drifts falsifies fastest.
+        #[arg(long)]
+        lease_reads: Option<u8>,
+        /// Redraw each node's tick period by this percentage on every tick.
+        #[arg(long)]
+        clock_drift_pct: Option<u64>,
+        /// Draw each node's tick period this far from the nominal one, once, at
+        /// construction. Persistent disagreement about how fast time passes,
+        /// as opposed to the wandering `--clock-drift-pct` produces.
+        #[arg(long)]
+        clock_skew_pct: Option<u64>,
+        /// Give node 1 the slowest clock and everybody else the fastest.
+        #[arg(long)]
+        slowest_node_first: bool,
+        /// What fraction of client operations are linearizable reads.
+        #[arg(long)]
+        read_pct: Option<u32>,
     },
     /// Replay one seed and print what it did.
     Repro {
@@ -73,6 +103,20 @@ enum Command {
         skip_record_crc: bool,
         #[arg(long)]
         skip_apply_ordering: bool,
+        #[arg(long)]
+        no_pre_vote: bool,
+        #[arg(long)]
+        lease_reads: Option<u8>,
+        #[arg(long)]
+        clock_drift_pct: Option<u64>,
+        #[arg(long)]
+        clock_skew_pct: Option<u64>,
+        /// Give node 1 the slowest clock and everybody else the fastest.
+        #[arg(long)]
+        slowest_node_first: bool,
+        /// What fraction of client operations are linearizable reads.
+        #[arg(long)]
+        read_pct: Option<u32>,
     },
     /// Run a seed twice and require identical results.
     Determinism {
@@ -92,13 +136,26 @@ enum Command {
     },
 }
 
-/// Which safety rules a run has had removed.
+/// Which safety rules a run has had removed, and which shipped options it has
+/// been asked to run with.
+///
+/// The two are kept in one struct and told apart by `any_rule_removed`. A
+/// removed rule is a build that must never ship and is gated behind a cargo
+/// feature; an option is behaviour a real deployment can choose, and a
+/// demonstration that turns one on is falsifying the *assumption* it comes
+/// with rather than the code.
 #[derive(Clone, Copy, Default)]
 struct Removed {
     fig8_guard: bool,
     tail_erase: bool,
     record_crc: bool,
     apply_ordering: bool,
+    no_pre_vote: bool,
+    lease_reads: Option<u8>,
+    clock_drift_pct: Option<u64>,
+    clock_skew_pct: Option<u64>,
+    slowest_node_first: bool,
+    read_pct: Option<u32>,
 }
 
 fn config_with_guard(profile: &str, nodes: usize, removed: Removed) -> Option<SimConfig> {
@@ -115,6 +172,24 @@ fn config_with_guard(profile: &str, nodes: usize, removed: Removed) -> Option<Si
     cfg.skip_tail_erase = removed.tail_erase;
     cfg.skip_record_crc = removed.record_crc;
     cfg.skip_apply_ordering = removed.apply_ordering;
+    if removed.no_pre_vote {
+        cfg.pre_vote = false;
+    }
+    if let Some(bound) = removed.lease_reads {
+        cfg.lease_read_drift_bound = Some(bound);
+    }
+    if let Some(pct) = removed.clock_drift_pct {
+        cfg.clock_drift_pct = pct;
+    }
+    if let Some(pct) = removed.clock_skew_pct {
+        cfg.clock_skew_pct = pct;
+    }
+    if removed.slowest_node_first {
+        cfg.slowest_node_first = true;
+    }
+    if let Some(pct) = removed.read_pct {
+        cfg.read_pct = pct;
+    }
     Some(cfg)
 }
 
@@ -131,12 +206,24 @@ fn main() -> ExitCode {
             skip_tail_erase,
             skip_record_crc,
             skip_apply_ordering,
+            no_pre_vote,
+            lease_reads,
+            clock_drift_pct,
+            clock_skew_pct,
+            slowest_node_first,
+            read_pct,
         } => {
             let removed = Removed {
                 fig8_guard: disable_fig8_guard,
                 tail_erase: skip_tail_erase,
                 record_crc: skip_record_crc,
                 apply_ordering: skip_apply_ordering,
+                no_pre_vote,
+                lease_reads,
+                clock_drift_pct,
+                clock_skew_pct,
+                slowest_node_first,
+                read_pct,
             };
             let Some(cfg) = config_with_guard(&profile, nodes, removed) else {
                 eprintln!(
@@ -186,12 +273,24 @@ fn main() -> ExitCode {
             skip_tail_erase,
             skip_record_crc,
             skip_apply_ordering,
+            no_pre_vote,
+            lease_reads,
+            clock_drift_pct,
+            clock_skew_pct,
+            slowest_node_first,
+            read_pct,
         } => {
             let removed = Removed {
                 fig8_guard: disable_fig8_guard,
                 tail_erase: skip_tail_erase,
                 record_crc: skip_record_crc,
                 apply_ordering: skip_apply_ordering,
+                no_pre_vote,
+                lease_reads,
+                clock_drift_pct,
+                clock_skew_pct,
+                slowest_node_first,
+                read_pct,
             };
             let Some(cfg) = config_with_guard(&profile, nodes, removed) else {
                 eprintln!(
@@ -229,10 +328,23 @@ fn main() -> ExitCode {
                 s.reads_issued, s.reads_confirmed, s.reads_answered
             );
             println!("  read recency windows {}", s.read_recency_windows);
+            println!(
+                "  lease reads served {} ({} behind the cluster)",
+                s.lease_reads_served, s.lease_reads_behind_the_cluster
+            );
+            println!(
+                "  leaders deposed with a quorum {}",
+                s.leaders_deposed_with_a_quorum
+            );
             println!("  committed index  {}", s.committed);
             println!("  applied index    {}", s.applied);
             println!("  live nodes       {}/{nodes}", world.live_nodes());
             println!("  terms led        {}", s.terms_with_leaders);
+            println!("  highest term     {}", s.highest_term);
+            println!(
+                "  terms burned without a leader {}",
+                s.highest_term.saturating_sub(s.terms_with_leaders)
+            );
             println!("  entries rewritten {}", s.entries_rewritten);
             println!("  old-term commit windows {}", s.old_term_commit_windows);
             println!("  figure-8 bypasses {}", s.fig8_bypasses);

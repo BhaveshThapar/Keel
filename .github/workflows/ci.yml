@@ -136,7 +136,7 @@ jobs:
       matrix:
         shard: [0, 1]
         nodes: [3, 5]
-        profile: [default, chaos, fig8-hunt, read-hunt]
+        profile: [default, chaos, fig8-hunt, read-hunt, lease-drift]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -225,7 +225,15 @@ jobs:
       fail-fast: false
       matrix:
         demo:
-          [figure-8, torn-record, tearing-is-load-bearing, split-batch, apply-ordering]
+          [
+            figure-8,
+            torn-record,
+            tearing-is-load-bearing,
+            split-batch,
+            apply-ordering,
+            pre-vote,
+            lease-drift,
+          ]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

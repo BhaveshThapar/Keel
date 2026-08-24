@@ -23,7 +23,7 @@ jobs:
       fail-fast: false
       matrix:
         nodes: [3, 5]
-        profile: [default, chaos, fig8-hunt, read-hunt]
+        profile: [default, chaos, fig8-hunt, read-hunt, lease-drift]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
