@@ -58,7 +58,10 @@ that commit.
 
 One remains, and it is hard for the same reason:
 
-1. **P16** (snapshots in the simulator). A predicted false positive —
+1. **P16** (snapshots in the simulator) — *the prediction below was right, and
+   the fix landed before any profile took a snapshot.* What it did not predict is
+   [KEEL-8](BUGS.md), a second and different way an install changes a digest.
+   A predicted false positive —
    `LogDigest` rebasing to `(snap, 0)` on the install path *and* on the far more
    common restart path ([digest.rs:84](crates/keel-sim/src/digest.rs#L84),
    [world.rs:527](crates/keel-sim/src/world.rs#L527)) — presents as a State
@@ -102,7 +105,7 @@ feature set per package per invocation, so `cargo test --workspace` would build
 | ~~P13~~ | ~~`lsm-kv` checkpoints; `keel-sm`'s applied-state digest~~ | **Done** ([upstream #9](https://github.com/BhaveshThapar/LSM-Tree-Key-Value-Storage-Engine/pull/9)). A hard-link checkpoint opens with the same contents *and session table*, and survives the source losing the names it linked. The read-only `Manifest` view this asked for was not needed: the live set is already in memory under a lock the checkpoint takes |
 | ~~P14~~ | ~~The chunk stream, staging, publish-rename~~ | **Done.** Cut at *every* chunk boundary in turn, each resumes and completes with the sender's digest; a rejected chunk does not advance the position; a digest mismatch throws the staging directory away |
 | ~~P15~~ | ~~Snapshots end to end in the host loop~~ | **Done.** Killed mid-stream and resumed: the second attempt provably sends fewer chunks than the whole snapshot, and the two attempts together cover it exactly once |
-| P16 | **Snapshots in the simulator, digest rebase first** | Every profile sweeps clean with snapshots on; `snapshot-hunt` records non-zero `streams_interrupted` **and** `streams_resumed` |
+| P16 | **Snapshots in the simulator, digest rebase first** | **Partly done.** The rebase landed first and is proven; snapshots are taken, streamed, interrupted, resumed and installed, with `streams_interrupted` and `streams_resumed` both non-zero. **Not claimed:** a clean `snapshot-hunt` sweep — 59 of 60 seeds pass and seed 14 is [KEEL-8](BUGS.md) |
 | P17 | `keel-chaos`: partition proxy, process nemesis, clock jumps | A 3-node cluster partitioned, healed, `SIGSTOP`ped, `SIGKILL`ed and clock-jumped from a seeded schedule, with a probe confirming the jump reached `CLOCK_MONOTONIC` |
 | P18 | Real cluster killed in a loop; Porcupine; Maelstrom under partition | 1,000 kill cycles, zero acked-write loss; Porcupine accepts the real history and rejects the mutated fixture |
 
