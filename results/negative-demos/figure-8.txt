@@ -3,8 +3,8 @@ Figure 8: is the current-term commit rule load-bearing?
   profile fig8-hunt, 3 nodes, 40 seeds x 80000 steps
 ==============================================================
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
-commit: e6177ee
-date:   2026-08-24T02:49:14Z
+commit: 2ca19d4
+date:   2026-08-24T04:24:45Z
 
 --- CONTROL: the rule in place. Expect every seed to pass.
 

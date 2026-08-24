@@ -1,7 +1,7 @@
 === keel-sim throughput ===
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
-commit: c7641aa
-date:   2026-08-23T17:09:29Z
+commit: bafd6b0
+date:   2026-08-24T12:51:38Z
 
 What a seed-run costs, so a CI seed count can be derived instead of
 guessed. Nothing here is a statement about the system under test: the
@@ -11,16 +11,16 @@ Each cell was timed 3 times and the slowest repetition is the one
 reported, because a budget has to survive the unlucky run.
 
 profile      nodes   seeds    steps   seconds      steps/s    seed-runs/s
-default          3      60    40000      3.39       708592          17.71
-default          5      60    40000      2.78       863620          21.59
-chaos            3      60    40000      2.56       935673          23.39
-chaos            5      60    40000      3.30       727273          18.18
-fig8-hunt        3      60    40000      2.19      1094891          27.37
-fig8-hunt        5      60    40000      2.18      1101928          27.55
-disk-chaos       3      60    40000      7.78       308682           7.72
-disk-chaos       5      60    40000      8.32       288288           7.21
-disk-hunt        3      60    40000      5.23       458628          11.47
-disk-hunt        5      60    40000      6.27       382714           9.57
+default          3      60    40000      4.63       518359          12.96
+default          5      60    40000      4.01       597758          14.94
+chaos            3      60    40000      4.50       533808          13.35
+chaos            5      60    40000      4.69       511400          12.78
+fig8-hunt        3      60    40000      3.00       798935          19.97
+fig8-hunt        5      60    40000      3.11       772449          19.31
+disk-chaos       3      60    40000     12.20       196673           4.92
+disk-chaos       5      60    40000     14.12       169996           4.25
+disk-hunt        3      60    40000      7.15       335570           8.39
+disk-hunt        5      60    40000      9.50       252605           6.32
 
 --- what this buys a CI job
 
@@ -36,12 +36,12 @@ in .github/workflows/nightly.yml runs this same script on the runner
 and uploads the result. The first time it runs, the factor becomes a
 measurement and this paragraph goes away.
 
-simulator job    slowest cell default at 3 nodes          708592 steps/s
-                 at 50000 steps:  3500 seeds is the 25-minute ceiling
-                                   700 seeds per shard is what CI asks for
-disk-simulator   slowest cell disk-chaos at 5 nodes       288288 steps/s
-                 at 40000 steps:  1800 seeds is the 25-minute ceiling
-                                   350 seeds is what CI asks for
+simulator job    slowest cell chaos at 5 nodes            511400 steps/s
+                 at 50000 steps:  2550 seeds is the 25-minute ceiling
+                                   500 seeds per shard is what CI asks for
+disk-simulator   slowest cell disk-chaos at 5 nodes       169996 steps/s
+                 at 40000 steps:  1050 seeds is the 25-minute ceiling
+                                   200 seeds is what CI asks for
 
 CI asks for the 5-minute figure, not the ceiling. The five-fold gap is
 margin against the runner factor being wrong, and it is deliberate: a
@@ -49,8 +49,11 @@ budget spent to its limit fails the day the runners get slower, and a
 red build nobody can attribute to a code change is worse than a sweep
 that is narrower than it could be.
 
-The measurement's finding is that the counts these replace — 250 per
-shard and 120 on the disk job — were low by roughly a factor of three,
-not high. Sizing by eye was conservative rather than reckless, but it
-was still unsupported, and P19's distinct-seed target spends against
-this same file rather than against another guess.
+Re-measured whenever a phase changes what a seed costs. P8 put the
+real state machine under every node — every committed entry is now
+decoded, deduplicated and written rather than counted — and the
+network profiles got about fifteen per cent slower per event for it.
+The budget follows the measurement rather than the other way round.
+
+P19's distinct-seed target spends against this same file rather than
+against another guess.
