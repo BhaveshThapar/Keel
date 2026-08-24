@@ -1,0 +1,289 @@
+==============================================================
+Apply ordering: is the model oracle watching what applying produced?
+  profile default, 3 nodes, 25 seeds x 30000 steps
+==============================================================
+host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
+commit: 9136692
+date:   2026-08-24T13:02:29Z
+
+--- CONTROL: entries applied in index order. Expect every seed to pass.
+
+25 seeds x 30000 steps, 3 nodes, default profile: 25 passed, 0 failed (mean 2749 entries committed per run)
+
+--- EXPERIMENT: entries applied in fsync-completion order.
+    Expect seeds to fail, and the report to name the model.
+
+seed 0 failed after 542 events
+  violation: State Machine Safety: nodes 3 and 1 both applied through index 31 and hold different state: 4a35040bda3c8ff0 against 981de866c01a2488. They agree about which entries they applied, so applying them produced different results
+  violation: State Machine Safety: node 1 applied through index 31 and holds 981de866c01a2488; a reference state machine fed the same committed entries in order, once each, holds 4a35040bda3c8ff0. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 0 --nodes 3
+  recent events:
+    [   286421390ns] node 1 role=Follower term=1 last=34 commit=31 applied=31
+  node state:
+    node 1 alive=true role=Follower term=1 last=34 commit=31 applied=31
+    node 2 alive=true role=Follower term=1 last=32 commit=25 applied=25
+    node 3 alive=true role=Leader term=1 last=37 commit=33 applied=33
+
+seed 1 failed after 307 events
+  violation: State Machine Safety: nodes 2 and 1 both applied through index 8 and hold different state: 5949b1f59ac8a65c against cbf29ce484222325. They agree about which entries they applied, so applying them produced different results
+  violation: State Machine Safety: node 1 applied through index 8 and holds cbf29ce484222325; a reference state machine fed the same committed entries in order, once each, holds 5949b1f59ac8a65c. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 1 --nodes 3
+  recent events:
+    [   247284163ns] node 1 role=Follower term=1 last=12 commit=9 applied=8
+  node state:
+    node 1 alive=true role=Follower term=1 last=12 commit=9 applied=8
+    node 2 alive=true role=Leader term=1 last=13 commit=9 applied=8
+    node 3 alive=true role=Follower term=1 last=9 commit=5 applied=5
+
+seed 2 failed after 463 events
+  violation: State Machine Safety: node 1 applied through index 27 and holds d37aec48737ae9f0; a reference state machine fed the same committed entries in order, once each, holds 981de866c01a2488. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 2 --nodes 3
+  recent events:
+    [   258428413ns] node 1 role=Follower term=1 last=27 commit=27 applied=27
+  node state:
+    node 1 alive=true role=Follower term=1 last=27 commit=27 applied=27
+    node 2 alive=true role=Follower term=1 last=26 commit=23 applied=23
+    node 3 alive=true role=Leader term=1 last=29 commit=27 applied=25
+
+seed 3 failed after 329 events
+  violation: State Machine Safety: node 2 applied through index 6 and holds cbf29ce484222325; a reference state machine fed the same committed entries in order, once each, holds 5949b1f59ac8a65c. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 3 --nodes 3
+  recent events:
+    [   270018691ns] node 2 role=Follower term=1 last=9 commit=9 applied=6
+  node state:
+    node 1 alive=true role=Follower term=1 last=9 commit=5 applied=5
+    node 2 alive=true role=Follower term=1 last=9 commit=9 applied=6
+    node 3 alive=true role=Leader term=1 last=13 commit=9 applied=5
+
+seed 4 failed after 370 events
+  violation: State Machine Safety: nodes 2 and 3 both applied through index 14 and hold different state: 723032766625ed39 against 0b60d59ab4eb1f5c. They agree about which entries they applied, so applying them produced different results
+  violation: State Machine Safety: node 3 applied through index 14 and holds 0b60d59ab4eb1f5c; a reference state machine fed the same committed entries in order, once each, holds 723032766625ed39. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 4 --nodes 3
+  recent events:
+    [   260494230ns] node 3 role=Follower term=1 last=17 commit=14 applied=14
+  node state:
+    node 1 alive=true role=Follower term=1 last=17 commit=13 applied=13
+    node 2 alive=true role=Leader term=1 last=21 commit=15 applied=14
+    node 3 alive=true role=Follower term=1 last=17 commit=14 applied=14
+
+seed 5 failed after 385 events
+  violation: State Machine Safety: nodes 2 and 1 both applied through index 7 and hold different state: 5949b1f59ac8a65c against cbf29ce484222325. They agree about which entries they applied, so applying them produced different results
+  violation: State Machine Safety: node 1 applied through index 7 and holds cbf29ce484222325; a reference state machine fed the same committed entries in order, once each, holds 5949b1f59ac8a65c. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 5 --nodes 3
+  recent events:
+    [   319064260ns] node 1 role=Follower term=1 last=10 commit=7 applied=7
+  node state:
+    node 1 alive=true role=Follower term=1 last=10 commit=7 applied=7
+    node 2 alive=true role=Leader term=1 last=13 commit=9 applied=9
+    node 3 alive=true role=Follower term=1 last=13 commit=9 applied=7
+
+seed 6 failed after 1172 events
+  violation: State Machine Safety: nodes 1 and 3 both applied through index 99 and hold different state: 6c9b9db783f6b979 against a7f8a19937577ee1. They agree about which entries they applied, so applying them produced different results
+  violation: State Machine Safety: node 3 applied through index 99 and holds a7f8a19937577ee1; a reference state machine fed the same committed entries in order, once each, holds 6c9b9db783f6b979. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 6 --nodes 3
+  recent events:
+    [   331398495ns] node 3 role=Follower term=1 last=101 commit=99 applied=99
+  node state:
+    node 1 alive=true role=Leader term=1 last=105 commit=99 applied=99
+    node 2 alive=true role=Follower term=1 last=101 commit=99 applied=99
+    node 3 alive=true role=Follower term=1 last=101 commit=99 applied=99
+
+seed 7 failed after 258 events
+  violation: State Machine Safety: node 1 applied through index 5 and holds cbf29ce484222325; a reference state machine fed the same committed entries in order, once each, holds 5949b1f59ac8a65c. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 7 --nodes 3
+  recent events:
+    [   225517574ns] node 1 role=Leader term=1 last=9 commit=5 applied=5
+  node state:
+    node 1 alive=true role=Leader term=1 last=9 commit=5 applied=5
+    node 2 alive=true role=Follower term=1 last=5 commit=1 applied=1
+    node 3 alive=true role=Follower term=1 last=5 commit=1 applied=1
+
+seed 8 failed after 535 events
+  violation: State Machine Safety: nodes 2 and 3 both applied through index 27 and hold different state: 981de866c01a2488 against d37aec48737ae9f0. They agree about which entries they applied, so applying them produced different results
+  violation: State Machine Safety: node 3 applied through index 27 and holds d37aec48737ae9f0; a reference state machine fed the same committed entries in order, once each, holds 981de866c01a2488. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 8 --nodes 3
+  recent events:
+    [   301894515ns] node 3 role=Follower term=1 last=30 commit=27 applied=27
+  node state:
+    node 1 alive=true role=Follower term=1 last=29 commit=25 applied=23
+    node 2 alive=true role=Leader term=1 last=33 commit=29 applied=27
+    node 3 alive=true role=Follower term=1 last=30 commit=27 applied=27
+
+seed 9 failed after 412 events
+  violation: State Machine Safety: nodes 1 and 2 both applied through index 18 and hold different state: 36d33e94b2c54301 against 723032766625ed39. They agree about which entries they applied, so applying them produced different results
+  violation: State Machine Safety: node 2 applied through index 18 and holds 723032766625ed39; a reference state machine fed the same committed entries in order, once each, holds 36d33e94b2c54301. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 9 --nodes 3
+  recent events:
+    [   275881271ns] node 2 role=Follower term=1 last=21 commit=18 applied=18
+  node state:
+    node 1 alive=true role=Leader term=1 last=25 commit=18 applied=18
+    node 2 alive=true role=Follower term=1 last=21 commit=18 applied=18
+    node 3 alive=true role=Follower term=1 last=17 commit=14 applied=14
+
+seed 10 failed after 266 events
+  violation: State Machine Safety: nodes 3 and 2 both applied through index 6 and hold different state: 5949b1f59ac8a65c against cbf29ce484222325. They agree about which entries they applied, so applying them produced different results
+  violation: State Machine Safety: node 2 applied through index 6 and holds cbf29ce484222325; a reference state machine fed the same committed entries in order, once each, holds 5949b1f59ac8a65c. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 10 --nodes 3
+  recent events:
+    [   217097918ns] node 2 role=Follower term=1 last=9 commit=6 applied=6
+  node state:
+    node 1 alive=true role=Follower term=1 last=9 commit=5 applied=1
+    node 2 alive=true role=Follower term=1 last=9 commit=6 applied=6
+    node 3 alive=true role=Leader term=1 last=13 commit=8 applied=8
+
+seed 11 failed after 288 events
+  violation: State Machine Safety: nodes 3 and 1 both applied through index 6 and hold different state: 5949b1f59ac8a65c against cbf29ce484222325. They agree about which entries they applied, so applying them produced different results
+  violation: State Machine Safety: node 1 applied through index 6 and holds cbf29ce484222325; a reference state machine fed the same committed entries in order, once each, holds 5949b1f59ac8a65c. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 11 --nodes 3
+  recent events:
+    [   232141490ns] node 1 role=Follower term=1 last=10 commit=6 applied=6
+  node state:
+    node 1 alive=true role=Follower term=1 last=10 commit=6 applied=6
+    node 2 alive=true role=Follower term=1 last=10 commit=6 applied=5
+    node 3 alive=true role=Leader term=1 last=13 commit=7 applied=6
+
+seed 12 failed after 559 events
+  violation: State Machine Safety: nodes 1 and 2 both applied through index 39 and hold different state: ed167dc5e7f59da3 against b1b971e43494caa3. They agree about which entries they applied, so applying them produced different results
+  violation: State Machine Safety: node 2 applied through index 39 and holds b1b971e43494caa3; a reference state machine fed the same committed entries in order, once each, holds ed167dc5e7f59da3. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 12 --nodes 3
+  recent events:
+    [   276468831ns] node 2 role=Follower term=1 last=43 commit=39 applied=39
+  node state:
+    node 1 alive=true role=Leader term=1 last=45 commit=39 applied=39
+    node 2 alive=true role=Follower term=1 last=43 commit=39 applied=39
+    node 3 alive=true role=Follower term=1 last=36 commit=36 applied=32
+
+seed 13 failed after 1165 events
+  violation: State Machine Safety: node 3 applied through index 86 and holds 8e5d3c1bc2dd15f2; a reference state machine fed the same committed entries in order, once each, holds 5300303a0f7c42f2. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 13 --nodes 3
+  recent events:
+    [   366884215ns] node 3 role=Leader term=1 last=93 commit=86 applied=86
+  node state:
+    node 1 alive=true role=Follower term=1 last=79 commit=79 applied=79
+    node 2 alive=true role=Follower term=1 last=86 commit=81 applied=81
+    node 3 alive=true role=Leader term=1 last=93 commit=86 applied=86
+
+seed 14 failed after 603 events
+  violation: State Machine Safety: node 2 applied through index 51 and holds 53f5a856d77990ee; a reference state machine fed the same committed entries in order, once each, holds 8f52a4388ada48be. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 14 --nodes 3
+  recent events:
+    [   276845929ns] node 2 role=Leader term=1 last=57 commit=51 applied=51
+  node state:
+    node 1 alive=true role=Follower term=1 last=20 commit=20 applied=20
+    node 2 alive=true role=Leader term=1 last=57 commit=51 applied=51
+    node 3 alive=true role=Follower term=1 last=51 commit=47 applied=47
+
+seed 15 failed after 971 events
+  violation: State Machine Safety: nodes 3 and 1 both applied through index 58 and hold different state: 6d917dd44bf4b82d against 323469f29893d795. They agree about which entries they applied, so applying them produced different results
+  violation: State Machine Safety: node 1 applied through index 58 and holds 323469f29893d795; a reference state machine fed the same committed entries in order, once each, holds 6d917dd44bf4b82d. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 15 --nodes 3
+  recent events:
+    [   400000000ns] isolated node 2
+    [   715779618ns] node 1 role=Follower term=2 last=61 commit=58 applied=58
+  node state:
+    node 1 alive=true role=Follower term=2 last=61 commit=58 applied=58
+    node 2 alive=true role=PreCandidate term=1 last=0 commit=0 applied=0
+    node 3 alive=true role=Leader term=2 last=65 commit=58 applied=58
+
+seed 16 failed after 348 events
+  violation: State Machine Safety: node 1 applied through index 14 and holds 0b60d59ab4eb1f5c; a reference state machine fed the same committed entries in order, once each, holds 723032766625ed39. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 16 --nodes 3
+  recent events:
+    [   230866101ns] node 1 role=Follower term=1 last=18 commit=14 applied=14
+  node state:
+    node 1 alive=true role=Follower term=1 last=18 commit=14 applied=14
+    node 2 alive=true role=Leader term=1 last=21 commit=15 applied=13
+    node 3 alive=true role=Follower term=1 last=17 commit=13 applied=13
+
+seed 17 failed after 316 events
+  violation: State Machine Safety: nodes 1 and 3 both applied through index 6 and hold different state: 5949b1f59ac8a65c against cbf29ce484222325. They agree about which entries they applied, so applying them produced different results
+  violation: State Machine Safety: node 3 applied through index 6 and holds cbf29ce484222325; a reference state machine fed the same committed entries in order, once each, holds 5949b1f59ac8a65c. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 17 --nodes 3
+  recent events:
+    [   260684664ns] node 3 role=Follower term=1 last=9 commit=6 applied=6
+  node state:
+    node 1 alive=true role=Leader term=1 last=13 commit=6 applied=6
+    node 2 alive=true role=Follower term=1 last=9 commit=5 applied=1
+    node 3 alive=true role=Follower term=1 last=9 commit=6 applied=6
+
+seed 18 failed after 792 events
+  violation: State Machine Safety: node 1 applied through index 50 and holds 53f5a856d77990ee; a reference state machine fed the same committed entries in order, once each, holds 8f52a4388ada48be. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 18 --nodes 3
+  recent events:
+    [   366378101ns] node 1 role=Leader term=1 last=57 commit=50 applied=50
+  node state:
+    node 1 alive=true role=Leader term=1 last=57 commit=50 applied=50
+    node 2 alive=true role=Follower term=1 last=53 commit=49 applied=47
+    node 3 alive=true role=Follower term=1 last=52 commit=48 applied=44
+
+seed 19 failed after 437 events
+  violation: State Machine Safety: nodes 2 and 1 both applied through index 22 and hold different state: d37aec48737ae9f0 against 36d33e94b2c54301. They agree about which entries they applied, so applying them produced different results
+  violation: State Machine Safety: node 1 applied through index 22 and holds 36d33e94b2c54301; a reference state machine fed the same committed entries in order, once each, holds d37aec48737ae9f0. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 19 --nodes 3
+  recent events:
+    [   268918537ns] node 1 role=Follower term=1 last=25 commit=22 applied=22
+  node state:
+    node 1 alive=true role=Follower term=1 last=25 commit=22 applied=22
+    node 2 alive=true role=Leader term=1 last=25 commit=22 applied=22
+    node 3 alive=true role=Follower term=1 last=23 commit=17 applied=17
+
+seed 20 failed after 275 events
+  violation: State Machine Safety: node 3 applied through index 6 and holds cbf29ce484222325; a reference state machine fed the same committed entries in order, once each, holds 5949b1f59ac8a65c. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 20 --nodes 3
+  recent events:
+    [   225521508ns] node 3 role=Leader term=1 last=13 commit=8 applied=6
+  node state:
+    node 1 alive=true role=Follower term=1 last=8 commit=1 applied=1
+    node 2 alive=true role=Follower term=1 last=7 commit=1 applied=1
+    node 3 alive=true role=Leader term=1 last=13 commit=8 applied=6
+
+seed 21 failed after 417 events
+  violation: State Machine Safety: nodes 2 and 3 both applied through index 18 and hold different state: 36d33e94b2c54301 against 723032766625ed39. They agree about which entries they applied, so applying them produced different results
+  violation: State Machine Safety: node 3 applied through index 18 and holds 723032766625ed39; a reference state machine fed the same committed entries in order, once each, holds 36d33e94b2c54301. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 21 --nodes 3
+  recent events:
+    [   274480176ns] node 3 role=Follower term=1 last=18 commit=18 applied=18
+  node state:
+    node 1 alive=true role=Follower term=1 last=23 commit=18 applied=17
+    node 2 alive=true role=Leader term=1 last=25 commit=21 applied=18
+    node 3 alive=true role=Follower term=1 last=18 commit=18 applied=18
+
+seed 22 failed after 1447 events
+  violation: State Machine Safety: nodes 2 and 3 both applied through index 106 and hold different state: dff1e8df3c3289bb against 1b4eecc0ef934f23. They agree about which entries they applied, so applying them produced different results
+  violation: State Machine Safety: node 3 applied through index 106 and holds 1b4eecc0ef934f23; a reference state machine fed the same committed entries in order, once each, holds dff1e8df3c3289bb. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 22 --nodes 3
+  recent events:
+    [   417441564ns] node 3 role=Follower term=1 last=110 commit=106 applied=106
+  node state:
+    node 1 alive=true role=Follower term=1 last=109 commit=105 applied=105
+    node 2 alive=true role=Leader term=1 last=113 commit=106 applied=106
+    node 3 alive=true role=Follower term=1 last=110 commit=106 applied=106
+
+seed 23 failed after 328 events
+  violation: State Machine Safety: node 2 applied through index 5 and holds cbf29ce484222325; a reference state machine fed the same committed entries in order, once each, holds 5949b1f59ac8a65c. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 23 --nodes 3
+  recent events:
+    [   296507985ns] node 2 role=Leader term=1 last=9 commit=5 applied=5
+  node state:
+    node 1 alive=true role=Follower term=1 last=5 commit=1 applied=0
+    node 2 alive=true role=Leader term=1 last=9 commit=5 applied=5
+    node 3 alive=true role=Follower term=1 last=5 commit=1 applied=1
+
+seed 24 failed after 1160 events
+  violation: State Machine Safety: nodes 3 and 1 both applied through index 86 and hold different state: 5300303a0f7c42f2 against 8e5d3c1bc2dd15f2. They agree about which entries they applied, so applying them produced different results
+  violation: State Machine Safety: node 1 applied through index 86 and holds 8e5d3c1bc2dd15f2; a reference state machine fed the same committed entries in order, once each, holds 5300303a0f7c42f2. The cluster and the model disagree about what this log means
+  reproduce with: keel-sim repro --seed 24 --nodes 3
+  recent events:
+    [   391759054ns] node 1 role=Follower term=1 last=86 commit=86 applied=86
+  node state:
+    node 1 alive=true role=Follower term=1 last=86 commit=86 applied=86
+    node 2 alive=true role=Follower term=1 last=86 commit=82 applied=82
+    node 3 alive=true role=Leader term=1 last=93 commit=86 applied=86
+
+25 seeds x 30000 steps, 3 nodes, default profile: 0 passed, 25 failed (mean 32 entries committed per run)
+failing seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+
+==============================================================
+PASS: the schedule is survivable in index order and not out of it.
+      The oracles detect a divergence that every watermark and every
+      log digest agrees is fine.

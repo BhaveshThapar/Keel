@@ -3,8 +3,8 @@ Split batch: is the atomic applied index load-bearing?
   control: 1000 kill/restart cycles; experiment: caught inside 100
 ==============================================================
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
-commit: 2ca19d4
-date:   2026-08-24T04:24:56Z
+commit: 9136692
+date:   2026-08-24T13:02:45Z
 
 --- CONTROL: the index written with the data. Expect every cycle to pass.
 
@@ -12,7 +12,7 @@ date:   2026-08-24T04:24:56Z
 running 1 test
 test a_kill_mid_apply_never_double_applies_or_regresses has been running for over 60 seconds
 .
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 63.43s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 74.79s
 
 
 --- EXPERIMENT: the index written after the data, as two writes.
@@ -22,7 +22,7 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 running 1 test
 caught at cycle 1: after a crash the store had applied through 0 and the counter read 1; it must read 0. A higher counter means the data went in without the index that describes it, so the entry will apply twice; a lower one means the index ran ahead of its data
 .
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
 
 
 ==============================================================
