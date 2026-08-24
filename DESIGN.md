@@ -459,18 +459,115 @@ one connection, so per-peer order is preserved exactly as the contract requires.
 
 ---
 
+## ADR-020 — The API carries one non-idempotent command, so exactly-once can be shown
+
+`Command::Incr` adds an integer to a key and returns the result. It is the only
+command here that is not idempotent, and that is why it exists.
+
+**The problem it solves.** Every other command applies twice with the same
+effect as once: a `Put` of the same value, a `Delete` of the same key, a `Cas`
+whose expectation no longer holds. Which means none of them can *show* whether
+exactly-once delivery works. A test that puts the same value twice and finds it
+there proves nothing about the session table, because it would pass with the
+session table deleted.
+
+**What it buys.** A counter that reads 100 after a hundred increments and a
+hundred retries is a demonstration. A counter that reads 200 is a failure
+nobody has to argue about. `a_retry_storm_applies_each_command_exactly_once` is
+that test, and it is the only test in the crate that would fail if
+`Session::replay` always returned `Fresh`.
+
+**The alternative that was considered.** Demonstrating FR-7 through the
+cached-response path alone — assert that a duplicate returns the cached response
+and writes nothing. That test exists too, and it is weaker on its own: it checks
+the mechanism rather than the outcome, and a mechanism can be right in a test
+and wrong in a cluster. Keeping both means the outcome is checked and the
+mechanism is checked.
+
+**Cost.** One more command on a permanent API surface, and a value format —
+a little-endian `i64` — that a client can break by writing something else to
+the same key with `put`. That case returns `ApiError::NotACounter` rather than
+corrupting anything, because a key holding arbitrary bytes is a client's doing
+and not the store's.
+
+---
+
+## ADR-010 — The applied index is written in the same batch as the data
+
+`Store::commit` takes an index and a batch and writes both. There is no way to
+write one without the other, and the state machine has no other way to write
+anything at all.
+
+**What goes wrong otherwise.** A crash between the two leaves a store that has
+applied an entry and does not know it. On restart the log hands that entry back
+— correctly, because as far as the log knows it was never applied — and it
+applies a second time. For a `Put` that is invisible. For an `Incr`, or for a
+session-table update, it is a lost guarantee.
+
+**Why the storage engine had to change for this.** `lsm_kv` had no `write_batch`
+at all: every mutation was one record, one log frame, one fsync. Two keys could
+not be made durable together, so the atomicity had to be built in the engine
+before it could be relied on here. It is one frame under one CRC, so a crash
+mid-write leaves a frame that does not verify and replay drops the whole batch
+([upstream #5](https://github.com/BhaveshThapar/LSM-Tree-Key-Value-Storage-Engine/pull/5)).
+
+**The constraint this creates, recorded now rather than discovered at M2.** The
+state machine's write-ahead log need not be fsynced at all, because atomicity is
+between the applied index and its data and the Raft log replays whatever was
+lost — **which is only true while the Raft log is never compacted below
+`applied`**. P12 and P15 both take a snapshot and compact; both must honour it.
+
+---
+
+## ADR-021 — Session expiry runs on the leader's clock, and the table lives in the store
+
+The session table, the nonce table and the client-id counter are all in the same
+store as user data, in a separate namespace. Expiry is driven by a timestamp the
+proposing leader stamped into the entry.
+
+**Why in the store.** Two reasons that are the same reason. It has to survive a
+restart, or a client's retries after a crash apply a second time. And it has to
+be updated in the *same* atomic batch as the command it describes, or a crash
+between them leaves a store that applied a command and does not remember doing
+so — which is ADR-010's defect wearing a different hat.
+
+**Why a namespace rather than a reserved prefix in the engine.** `lsm_kv` is a
+general-purpose store and has no business reserving key space from everyone who
+uses it. The mapping from client keys to stored keys belongs to whoever owns
+that mapping, which is `keel-sm`. A one-byte tag on every key means a client may
+use any key at all, including one that looks exactly like a session key.
+
+**Why the leader's clock.** Every node applies the same entries in the same
+order and reads the same number out of them, so they expire the same sessions at
+the same index. A node consulting its own clock would expire a session its peers
+still hold, and a client would find itself registered on some nodes and not on
+others — a divergence that is invisible until the moment it matters.
+
+**A subtlety the tests found.** Expiry decides what to drop by reading the
+store, and the store does not yet hold what the current batch is about to write.
+So a client heard from in *this* entry still looks idle, and the same batch that
+renewed its session would delete it. Expiry skips keys the batch already
+touches, which is exactly right: a client the entry mentions has been heard
+from.
+
+**Cost.** The expiry scan runs inside an ordinary command's apply, so it is
+budgeted — at most eight sessions per entry — to keep one apply from becoming an
+unbounded write when a thousand sessions time out at once. The rest are
+collected by the next entry.
+
+
+---
+
 ## Planned
 
 These are decided but not yet built. They are recorded here so the shape is
 fixed before the code exists.
 
-- **ADR-010 — `applied_index` in the same write batch as the data.** Apply must
-  be idempotent across a crash mid-apply, which means the index and the data it
-  describes have to become durable together or not at all.
 - **ADR-011 — Snapshots are storage-engine checkpoints.** Flush the memtable,
   hard-link the immutable SSTables, write a fresh manifest. The consensus layer
   sees only a handshake; the bytes move over the transport with resumable chunks.
 - **ADR-012 — Exactly-once sessions.** `(client_id, seq)` dedup with a cached
   response, held in the state machine so it survives failover and appears in
   snapshots, expired deterministically by leader-stamped time in the log rather
-  than by any node's local clock.
+  than by any node's local clock. Built at P4; the parts that turned out to need
+  arguing about are ADR-021.

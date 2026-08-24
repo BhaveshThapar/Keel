@@ -1,0 +1,36 @@
+[package]
+name = "keel-sm"
+description = "Keel's replicated state machine: apply, sessions, and the store seam both implementations are held to."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+categories = ["database-implementations"]
+keywords = ["raft", "state-machine", "sessions", "exactly-once", "lsm"]
+
+[dependencies]
+keel-api = { workspace = true }
+keel-raft = { workspace = true }
+bytes = { workspace = true }
+# Session holds a keel-api Response, so it needs the same derives.
+serde = { workspace = true }
+thiserror = { workspace = true }
+lsm_kv = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+
+[features]
+default = []
+# The LSM-backed store. Off by default so a consumer that only ever runs against
+# MemStore — the simulator, most tests — cannot accidentally link a storage
+# engine, and `cargo tree` can prove it did not.
+lsm = ["dep:lsm_kv", "dep:tempfile"]
+# The shared Store conformance suite, so every implementation is held to the
+# same assertions rather than to whatever its own tests happened to check.
+conformance = []
+
+[dev-dependencies]
+keel-sm = { path = ".", features = ["conformance", "lsm"] }
+
+[lints]
+workspace = true

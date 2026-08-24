@@ -1,7 +1,7 @@
 # Vendored: `lsm_kv`
 
 Upstream: <https://github.com/BhaveshThapar/LSM-Tree-Key-Value-Storage-Engine>
-Commit: `44404ec87e9906d2a0ff755e1bdacc0bc3a30072` (2026-08-23)
+Commit: `7cfa882647db7356f4a39246d4b617e5a14bef9b` (2026-08-23)
 
 This is Keel's state machine. It is vendored rather than depended on because
 becoming a Raft state machine requires changes *inside* the engine — the manifest
@@ -119,6 +119,12 @@ Each is listed with the thing it makes possible rather than with what it did.
   Both stacks checksum with the same polynomial now. The gate is the point:
   changing the checksum alone would have made every existing frame fail, which
   for the manifest means the reclamation above.
+- **[#8](https://github.com/BhaveshThapar/LSM-Tree-Key-Value-Storage-Engine/pull/8) — the `fuzzing` module compiles again, and CI checks that it does.**
+  Found by Keel: `cargo clippy --workspace --all-targets --all-features` here
+  reached a module upstream's own checks never built, because both of them use
+  default features and `fuzzing` is not one. The two-line fix matters less than
+  the workflow that now runs everything with `--all-features`, upstream having
+  had no CI at all.
 
 **One thing this file asked for did not land here, deliberately.** A key
 namespace keeping `applied_index` and the session table away from user keys is

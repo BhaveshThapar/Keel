@@ -21,6 +21,15 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
+      # --all-features, because feature-gated code is exactly the code nobody
+      # compiles by accident. This caught a module in the vendored engine that
+      # had not compiled in four commits, because every check on both sides ran
+      # with default features.
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
+      # And the default-feature build, which is what a consumer gets and what
+      # the isolation gates are about: keel-net without `tcp` links no socket,
+      # keel-sm without `lsm` links no storage engine.
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - name: The negative demonstrations must still demonstrate

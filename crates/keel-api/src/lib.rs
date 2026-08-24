@@ -81,6 +81,48 @@ pub enum Command {
         expect: Option<Bytes>,
         value: Option<Bytes>,
     },
+    /// Add `by` to the integer at `key`, treating an absent key as zero, and
+    /// return the result.
+    ///
+    /// This exists to be *non-idempotent*. Every other command here applies
+    /// twice with the same effect as once — a `Put` of the same value, a
+    /// `Delete` of the same key, a `Cas` whose expectation no longer holds —
+    /// which means none of them can show whether exactly-once delivery works.
+    /// A counter that ends at 101 after a hundred increments and one retry is
+    /// the demonstration; without an operation like this one, FR-7 could only
+    /// be asserted (ADR-020).
+    Incr {
+        key: Bytes,
+        by: i64,
+    },
+}
+
+/// A command as it goes into the log.
+///
+/// The leader stamps the time. That is what makes session expiry deterministic:
+/// every node applies the same entries in the same order and reads the same
+/// timestamp out of them, so they expire the same sessions at the same index —
+/// whereas a node consulting its own clock would expire a session its peers
+/// still hold, and a client would find itself registered on some nodes and not
+/// others.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Proposal {
+    /// Milliseconds since the epoch, as the proposing leader saw it.
+    pub stamped_ms: u64,
+    /// `None` for a registration, which has no session yet.
+    pub session: Option<(ClientId, Seq)>,
+    pub body: ProposalBody,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProposalBody {
+    /// Open a session. The nonce makes it retryable; see [`Request::Register`].
+    Register {
+        nonce: u64,
+    },
+    Command(Command),
+    /// Renew a session's lease without changing anything.
+    KeepAlive,
 }
 
 /// A request that does not change state, and therefore must never reach the log.
@@ -162,6 +204,8 @@ pub enum Response {
         actual: Option<Bytes>,
     },
     Value(Option<Bytes>),
+    /// The value of a counter after an [`Command::Incr`].
+    Counter(i64),
     Scanned(Vec<(Bytes, Bytes)>),
     /// This node is not the leader. `leader` is a hint and may be stale or
     /// absent; a client treats it as somewhere to try next, not as truth.
@@ -198,6 +242,9 @@ pub enum ApiError {
     /// is not going to recover without an operator.
     #[error("this node has failed and is refusing requests: {0}")]
     NodeFailed(String),
+    /// An `Incr` against a key holding something that is not a counter.
+    #[error("the value at this key is not a counter")]
+    NotACounter,
 }
 
 // ------------------------------------------------------------------- peers
@@ -329,7 +376,38 @@ mod tests {
                     limit: 0,
                 },
             },
+            Request::Command {
+                client: 1,
+                seq: 6,
+                command: Command::Incr {
+                    key: b("counter"),
+                    by: -3,
+                },
+            },
             Request::KeepAlive { client: 9 },
+        ]
+    }
+
+    fn every_proposal() -> Vec<Proposal> {
+        vec![
+            Proposal {
+                stamped_ms: 1_700_000_000_000,
+                session: None,
+                body: ProposalBody::Register { nonce: 42 },
+            },
+            Proposal {
+                stamped_ms: 0,
+                session: Some((7, 3)),
+                body: ProposalBody::Command(Command::Put {
+                    key: b("k"),
+                    value: b("v"),
+                }),
+            },
+            Proposal {
+                stamped_ms: u64::MAX,
+                session: Some((7, 4)),
+                body: ProposalBody::KeepAlive,
+            },
         ]
     }
 
@@ -342,6 +420,9 @@ mod tests {
             },
             Response::CasMismatch { actual: None },
             Response::Value(Some(b("v"))),
+            Response::Counter(-1),
+            Response::Counter(i64::MAX),
+            Response::Error(ApiError::NotACounter),
             Response::Value(None),
             Response::Scanned(vec![(b("a"), b("1")), (b("b"), b("2"))]),
             Response::Scanned(vec![]),
@@ -390,6 +471,14 @@ mod tests {
         for request in every_request() {
             let bytes = encode(&request).unwrap();
             assert_eq!(decode::<Request>(&bytes).unwrap(), request);
+        }
+    }
+
+    #[test]
+    fn every_proposal_round_trips() {
+        for proposal in every_proposal() {
+            let bytes = encode(&proposal).unwrap();
+            assert_eq!(decode::<Proposal>(&bytes).unwrap(), proposal);
         }
     }
 

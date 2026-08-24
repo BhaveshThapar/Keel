@@ -65,6 +65,25 @@ row that was never written.
 | Both transports behave identically | `keel_net::conformance::check`, run against `LoopbackPair` and against `TcpTransport` | enforced |
 | A `Message` survives either transport unchanged | `transport_conformance::a_message_round_trips_identically_through_both_transports` | enforced |
 
+## The state machine
+
+| Property | Enforced by | Status |
+|---|---|---|
+| The applied index moves with the data it describes, never separately | `conformance::check`'s `the_applied_index_moves_with_the_batch`, run against both stores | enforced |
+| An entry that changes nothing still moves the index | `conformance::check`'s `an_empty_batch_still_moves_the_index` | enforced |
+| The applied index never goes backwards | `conformance::check`'s `the_applied_index_never_goes_backwards` | enforced |
+| Replaying the log below the watermark applies nothing | `state_machine::replaying_the_log_below_the_watermark_applies_nothing` | enforced |
+| A restart recovers the index, the data and the session table together | `state_machine::a_restart_recovers_the_applied_index_from_the_store` | enforced |
+| **A retried command applies exactly once** | `state_machine::a_retry_storm_applies_each_command_exactly_once` — a hundred increments retried once each leave the counter at a hundred | enforced |
+| …and the retry gets the response it missed, with no write | `state_machine::a_duplicate_returns_the_cached_response_and_writes_nothing` | enforced |
+| A sequence below the floor is refused rather than guessed at | `state_machine::a_sequence_below_the_floor_is_refused_rather_than_guessed_at` | enforced |
+| A retried registration returns the same identity | `state_machine::re_registering_with_the_same_nonce_returns_the_same_identity` | enforced |
+| Client identities are a function of the log, not of a node | `state_machine::identities_are_a_function_of_the_log` | enforced |
+| Sessions expire on the leader's stamp and on nothing else | `state_machine::a_session_expires_on_the_leaders_clock_and_only_on_it` | enforced |
+| A command from an expired session is refused, not applied undeduplicated | `state_machine::a_command_from_an_expired_session_is_refused` | enforced |
+| A client key can never collide with the state machine's own | `conformance::check`'s `the_namespaces_do_not_see_each_other` | enforced |
+| Both stores apply the same log to the same state | `state_machine::both_stores_apply_the_same_log_to_the_same_state`; `keel_sm::conformance::check` run against `MemStore` and `LsmStore` | enforced |
+
 ## The durable log
 
 | Property | Enforced by | Status |
@@ -214,8 +233,12 @@ Named here so the gaps are visible rather than discovered:
 - Group commit across concurrent proposals. `keel-log` gives one fsync per
   `sync()` call; batching several proposals into one belongs to the writer that
   drives it, which does not exist yet (M1 Phase 5).
-- Crash consistency under `SIGKILL`, and atomic `applied_index` with state machine data (M1).
-- Exactly-once client sessions across a failover (M1).
+- Crash consistency under `SIGKILL`: the atomicity is enforced by construction
+  and by the conformance suite, but nothing has yet killed a node mid-apply and
+  checked what it lost (M1 Phase 5).
+- Exactly-once sessions across a *failover*. The session table survives a
+  restart and deduplicates retries, both tested. What is untested is a retry
+  storm crossing a leader change, which needs a cluster (M1 Phase 10).
 - Snapshots, streaming `InstallSnapshot`, and log compaction (M2).
 - External linearizability checking via Maelstrom and Porcupine (M1/M2).
 - Fuzzing of message decoding and arbitrary event sequences (M3).

@@ -340,6 +340,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-sm"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "keel-api",
+ "keel-raft",
+ "keel-sm",
+ "lsm_kv",
+ "serde",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
