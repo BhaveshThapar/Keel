@@ -22,20 +22,28 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+mod clients;
 pub mod metrics;
+mod node;
 mod status;
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 
+pub use clients::Clients;
 pub use metrics::{Kind, Metric};
+pub use node::{NodeConfig, Server};
 pub use status::{Status, sync_mode_name};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
-    #[error("the admin listener failed: {0}")]
+    #[error("io error: {0}")]
     Io(#[from] io::Error),
+    /// Recovery failed. A node in this state has not started and must not
+    /// pretend to have: the alternative is a node serving from an empty log.
+    #[error("could not recover {what}: {why}")]
+    Recovery { what: &'static str, why: String },
 }
 
 /// What the admin surface can be asked.

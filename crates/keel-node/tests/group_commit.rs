@@ -68,8 +68,8 @@ fn register<T: Transport>(node: &mut Node<StdFs, MemStore, T>) -> u64 {
         body: ProposalBody::Register { nonce: 1 },
     });
     node.run_until_idle(32).unwrap();
-    for (_, response) in node.take_answers() {
-        if let keel_api::Response::Registered { client } = response {
+    for answer in node.take_answers() {
+        if let keel_api::Response::Registered { client } = answer.response {
             return client;
         }
     }
@@ -295,8 +295,8 @@ fn a_write_replicates_to_a_peer_before_it_commits() {
         for _ in 0..32 {
             leader.run_until_idle(16).unwrap();
             follower.run_until_idle(16).unwrap();
-            for (_, response) in leader.take_answers() {
-                if let keel_api::Response::Registered { client } = response {
+            for answer in leader.take_answers() {
+                if let keel_api::Response::Registered { client } = answer.response {
                     found = Some(client);
                 }
             }

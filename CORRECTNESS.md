@@ -52,6 +52,17 @@ row that was never written.
 | Membership changes do not stall writes | `cluster_behaviour::writes_keep_flowing_during_a_membership_change` | enforced |
 | A far-behind follower catches up from the log, not a snapshot | `cluster_behaviour::a_follower_that_missed_thousands_of_entries_catches_up_without_a_snapshot` | enforced |
 
+## A cluster of real processes
+
+| Property | Enforced by | Status |
+|---|---|---|
+| Three real nodes serve put, get, delete, scan, cas and incr | `cluster::a_three_node_cluster_serves_traffic` — separate processes, real sockets, real files | enforced |
+| A client finds the leader by itself and follows redirects | the same test: it is given all three addresses and never told which is the leader | enforced |
+| Acknowledged writes survive the leader being killed | `cluster::writes_survive_a_leader_being_killed` | enforced |
+| A history is recorded in the shape a checker wants | `cluster::a_client_records_a_history_a_checker_can_read`; `history::tests::a_lost_answer_is_unknown_rather_than_refused` | enforced |
+| A misconfigured node refuses to start rather than serving alone | `cluster::a_misconfigured_node_refuses_to_start` | enforced |
+| A node says whether its fsyncs survive power loss, in its ready file | `cluster::a_three_node_cluster_serves_traffic` checks every node's | enforced |
+
 ## The host loop
 
 | Property | Enforced by | Status |
@@ -276,8 +287,14 @@ Named here so the gaps are visible rather than discovered:
   acknowledgements, and that harness delivers in order, so the no-op is
   acknowledged first. Closed by P9's recency oracle, which reorders.
 - Exactly-once sessions across a *failover*. The session table survives a
-  restart and deduplicates retries, both tested. What is untested is a retry
-  storm crossing a leader change, which needs a cluster (M1 Phase 10).
+  restart and deduplicates retries, both tested, and a client now keeps working
+  across a leader being killed. What is untested is a *retry storm* crossing that
+  change — a client whose answers are lost repeatedly while leadership moves,
+  which is what the linearizability checkers are for (M1 Phase 11, M2 Phase 18).
+- Membership changes from an operator. `Input::ProposeConfChange` and
+  `Input::TransferLeader` exist in the core and are exercised only by an
+  in-process cluster; the simulator issues neither, and the admin verbs that
+  would drive them are deferred to M3 for that reason (ADR-024).
 - Snapshots, streaming `InstallSnapshot`, and log compaction (M2).
 - External linearizability checking via Maelstrom and Porcupine (M1/M2).
 - Fuzzing of message decoding and arbitrary event sequences (M3).

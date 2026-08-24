@@ -26,4 +26,4 @@
 
 mod loop_;
 
-pub use loop_::{Node, NodeError, Progress, Turn};
+pub use loop_::{Answer, Node, NodeError, Progress, Turn};

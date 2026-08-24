@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 
 use bytes::Bytes;
-use keel_api::{Peer, Proposal, Response, decode, encode};
+use keel_api::{ClientId, Peer, Proposal, Response, Seq, decode, encode};
 use keel_log::{Fs, Log};
 use keel_net::Transport;
 use keel_raft::{
@@ -75,6 +75,16 @@ impl Progress {
     }
 }
 
+/// A response, and enough to say whose it is.
+#[derive(Debug, Clone)]
+pub struct Answer {
+    /// The log index that produced it.
+    pub index: Index,
+    /// The `(client, seq)` the proposal carried, when it carried one.
+    pub session: Option<(ClientId, Seq)>,
+    pub response: Response,
+}
+
 /// A proposal waiting to be stepped into the core.
 struct Queued {
     ctx: u64,
@@ -96,12 +106,13 @@ pub struct Node<F: Fs, S: Store, T: Transport> {
     /// is the size that makes the fsync pay for itself, arrived at without a
     /// tuning knob.
     queue: VecDeque<Queued>,
-    /// Responses produced by applying, keyed by the proposal context the client
-    /// gave. The host hands these back; this crate does not know what a client
-    /// connection is.
-    answers: Vec<(u64, Response)>,
+    /// Responses produced by applying. The host hands these back; this crate
+    /// does not know what a client connection is.
+    answers: Vec<Answer>,
     /// Proposals the core refused, with why.
     refusals: Vec<(u64, DropReason)>,
+    /// Reads the core has confirmed, waiting for the host to notice.
+    reads: Vec<(u64, Index)>,
     /// Next context number for a proposal that came in without one.
     next_ctx: u64,
     progress: Progress,
@@ -140,6 +151,7 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
             queue: VecDeque::new(),
             answers: Vec::new(),
             refusals: Vec::new(),
+            reads: Vec::new(),
             next_ctx: 1,
             progress: Progress::default(),
         }
@@ -186,8 +198,30 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
     }
 
     /// Take the responses produced since the last call.
-    pub fn take_answers(&mut self) -> Vec<(u64, Response)> {
+    pub fn take_answers(&mut self) -> Vec<Answer> {
         std::mem::take(&mut self.answers)
+    }
+
+    /// Ask for a linearizable read.
+    ///
+    /// The answer does not come back here. The core confirms it is still the
+    /// leader by heartbeat and then reports the index the read must see through
+    /// [`Node::take_reads`]; the host answers the client once it has applied
+    /// that far. That round trip is what makes the read linearizable, and it is
+    /// why a read is not simply a lookup.
+    pub fn read_index(&mut self, ctx: u64) {
+        let _ = self.core.step(Input::ReadIndex { ctx });
+    }
+
+    /// Reads the core has confirmed since the last call: the context the caller
+    /// gave, and the index its answer must reflect.
+    pub fn take_reads(&mut self) -> Vec<(u64, Index)> {
+        std::mem::take(&mut self.reads)
+    }
+
+    /// How far the state machine has applied.
+    pub fn applied(&self) -> Index {
+        self.sm.applied()
     }
 
     /// Take the refusals produced since the last call.
@@ -322,6 +356,9 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
             turn.entries_applied += 1;
         }
 
+        for read in &ready.read_states {
+            self.reads.push((read.ctx, read.index));
+        }
         for (ctx, reason) in ready.proposals_dropped {
             self.refusals.push((ctx, reason));
             turn.proposals_dropped += 1;
@@ -358,11 +395,16 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
                     why: e.to_string(),
                 })?;
                 let response = self.sm.apply(entry.index, &proposal)?;
-                // The context is the client's, and the core reports it back
-                // through `Ready::read_states` for reads; for writes the host
-                // matches on the order entries were proposed. Recording the
-                // response by index keeps this crate out of that decision.
-                self.answers.push((entry.index, response));
+                // Matched on the session pair rather than on the order entries
+                // were proposed. A leadership change can drop a proposal and
+                // renumber what follows it, so position is not an identity;
+                // `(client, seq)` is one, and it is already in the entry
+                // because the state machine deduplicates on it.
+                self.answers.push(Answer {
+                    index: entry.index,
+                    session: proposal.session,
+                    response,
+                });
             }
         }
         Ok(())

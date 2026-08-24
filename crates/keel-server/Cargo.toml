@@ -9,13 +9,19 @@ rust-version.workspace = true
 categories = ["database-implementations"]
 keywords = ["raft", "server", "prometheus", "metrics", "daemon"]
 
+[[bin]]
+name = "keel-server"
+path = "src/main.rs"
+
 [dependencies]
+clap = { workspace = true }
 keel-api = { workspace = true }
 keel-log = { workspace = true }
 keel-net = { workspace = true, features = ["tcp"] }
 keel-node = { workspace = true, features = ["lsm"] }
 keel-raft = { workspace = true }
 keel-sm = { workspace = true, features = ["lsm"] }
+lsm_kv = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

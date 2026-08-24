@@ -3,14 +3,15 @@
 A Raft-replicated key-value store in Rust, built on an LSM storage engine, and
 verified by a deterministic simulator that replays any failure from a seed.
 
-> **Status: in development (M1).** The consensus core, the simulator, the durable
-> log, the wire types and the transports are built and tested. The storage
-> adapter, the node loop and the server are not. No performance number is
-> claimed, because none has been measured. See [Not claimed](#not-claimed).
+> **Status: in development (M1).** A three-node cluster of real processes serves
+> traffic, survives its leader being killed, and is driven by the same consensus
+> core the simulator sweeps. Snapshots and external linearizability checking are
+> not built. No performance number is claimed, because none has been measured.
+> See [Not claimed](#not-claimed).
 
 ## What is here today
 
-Nine crates.
+Eleven crates.
 
 **[`keel-raft`](crates/keel-raft/)** — a Raft consensus core that does no I/O,
 owns no threads, and reads no clock. You feed it events and it hands back a
@@ -49,11 +50,17 @@ retried command applies exactly once. Two stores, one conformance suite.
 the order the contract requires: persist, then one fsync, then send, then apply.
 Group commit falls out of that rather than being bolted on.
 
-**[`keel-server`](crates/keel-server/)** — what a running node says about
-itself: `/status`, `/metrics` as Prometheus text exposition, and a ready file
-published by rename. The first field of the status is whether this node's fsyncs
-survive a power cut, because a node that quietly does not looks identical to one
-that does until the machine loses power.
+**[`keel-server`](crates/keel-server/)** — the daemon. One process, one node, one
+loop, one thread. It serves clients, answers `/status` and `/metrics`, and writes
+a ready file once recovery is done. A client request is *parked* rather than
+answered: a write until its entry is applied, a read until the core has confirmed
+a read index and the state machine has reached it.
+
+**[`keel-client`](crates/keel-client/)** — leader discovery, sessions, retries
+under the same sequence number, and the `kv` CLI. It records a history in the
+shape an external checker wants, including the third outcome most recorders get
+wrong: a request whose answer was lost may or may not have applied, and saying
+"failed" would be claiming something the client cannot know.
 
 The consensus core exists to make the simulator possible. Because the core is a pure function
 of its inputs, a run is a pure function of `(seed, config)`: any failure is
@@ -189,8 +196,14 @@ hardware and no commit behind it. Both run in CI.
 - **Not Jepsen-tested.** The plan is Jepsen-*style* checking via Maelstrom and
   Porcupine. A real Jepsen run is a different artifact, and the distinction
   matters.
-- **Durability is not proven end to end.** Nothing has yet been killed under
-  load and checked for what it lost (M1).
+- **Durability is not proven end to end under a real nemesis.** A node has been
+  killed a thousand times mid-apply and a leader killed under a live client, both
+  with nothing lost. What has not happened is a partition proxy, a clock jump, or
+  a kill loop against a real cluster under load (M2).
+- **No membership changes from an operator.** The core does joint consensus and
+  the in-process tests exercise it, but the simulator issues no configuration
+  change, so the admin verbs that would drive one are deferred until it does
+  (ADR-024).
 - **No linearizability checking yet.** The simulator checks Raft's internal
   safety properties. It does not yet check that clients observe a linearizable
   history; that needs the state machine and a history export (M1/M2).

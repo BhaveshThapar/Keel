@@ -1,0 +1,30 @@
+[package]
+name = "keel-client"
+description = "Keel's client: leader discovery, sessions, retries, and a history recorder for external linearizability checking."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+categories = ["database-implementations", "command-line-utilities"]
+keywords = ["raft", "client", "kv", "sessions", "linearizability"]
+
+[[bin]]
+name = "kv"
+path = "src/bin/kv.rs"
+
+[dependencies]
+keel-api = { workspace = true }
+keel-raft = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# The cluster test spawns real keel-server processes. A dev-dependency rather
+# than a path guess, so `cargo test` builds the binary the test then runs.
+keel-server = { workspace = true }
+
+[lints]
+workspace = true

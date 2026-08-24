@@ -292,6 +292,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-client"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "clap",
+ "keel-api",
+ "keel-raft",
+ "keel-server",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "keel-log"
 version = "0.1.0"
 dependencies = [
@@ -346,12 +359,14 @@ version = "0.1.0"
 name = "keel-server"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "keel-api",
  "keel-log",
  "keel-net",
  "keel-node",
  "keel-raft",
  "keel-sm",
+ "lsm_kv",
  "tempfile",
  "thiserror",
 ]

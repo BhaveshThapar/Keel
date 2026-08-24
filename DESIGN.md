@@ -558,6 +558,83 @@ collected by the next entry.
 
 ---
 
+## ADR-022 — The client blocks, and the whole node is one thread
+
+`keel-client` is synchronous. There is no runtime anywhere in this workspace,
+and a node is one loop on one thread: the consensus core is a pure function of
+its inputs, the log owns no thread, the storage engine spawns none under
+`Maintenance::Manual`, and the admin surface is polled rather than served.
+
+**Why not async.** The cost is not the client's; it is everything the client
+touches. Every test that wants a cluster would need a runtime. The benchmark
+harness (M4) would be measuring a scheduler as much as a cluster, which is
+exactly the confound PR-1 exists to avoid. And a runtime inside the node would
+put a second thread next to the one component whose whole value is that it
+reproduces exactly.
+
+**What it costs.** A client blocks a thread per outstanding request, so a load
+generator wanting a thousand in flight needs a thousand threads. That is a real
+cost and it is M4's to pay: a load generator is allowed to be built differently
+from a client library, and at that point the shape of the measurement is known
+rather than guessed at.
+
+**What it does not cost.** Throughput on the node. The batching that matters is
+group commit, and that comes from queuing proposals between turns rather than
+from concurrency — a hundred proposals in one `Ready` is one append and one
+fsync however many threads sent them.
+
+---
+
+## ADR-023 — A client request is parked, not answered
+
+A write is proposed and its connection held until the entry it produced is
+applied. A linearizable read asks the core for a read index and its connection
+is held until the state machine has applied that far. Neither is answered when
+it arrives.
+
+**What answering early would mean.** A write acknowledged at propose time is
+acknowledged before the entry is replicated, let alone committed: the client is
+told it succeeded and a leadership change can still lose it. A read answered
+from local state is answered from whatever this node happens to have applied —
+on a follower, or on a leader that has been deposed and does not know it yet,
+that is a stale read. The round trip is what makes it linearizable (ADR-005),
+and holding the connection is what pays for it.
+
+**How an answer finds its connection.** A write is matched on the `(client,
+seq)` its proposal carried, not on the order entries were proposed. A leadership
+change can drop a proposal and renumber what follows it, so position is not an
+identity; the session pair is one, and it is already in the entry because the
+state machine deduplicates on it.
+
+**What a parked request costs.** A file descriptor, and a timeout. A read parked
+on a node that is then partitioned away would never be confirmed, so anything
+waiting longer than five seconds is answered `Unavailable` — which sends the
+client somewhere else, which is what it would do eventually and sooner. A node
+that stops leading refuses everything it parked rather than leaving it to expire.
+
+---
+
+## ADR-024 — The admin verbs wait for M3
+
+`keel-server` answers `GET /status` and `GET /metrics` and refuses everything
+else. FR-13's other half — `transfer-leader`, `add-learner`, `promote`,
+`remove`, `snapshot` — is not here.
+
+**Why not now.** Every one of them proposes a configuration change or a leader
+transfer, and `keel-sim` issues neither: `Input::ProposeConfChange` and
+`Input::TransferLeader` exist in the core and appear nowhere in the simulator,
+so every membership property currently rests on an in-process cluster whose own
+doc comment admits FIFO messages and instantaneous persistence. P23 puts them
+under the fault schedule. Shipping an operator-facing verb for a code path the
+simulator has never exercised is shipping the confidence without the evidence.
+
+**What that costs in the meantime.** An operator cannot change the membership of
+a running cluster. That is a real limitation and it is in README's "Not claimed"
+rather than discovered.
+
+
+---
+
 ## Planned
 
 These are decided but not yet built. They are recorded here so the shape is
