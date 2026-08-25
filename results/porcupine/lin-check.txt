@@ -1,10 +1,15 @@
 Keel's history, checked by Porcupine
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
-commit: a8e81bd
-date:   2026-08-24T21:48:30Z
+commit: 6ded972
+date:   2026-08-25T07:14:57Z
 
 checker:    github.com/anishathalye/porcupine v1.3.0 (pinned in tools/porcupine/go.sum)
 model:      one register per key; a get must return what the last linearized put wrote
+clients:    8, each with 8 requests outstanding — so operations overlap
+            within a client as well as between them, which is what gives
+            the checker something to reorder
+control:    a second, shorter run of its own — 6 seconds of faults
+            rather than a slice of the first; see the note above that arm
 seed:       11
 seconds:    40 of faults, plus 8 for the recovery the history has to cover
 sync mode:  durable
@@ -51,28 +56,49 @@ cluster up: 3 nodes
     36.431s  split, minority [1]
     38.940s  heal
 faults injected 18, skipped 0
-proxy carried 446243 bytes, refused 234 connections, severed 12
-8696 operations from 8 clients over 4 keys, 0 still pending, written to /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-porcupine-mvTYfb/history.jsonl
-PASS a history of 1073945 bytes is at /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-porcupine-mvTYfb/history.jsonl
+proxy carried 2055699 bytes, refused 192 connections, severed 12
+50357 operations from 8 clients at depth 8 over 4 keys, 0 still pending, written to /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-porcupine-8BQWMI/history.jsonl
+PASS a history of 6299775 bytes is at /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-porcupine-8BQWMI/history.jsonl
 
 --- experiment: the real history must be accepted ---
-history:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-porcupine-mvTYfb/history.jsonl, 8696 entries
-checked:   8696 operations over 4 keys (0 not applicable to a register model)
-  key 6b30             2174 ops   linearizable
-  key 6b31             2174 ops   linearizable
-  key 6b32             2174 ops   linearizable
-  key 6b33             2174 ops   linearizable
+history:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-porcupine-8BQWMI/history.jsonl, 50357 entries
+checked:   50344 operations over 4 keys (13 not applicable to a register model)
+  key 6b30             12587 ops   linearizable
+  key 6b31             12585 ops   linearizable
+  key 6b32             12587 ops   linearizable
+  key 6b33             12585 ops   linearizable
 
 PASS the history is linearizable
 
 --- control: one read's result replaced, and it must be rejected ---
-history:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-porcupine-mvTYfb/history.jsonl, 8696 entries
-mutated:   entry 8693, key 6b31, result replaced with a value nothing wrote
-checked:   8696 operations over 4 keys (0 not applicable to a register model)
-  key 6b30             2174 ops   linearizable
-  key 6b31             2174 ops   NOT linearizable
-  key 6b32             2174 ops   linearizable
-  key 6b33             2174 ops   linearizable
+
+On a history of its own, and both halves of that matter.
+
+Shorter, because refuting costs what accepting does not: to accept,
+the checker finds one linearization and stops; to refute, it must
+exhaust the space and show there is none. On the whole depth-8
+history above, that ran the machine out of memory and the control
+was killed partway through — neither a pass nor a failure, and an
+arm that reports nothing cannot make the other arm evidence.
+
+A *history*, not a prefix of the one above, because a prefix of a
+concurrent history is not a history. At depth 8 a read can return a
+value written by an operation invoked after it, so the write sits
+later in a file ordered by invocation; cut the file and the read
+survives while the write it observed does not. The checker then
+rejects — for a reason that has nothing to do with the mutation, and
+the arm reports success while demonstrating nothing. That was tried.
+
+proxy carried 185606 bytes, refused 0 connections, severed 0
+6780 operations from 8 clients at depth 8 over 4 keys, 0 still pending, written to /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-porcupine-8BQWMI/control.jsonl
+PASS a history of 827696 bytes is at /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-porcupine-8BQWMI/control.jsonl
+history:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-porcupine-8BQWMI/control.jsonl, 6780 entries
+mutated:   entry 1689, key 6b30, result replaced with a value nothing wrote
+checked:   6780 operations over 4 keys (0 not applicable to a register model)
+  key 6b30             1696 ops   NOT linearizable
+  key 6b31             1695 ops   linearizable
+  key 6b32             1695 ops   linearizable
+  key 6b33             1694 ops   linearizable
 
 PASS the checker rejected the corrupted history, so its acceptance means something
 
