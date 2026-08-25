@@ -1,73 +1,59 @@
 # Roadmap
 
-Where Keel goes from here, and in what order. Kept in the repository rather than
-beside it, so the sequencing is reviewable in the same diff as the work it
-sequences.
+Where Keel went, and in what order. Kept in the repository rather than beside
+it, so the sequencing was reviewable in the same diff as the work it sequenced.
 
 Milestones and their exit criteria come from [plan.md](plan.md), which is the
-PRD and does not change. This file is the ordering, the constraints that make
-one phase depend on another, and the decisions each phase is waiting on.
+PRD and does not change. This file is the ordering, the constraints that made
+one phase depend on another, and the decisions each phase was waiting on.
 
-M1 Phase 2 — the simulator writing real bytes over a disk that tears — is done.
-What it decided is in [DESIGN.md](DESIGN.md) (ADR-014 through ADR-016), what it
-closed and opened is in [CORRECTNESS.md](CORRECTNESS.md), and the defect it
-found on the way is [KEEL-7](BUGS.md).
+**All twenty-seven phases are done, and `v1.0.0` is tagged.** This file is kept
+as the record of what was sequenced and why, because the reasoning about
+*ordering* is the part that does not survive in a commit log — which phase had to
+come before which, and what it cost when the answer was got wrong.
 
-Its two admitted debts are paid. The CI sweep is now sized from
-`results/simulator/disk-throughput.txt` rather than by eye — the guesses were
-low by about three times — and `scripts/check-docs.sh` and
-`scripts/check-artifacts.sh` hold every test name, ADR number, bug number, link
-and committed result to what the tree actually contains. The second found three
-artifacts with no provenance header on the day it was written.
+What each milestone actually decided is in [DESIGN.md](DESIGN.md) as ADR-001
+through ADR-032; what it enforces is in [CORRECTNESS.md](CORRECTNESS.md); what it
+broke on the way is in [BUGS.md](BUGS.md), where **four of the ten entries turned
+out to be the harness rather than the code it tests**. That ratio is the single
+most useful number in this repository: it is why a red sweep is treated as a
+question rather than a verdict, and why [KEEL-8](BUGS.md) is still open instead
+of resolved by assertion.
 
-**M1 is done: P2 through P11.** `keel-rand`, `keel-api` and `keel-net` are in, `keel-raft` has
-`Input::StepDown`, `RaftCore::restore(cfg, Restored { .. })` and lease reads
-resolved inside the core, and the decisions are ADR-017 through ADR-019. The
-exit criterion holds: a `Message` round-trips identically through `TcpTransport`
-and `LoopbackPair`, and the dependency allowlist still passes with three names.
+Three orderings turned out to be load-bearing rather than tidy:
 
-P3 went upstream first, as [VENDORED.md](crates/lsm-kv/VENDORED.md) required:
-six pull requests on the engine, then a re-vendor at `44404ec` with `src/` and
-`tests/` byte-identical. The engine now takes an injectable filesystem, spawns
-no threads when asked not to, writes atomic multi-key batches under one CRC,
-scans ranges, keeps every MemTable version, and version-gates its checksum. One
-thing the file asked for did not land there and the reason is recorded: a key
-namespace is not a general-purpose engine's business, and it belongs to
-`keel-sm` at P4.
+- **P8 before P9.** Driving the simulator over the real log and the real state
+  machine changed what every existing seed *means*. All fifteen pinned
+  fingerprints moved in the same commit as the code, every artifact was
+  re-recorded, and the CI budget was re-derived — because a committed entry costs
+  more to apply than to count. Turning it on found two real defects.
+- **P16's own internal order: digest rebase first, snapshots second.** Reversed,
+  the sweep goes red on correct code and the day is spent proving it was the
+  oracle. The prediction held, and the phase still found [KEEL-8](BUGS.md), which
+  is a second and different way an install changes a digest.
+- **P24 before P25.** The gate that makes an unpublishable measurement impossible
+  to publish was built before any code that could produce a number. A gate added
+  afterwards is a gate that has already been bypassed once, and the number that
+  bypassed it is the one everybody quotes.
 
-P4 and P5 landed together in substance: the state machine, and the kill loop
-that says its central claim is true. ADR-010, ADR-020 and ADR-021 record what
-was decided — `Command::Incr` exists because it is the only non-idempotent
-command in the API and therefore the only one that can *demonstrate*
-exactly-once rather than assert it.
+The last of those earned itself twice over. The first campaign reported half its
+operations failing and it read as saturation; it was the harness reusing session
+nonces, and the acknowledged-fraction column added to chase it inverted the
+conclusion about what fsync costs.
+
 
 ---
 
 ## The road to v1.0.0
 
-Twenty-seven phases, after the one just landed. Each is a milestone's worth of commits, not
-a commit. The sequencing constraint is stated where it exists; where it is not
-stated, the order is preference rather than requirement.
+Twenty-seven phases, all landed. Each was a milestone's worth of commits rather
+than a commit. The sequencing constraint is stated where one existed; where it is
+not stated, the order was preference.
 
-**One of the two hard phases is behind us.** P8 changed what every existing seed
-means, and the discipline held: all fifteen pinned fingerprints moved in the same
-commit as the code, every artifact was re-recorded, the README's quoted sweep was
-rewritten, and the CI budget was re-derived because a committed entry costs more
-to apply than to count. Turning it on found two real defects, both recorded in
-that commit.
-
-One remains, and it is hard for the same reason:
-
-1. **P16** (snapshots in the simulator) — *the prediction below was right, and
-   the fix landed before any profile took a snapshot.* What it did not predict is
-   [KEEL-8](BUGS.md), a second and different way an install changes a digest.
-   A predicted false positive —
-   `LogDigest` rebasing to `(snap, 0)` on the install path *and* on the far more
-   common restart path ([digest.rs:84](crates/keel-sim/src/digest.rs#L84),
-   [world.rs:527](crates/keel-sim/src/world.rs#L527)) — presents as a State
-   Machine Safety violation **on correct code**. Fix it before the first profile
-   takes a snapshot, or the whole sweep goes red for a day. Every artifact and
-   the pinned fingerprint table move again in that commit.
+**Both hard phases are behind us**, and both were hard for the same reason: they
+changed what an existing seed means, so a real regression and a schedule change
+would have been the same diff. The discipline held in each — the pinned
+fingerprints and every artifact moved in the same commit as the code.
 
 ### M1 — a cluster that serves traffic *(complete)*
 
