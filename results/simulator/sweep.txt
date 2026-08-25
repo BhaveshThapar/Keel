@@ -30,3 +30,8 @@ under test.
 --- profile=membership-hunt nodes=5
 500 seeds x 60000 steps, 5 nodes, membership-hunt profile: 500 passed, 0 failed (mean 2557 entries committed per run)
 --- profile=fig8-hunt nodes=3
+500 seeds x 80000 steps, 3 nodes, fig8-hunt profile: 500 passed, 0 failed (mean 198 entries committed per run)
+
+--- profile=disk-chaos nodes=3
+100 seeds x 60000 steps, 3 nodes, disk-chaos profile: 100 passed, 0 failed (mean 140 entries committed per run)
+--- profile=disk-chaos nodes=5

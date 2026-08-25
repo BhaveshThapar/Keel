@@ -259,6 +259,72 @@
       ],
       "title": "Log segments",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "description": "Entries per Ready: how many operations one round of persist, replicate and apply served. This is the first number to look at when writes are slow. One entry per Ready means every operation is paying a whole round on its own, whatever it was told about batching \u2014 that is what a hundred writes a second looked like, while the same cluster at a batch of thirty did four thousand.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 23
+      },
+      "id": 9,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PROM"
+          },
+          "expr": "rate(keel_entries_appended_total[1m]) / clamp_min(rate(keel_readies_total[1m]), 0.001)",
+          "legendFormat": "entries per Ready, {{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Batch size",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "description": "Proposals the core turned away before they reached the log \u2014 not the leader, overloaded, or a configuration change already in flight. A client sees these as retries and nothing else on this dashboard shows them at all.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 23
+      },
+      "id": 10,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PROM"
+          },
+          "expr": "rate(keel_proposals_dropped_total[1m])",
+          "legendFormat": "refused/s, {{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Proposals refused",
+      "type": "timeseries"
     }
   ],
   "refresh": "5s",
