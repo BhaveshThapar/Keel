@@ -42,3 +42,6 @@ under test.
 100 seeds x 60000 steps, 5 nodes, disk-hunt profile: 100 passed, 0 failed (mean 169 entries committed per run)
 
 --- determinism: 100 seeds, each run twice
+100 seeds replayed identically
+--- determinism with the disk in the fingerprint: 60 seeds, disk-hunt
+60 seeds replayed identically
