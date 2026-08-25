@@ -26,3 +26,7 @@ under test.
 --- profile=lease-drift nodes=3
 500 seeds x 60000 steps, 3 nodes, lease-drift profile: 500 passed, 0 failed (mean 4661 entries committed per run)
 --- profile=lease-drift nodes=5
+500 seeds x 60000 steps, 5 nodes, lease-drift profile: 500 passed, 0 failed (mean 2657 entries committed per run)
+--- profile=membership-hunt nodes=5
+500 seeds x 60000 steps, 5 nodes, membership-hunt profile: 500 passed, 0 failed (mean 2557 entries committed per run)
+--- profile=fig8-hunt nodes=3

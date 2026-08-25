@@ -378,10 +378,16 @@ pub fn run_with(
                         while sender.inflight() < depth.min(sender.capacity()) {
                             let op = plan.draw();
                             seq += 1;
-                            attempted.fetch_add(1, Ordering::Relaxed);
                             let sent = Instant::now();
+                            // Counted only once it is on the wire. A sender that
+                            // refused it did not attempt it, and counting it
+                            // would lower the acknowledged fraction — the one
+                            // column that distinguishes a cluster serving
+                            // everything slowly from a cluster refusing half of
+                            // it.
                             match sender.submit(op, seq) {
                                 Some(token) => {
+                                    attempted.fetch_add(1, Ordering::Relaxed);
                                     reference.insert(token, sent);
                                 }
                                 None => break,
@@ -440,9 +446,18 @@ pub fn run_with(
                         }
                         let op = plan.draw();
                         seq += 1;
-                        attempted.fetch_add(1, Ordering::Relaxed);
-                        if let Some(token) = sender.submit(op, seq) {
-                            reference.insert(token, due);
+                        match sender.submit(op, seq) {
+                            Some(token) => {
+                                attempted.fetch_add(1, Ordering::Relaxed);
+                                reference.insert(token, due);
+                            }
+                            // Due and not issued, which is the coordinated
+                            // omission the schedule exists to make visible —
+                            // whether the sender was behind the clock or simply
+                            // had no room.
+                            None => {
+                                late.fetch_add(1, Ordering::Relaxed);
+                            }
                         }
                         collect(&mut sender, &mut hist, &mut reference, Duration::ZERO);
                         due += interval;
