@@ -1046,11 +1046,14 @@ holds it all together is a test, not an argument — a scripted run of entries
 that reads and writes across itself must produce the same responses and the same
 state whether applied one at a time or as a batch.
 
-**The measured effect.** With `F_FULLFSYNC` on an Apple M2 Pro, three nodes,
-eight senders at depth 64: 115 operations a second before, 4,149 after. The
-fsync-off arm barely moves, which is the point — one flush now retires the whole
-batch, so durability costs what the batch amortises it to rather than one flush
-per operation.
+**The measured effect** is in
+[`results/bench/campaign-writes.txt`](results/bench/campaign-writes.txt) and
+in its fsync-off control beside it, and the number that explains it is
+`keel_entries_appended_total ÷ keel_readies_total` — how many operations one
+round of persist, replicate and apply served. It was one and a half. It is now
+tens, and the durable arm rose with it while the fsync-off arm barely moved,
+which is the point: one flush retires the whole batch, so durability costs what
+the batch amortises it to rather than one flush per operation.
 
 ---
 

@@ -35,3 +35,10 @@ under test.
 --- profile=disk-chaos nodes=3
 100 seeds x 60000 steps, 3 nodes, disk-chaos profile: 100 passed, 0 failed (mean 140 entries committed per run)
 --- profile=disk-chaos nodes=5
+100 seeds x 60000 steps, 5 nodes, disk-chaos profile: 100 passed, 0 failed (mean 149 entries committed per run)
+--- profile=disk-hunt nodes=3
+100 seeds x 60000 steps, 3 nodes, disk-hunt profile: 100 passed, 0 failed (mean 148 entries committed per run)
+--- profile=disk-hunt nodes=5
+100 seeds x 60000 steps, 5 nodes, disk-hunt profile: 100 passed, 0 failed (mean 169 entries committed per run)
+
+--- determinism: 100 seeds, each run twice
