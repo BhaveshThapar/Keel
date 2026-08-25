@@ -466,6 +466,29 @@ impl Observable for Reported {
                 kind: Kind::Counter,
                 value: p.proposals_dropped as f64,
             },
+            // Where the time in a round goes. Divided by `keel_readies_total`
+            // these are the mean cost of one round's persist, send and apply;
+            // divided by `keel_entries_applied_total` they are what one
+            // operation's share of each came to, which is the number the batch
+            // is there to shrink.
+            Metric {
+                name: "keel_persist_seconds_total",
+                help: "Time spent truncating, appending, writing hard state and fsyncing",
+                kind: Kind::Counter,
+                value: p.persist_nanos as f64 / 1e9,
+            },
+            Metric {
+                name: "keel_send_seconds_total",
+                help: "Time spent encoding consensus messages and handing them to the transport",
+                kind: Kind::Counter,
+                value: p.send_nanos as f64 / 1e9,
+            },
+            Metric {
+                name: "keel_apply_seconds_total",
+                help: "Time spent applying committed entries to the state machine",
+                kind: Kind::Counter,
+                value: p.apply_nanos as f64 / 1e9,
+            },
         ]
     }
 }

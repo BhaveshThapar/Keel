@@ -1,0 +1,44 @@
+=== where the time in a write goes ===
+host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
+commit: 3eb90c7 (working tree modified)
+date:   2026-08-25T05:57:26Z
+
+nodes:       3 on one host over loopback
+senders:     24, each with 16 requests outstanding
+seconds:     10 per arm
+tier:        Exploratory, and the fsync-off arm is not publishable at all
+
+The three phases are the ones the Ready contract names, timed per
+round rather than per operation: persist covers the truncate, the
+append, the hard state and the one fsync over all three; send covers
+encoding every message and handing it to the transport; apply covers
+the state machine's batch and its own fsync.
+
+Read the two arms against each other. The difference in persist is the
+flush, almost exactly; the difference in apply is the state machine's
+own flush, and what is left of apply is real work — decoding, the
+session table, the store.
+
+--- durable (F_FULLFSYNC)
+  acknowledged 41752 of 41752 attempted in 10.1s -> 4114 ops/s
+  latency ms  p50 94.372  p90 135.266  p99 252.707  p999 256.901  max 261.801
+  late 0
+  42136 entries applied in 839 rounds = 50.2 per round
+  phase       total s    ms/round    us/entry
+  persist       3.063       3.651        72.7
+  send          0.010       0.012         0.2
+  apply         4.850       5.780       115.1
+
+--- none (writes neither ordered nor durable; NOT PUBLISHABLE)
+  acknowledged 49866 of 49866 attempted in 10.1s -> 4948 ops/s
+  latency ms  p50 80.740  p90 177.209  p99 217.055  p999 230.687  max 233.802
+  late 0
+  50250 entries applied in 1807 rounds = 27.8 per round
+  phase       total s    ms/round    us/entry
+  persist       0.013       0.007         0.3
+  send          0.008       0.005         0.2
+  apply         5.269       2.916       104.9
+
+send is loopback. On a real network that column is where the round trip
+would appear, and it does not appear here — the same gap as "no
+cross-node numbers" in BENCH.md.

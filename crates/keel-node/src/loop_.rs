@@ -1,6 +1,7 @@
 //! The Ready loop.
 
 use std::collections::VecDeque;
+use std::time::Instant;
 
 use bytes::Bytes;
 use keel_api::{ClientId, Peer, Proposal, Response, Seq, decode, encode};
@@ -63,6 +64,23 @@ pub struct Turn {
     /// Proposals refused before they reached the log, with the reason the core
     /// gave — not the leader, overloaded, a conf change already in flight.
     pub proposals_dropped: u64,
+    /// Nanoseconds inside each of the three phases of a `Ready`.
+    ///
+    /// Per `Ready`, not per operation, which is what makes them affordable:
+    /// four clock reads amortised over a batch of tens. That was the argument
+    /// against taking them at all while a batch was one entry — the timers
+    /// would have been a per-operation cost to measure a per-operation cost —
+    /// and it stopped being the argument when the batch grew (ADR-035).
+    ///
+    /// What they answer is the question BENCH.md could not: of the time a write
+    /// waits, how much is the disk, how much is the network, and how much is
+    /// applying it. `persist` covers the truncate, the append, the hard state
+    /// and the one fsync over all three; `send` covers encoding and handing
+    /// every message to the transport; `apply` covers the state machine's own
+    /// batch and its own fsync.
+    pub persist_nanos: u64,
+    pub send_nanos: u64,
+    pub apply_nanos: u64,
 }
 
 impl Turn {
@@ -86,6 +104,9 @@ pub struct Progress {
     pub messages_received: u64,
     pub entries_applied: u64,
     pub proposals_dropped: u64,
+    pub persist_nanos: u64,
+    pub send_nanos: u64,
+    pub apply_nanos: u64,
 }
 
 impl Progress {
@@ -97,6 +118,9 @@ impl Progress {
         self.messages_received += turn.messages_received;
         self.entries_applied += turn.entries_applied;
         self.proposals_dropped += turn.proposals_dropped;
+        self.persist_nanos += turn.persist_nanos;
+        self.send_nanos += turn.send_nanos;
+        self.apply_nanos += turn.apply_nanos;
     }
 }
 
@@ -354,6 +378,7 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
         turn.readies += 1;
 
         // 1. Persist. Entries, then hard state, then one fsync covering both.
+        let started = Instant::now();
         let first_new = ready.entries.first().map(|e| e.index);
         if let Some(from) = first_new.filter(|i| *i <= self.log.last_index()) {
             self.log.truncate(from)?;
@@ -367,6 +392,8 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
         }
         let persisted = ready.entries.last().map(|e| (e.index, e.term));
         self.log.sync()?;
+        let persisted_at = Instant::now();
+        turn.persist_nanos += persisted_at.duration_since(started).as_nanos() as u64;
 
         // 2. Send. Not before the fsync above: a vote response that goes out
         //    first lets a crashed node grant a second vote in the same term.
@@ -385,10 +412,14 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
             }
         }
 
+        let sent_at = Instant::now();
+        turn.send_nanos += sent_at.duration_since(persisted_at).as_nanos() as u64;
+
         // 3. Apply. The whole run in one batch, so one fsync in the state
         //    machine retires all of it — see `apply` below.
         let applied = self.apply(&ready.committed_entries)?;
         turn.entries_applied += ready.committed_entries.len() as u64;
+        turn.apply_nanos += sent_at.elapsed().as_nanos() as u64;
 
         for read in &ready.read_states {
             self.reads.push((read.ctx, read.index));

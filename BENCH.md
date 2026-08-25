@@ -134,7 +134,7 @@ interface.
 # What this host is allowed to publish, before anything is measured.
 cargo run --release -p keel-bench -- gate --dir /tmp
 
-# A cluster, and a campaign against it. The fourth argument is the pipeline
+# A cluster, and a campaign against it. The fifth argument is the pipeline
 # depth; the committed curve uses 16.
 scripts/campaign.sh
 
@@ -143,6 +143,12 @@ scripts/etcd-baseline.sh
 
 # Failover: the leader killed at steady state, 100+ trials.
 scripts/failover.sh
+
+# The control arm: the same cluster with no fsync, recorded as admitted.
+scripts/ablation-fsync.sh
+
+# Where the time in a write goes: persist, send, apply, both arms.
+scripts/breakdown.sh
 ```
 
 ## What was measured
@@ -191,6 +197,40 @@ is exactly what the admitted path is for.
 Roughly **four times the throughput** without the promise, and two orders of
 magnitude less tail latency at the same offered rate. That is
 the price of durability on this machine, measured with one variable changed.
+
+### Where the time goes
+
+[`results/bench/phase-breakdown.txt`](results/bench/phase-breakdown.txt), from
+`scripts/breakdown.sh`: the three phases the `Ready` contract names, timed per
+round rather than per operation. Twenty-four senders at depth 16, three nodes.
+
+| phase | durable, ms/round | fsync off, ms/round | durable, µs/entry |
+|---|---:|---:|---:|
+| persist — truncate, append, hard state, one fsync | 3.65 | 0.007 | 73 |
+| send — encode and hand to the transport | 0.012 | 0.005 | 0.2 |
+| apply — the state machine's batch and its own fsync | 5.78 | 2.92 | 115 |
+
+Three things fall out of it, and the third is the one that changes what the rest
+of this file means.
+
+**`persist` is the flush, almost exactly.** 3.65 ms with `F_FULLFSYNC` under it
+and 0.007 ms without: a factor of five hundred. There is nothing else in that
+phase worth naming.
+
+**Half of `apply` is a second flush.** 5.78 ms against 2.92 ms with fsync off, so
+the state machine's own write-ahead log costs about as much as the consensus
+log's — two flushes per round, not one. The 2.9 ms that remains is real work:
+decoding, the session table, the store.
+
+**`send` is loopback and therefore says nothing.** On a real network this column
+is where the round trip lives, and it does not appear here at all. That is the
+same gap as "no cross-node numbers" below, and this table is where it is most
+visible: a breakdown with a zero in the network column is a breakdown taken on
+one machine.
+
+Both flushes are amortised across the round — about fifty entries at this offered
+rate — which is why the durable arm now reaches four fifths of the fsync-off
+arm's throughput rather than a quarter of it.
 
 ### Failover
 
@@ -256,14 +296,9 @@ only thing P26 is still missing, and it is not engineering.
   over HTTP/2; Keel stores in an LSM with group commit, where one fsync retires
   every batch queued behind it, and speaks length-prefixed frames over TCP.
   Different trades, not different amounts of effort.
-- **No flame graphs, and no per-request fsync/RTT/apply breakdown** (PR-7). What
-  exists now is the batch: `keel_entries_appended_total ÷ keel_readies_total` says
-  how many operations one round of persist, replicate and apply served, and that
-  is the number that moved from 1.5 to 55 and took write throughput with it. What
-  is still missing is where the time inside a round goes, which needs timers in
-  the hot path — a decision that has not been taken, and one that is easier to
-  argue for now that the batch is large enough for the timers to be cheap per
-  operation.
+- **No flame graphs.** The phase breakdown PR-7 asked for *is* measured now —
+  see "Where the time goes" above — but it says where the time went between
+  three named boundaries, not which function spent it.
 - **No 1 GB snapshot benchmark** (PR-6), and it is not a timing that is waiting
   to be taken. Snapshot creation, streaming, interruption and resumption are all
   exercised and asserted — see CORRECTNESS.md — but by the simulator and by
