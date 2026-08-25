@@ -64,6 +64,7 @@ row that was never written.
 | The same core runs under a third transport with no conditional compilation | the adapter in `keel-maelstrom` constructs the same `RaftCore` (FR-12) | enforced |
 | The same, with the cluster cut into halves every ten seconds | `scripts/maelstrom.sh 60 30 partition`; committed output in [`results/maelstrom/`](results/maelstrom/) | enforced |
 | A real cluster's history, recorded while it is partitioned, paused and killed, is linearizable | `scripts/porcupine.sh` — [Porcupine](https://github.com/anishathalye/porcupine) v1.3.0 over a history `kv workload` recorded; committed output in [`results/porcupine/`](results/porcupine/) | enforced |
+| …and that history has concurrency *within* each client, not only between them | `kv workload --depth 8`, which is what `keel-chaos` starts. A client with one request outstanding never overlaps itself, so a checker handed a depth-1 history has almost nothing to reorder and accepts almost anything | enforced |
 | …and the same checker rejects that history with one read's result replaced | the control arm of the same script, which is what makes the experiment arm evidence | enforced |
 | A read records what it returned, so a model has something to contradict | `history::tests::a_read_records_what_it_returned` | enforced |
 | An unanswered read carries no result, so it is not read as "the key was absent" | `history::tests::an_unanswered_operation_carries_no_result` | enforced |

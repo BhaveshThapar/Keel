@@ -361,7 +361,7 @@ impl Client {
     }
 }
 
-fn outcome_of(result: &Result<Response, ClientError>) -> Outcome {
+pub(crate) fn outcome_of(result: &Result<Response, ClientError>) -> Outcome {
     match result {
         Ok(response) => Outcome::Ok(response.clone()),
         // The distinction a linearizability checker needs. A refusal is a

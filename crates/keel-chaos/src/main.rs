@@ -429,15 +429,28 @@ fn start_recorder(
     for n in nodes {
         cmd.arg("--node").arg(n);
     }
-    cmd.args(["workload", "--clients", "8", "--keys", "4", "--secs"])
-        // Past the last fault, so the history covers the recovery as well as
-        // the damage. A history that stopped at the last kill would never show
-        // whether the cluster came back consistent.
-        .arg((secs + 8).to_string())
-        .arg("--out")
-        .arg(out)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    // Depth eight, so each client's own operations overlap each other as well
+    // as the other clients'. A history recorded at depth one has no
+    // intra-client concurrency in it at all, and a linearizability checker
+    // handed one has very little to reorder (ADR-033).
+    cmd.args([
+        "workload",
+        "--clients",
+        "8",
+        "--keys",
+        "4",
+        "--depth",
+        "8",
+        "--secs",
+    ])
+    // Past the last fault, so the history covers the recovery as well as
+    // the damage. A history that stopped at the last kill would never show
+    // whether the cluster came back consistent.
+    .arg((secs + 8).to_string())
+    .arg("--out")
+    .arg(out)
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
     Ok(cmd.spawn()?)
 }
 

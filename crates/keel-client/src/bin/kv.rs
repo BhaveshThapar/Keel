@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
-use keel_client::Client;
+use keel_client::{Client, Pipeline};
 
 #[derive(Parser)]
 #[command(
@@ -88,6 +88,16 @@ enum Command {
         /// harder question than a hundred keys with one each.
         #[arg(long, default_value_t = 4)]
         keys: u64,
+        /// How many requests each client keeps outstanding.
+        ///
+        /// The knob that decides whether the history is worth checking. At depth
+        /// one a client never overlaps *itself*, so the only concurrency in the
+        /// history is between clients and a checker has little to reorder. At
+        /// depth eight each client contributes eight overlapping operations of
+        /// its own, and every one of them is a chance for the cluster to
+        /// linearize them in an order it should not.
+        #[arg(long, default_value_t = 8)]
+        depth: usize,
         #[arg(long)]
         out: PathBuf,
     },
@@ -102,29 +112,71 @@ fn workload_thread(
     nodes: Vec<SocketAddr>,
     id: u64,
     keys: u64,
+    depth: usize,
     origin: Instant,
     deadline: Instant,
 ) -> Option<keel_client::History> {
-    // A nonce per thread, and none of them reused. Two clients sharing a nonce
-    // share a session, and the second one's sequence numbers replay the first
-    // one's — so its writes are answered from the dedup cache and never applied,
-    // and the history records acknowledgements for operations that did not
-    // happen.
-    let mut client = Client::new(&nodes, 1_000 + id).recording_since(origin);
+    // A nonce block per thread, and none of them reused. Two clients sharing a
+    // nonce share a session, and the second one's sequence numbers replay the
+    // first one's — so its writes are answered from the dedup cache and never
+    // applied, and the history records acknowledgements for operations that did
+    // not happen. A pipeline opens one session per slot, so each thread reserves
+    // a block rather than a single value.
+    let base = 1_000 + id * 1_000;
+    if depth <= 1 {
+        let mut client = Client::new(&nodes, base).recording_since(origin);
+        let mut n = 0u64;
+        while Instant::now() < deadline {
+            n += 1;
+            let key = format!("k{}", (id.wrapping_mul(7) + n) % keys);
+            if n % 2 == 0 {
+                // A value nothing else will ever write, so the checker can tell
+                // which write a read observed.
+                let value = format!("c{id}-{n}");
+                let _ = client.put(key.as_bytes(), value.as_bytes());
+            } else {
+                let _ = client.get(key.as_bytes());
+            }
+        }
+        return client.take_history();
+    }
+
+    let mut pipeline = match Pipeline::open(&nodes, base, depth) {
+        Ok(pipeline) => pipeline.recording_since(origin),
+        // A client that could not open a session records nothing, and the caller
+        // says so rather than checking a history with a client missing from it.
+        Err(_) => return None,
+    };
     let mut n = 0u64;
     while Instant::now() < deadline {
-        n += 1;
-        let key = format!("k{}", (id.wrapping_mul(7) + n) % keys);
-        if n % 2 == 0 {
-            // A value nothing else will ever write, so the checker can tell
-            // which write a read observed.
-            let value = format!("c{id}-{n}");
-            let _ = client.put(key.as_bytes(), value.as_bytes());
-        } else {
-            let _ = client.get(key.as_bytes());
+        while !pipeline.is_full() && Instant::now() < deadline {
+            n += 1;
+            let key = format!("k{}", (id.wrapping_mul(7) + n) % keys);
+            let sent = if n % 2 == 0 {
+                let value = format!("c{id}-{n}");
+                pipeline
+                    .submit(keel_api::Command::Put {
+                        key: key.clone().into_bytes().into(),
+                        value: value.into_bytes().into(),
+                    })
+                    .is_ok()
+            } else {
+                pipeline
+                    .submit_query(keel_api::Query::Get {
+                        key: key.into_bytes().into(),
+                    })
+                    .is_ok()
+            };
+            if !sent {
+                break;
+            }
         }
+        let _ = pipeline.poll(Duration::from_millis(5));
     }
-    client.take_history()
+    // Everything still on the wire gets a moment to land, and whatever does not
+    // is recorded as unknown — which is what it is.
+    let _ = pipeline.drain(Instant::now() + Duration::from_secs(5));
+    pipeline.take_history()
 }
 
 fn run_workload(
@@ -132,6 +184,7 @@ fn run_workload(
     clients: usize,
     secs: u64,
     keys: u64,
+    depth: usize,
     out: &PathBuf,
 ) -> Result<String, String> {
     let origin = Instant::now();
@@ -139,7 +192,7 @@ fn run_workload(
     let handles: Vec<_> = (0..clients as u64)
         .map(|id| {
             let nodes = nodes.to_vec();
-            std::thread::spawn(move || workload_thread(nodes, id, keys, origin, deadline))
+            std::thread::spawn(move || workload_thread(nodes, id, keys, depth, origin, deadline))
         })
         .collect();
 
@@ -160,7 +213,8 @@ fn run_workload(
     std::fs::write(out, merged.to_jsonl())
         .map_err(|e| format!("writing {}: {e}", out.display()))?;
     Ok(format!(
-        "{} operations from {clients} clients over {keys} keys, {} still pending, written to {}",
+        "{} operations from {clients} clients at depth {depth} over {keys} keys, \
+         {} still pending, written to {}",
         merged.len(),
         merged.pending(),
         out.display()
@@ -174,10 +228,11 @@ fn main() -> ExitCode {
         clients,
         secs,
         keys,
+        depth,
         out,
     } = &cli.command
     {
-        return match run_workload(&cli.nodes, *clients, *secs, *keys, out) {
+        return match run_workload(&cli.nodes, *clients, *secs, *keys, *depth, out) {
             Ok(summary) => {
                 println!("{summary}");
                 ExitCode::SUCCESS

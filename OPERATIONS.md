@@ -63,6 +63,10 @@ failing build rather than a silently empty dashboard.
 | `keel_log_segments` | climbing and never falling means compaction is not happening |
 | `keel_sync_durable` | 0 means no durability claim may be made about anything this node did |
 | `keel_failed` | 1 means the node hit a storage error it cannot continue past. It stops serving rather than carrying on, because a node that cannot make writes durable and keeps acknowledging them is worse than a node that is down |
+| `keel_entries_appended_total` ÷ `keel_readies_total` | **the batch size**, and the number to look at first when writes are slow. One entry per `Ready` means every operation is paying a whole round of persist, replicate and apply on its own, whatever it was told about batching — that is what a hundred writes a second looked like before ADR-035, while the same cluster with a batch of thirty did four thousand |
+| `keel_readies_total` ÷ `keel_turns_total` | how often a turn had anything to do. Near zero on a busy node means the loop is spinning without progress; near one under no load means something is waking it |
+| `keel_messages_sent_total` | flat on a leader means replication has stopped; climbing with `keel_commit_index` flat means it is being rejected |
+| `keel_proposals_dropped_total` | climbing means the core is refusing proposals before they reach the log — not the leader, overloaded, or a configuration change already in flight. A client sees these as retries and a dashboard sees nothing else |
 
 ## A cluster on one machine
 

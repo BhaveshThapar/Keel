@@ -50,7 +50,7 @@ use std::time::{Duration, Instant};
 
 use keel_api::{ApiError, ClientId, Command, Query, Request, RequestId, Response, Seq};
 
-use crate::{ClientError, Endpoint, Retry};
+use crate::{ClientError, Endpoint, History, Op, Retry};
 
 /// Why a pipeline could not take a request.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -83,6 +83,9 @@ struct Session {
 /// A request that has gone out and not come back.
 struct Outstanding {
     slot: usize,
+    /// Where this operation sits in the recorded history, when one is being
+    /// recorded.
+    recorded: Option<usize>,
     /// Kept verbatim so a resend is the *same* request — the same session pair,
     /// so the state machine recognises it as a retry rather than as a second
     /// command.
@@ -105,6 +108,7 @@ pub struct Pipeline {
     /// will not be answered. Not the same thing as the retry deadline: a
     /// pipeline resends on a redirect for as long as this allows.
     request_timeout: Duration,
+    history: Option<History>,
 }
 
 impl Pipeline {
@@ -142,6 +146,7 @@ impl Pipeline {
             next_id: 1,
             retry: Retry::default(),
             request_timeout: Duration::from_secs(10),
+            history: None,
         };
         pipeline.open_sessions()?;
         Ok(pipeline)
@@ -151,6 +156,27 @@ impl Pipeline {
         self.request_timeout = retry.deadline;
         self.retry = retry;
         self
+    }
+
+    /// Record every operation against a clock somebody else started, for
+    /// external linearizability checking.
+    ///
+    /// The clock is shared for the reason the blocking client shares one: several
+    /// clients' histories are merged into one timeline by a checker, and each
+    /// starting from its own `Instant::now()` would place every client's first
+    /// operation at time zero.
+    ///
+    /// A pipelined history is the one worth checking. A client with one request
+    /// outstanding produces a history with no concurrency in it at all, so a
+    /// checker handed it has nothing to reorder and accepts almost anything;
+    /// sixteen in flight is where a linearizability checker earns its keep.
+    pub fn recording_since(mut self, origin: Instant) -> Self {
+        self.history = Some(History::starting_at(origin));
+        self
+    }
+
+    pub fn take_history(&mut self) -> Option<History> {
+        self.history.take()
     }
 
     /// How many requests may be outstanding at once.
@@ -187,7 +213,8 @@ impl Pipeline {
             command,
         };
         session.busy = true;
-        Ok(self.dispatch(slot, request, false))
+        let op = op_of(&request);
+        Ok(self.dispatch(slot, request, false, op))
     }
 
     /// Send a linearizable query. A read carries no sequence number, so it
@@ -203,7 +230,8 @@ impl Pipeline {
             consistency: keel_api::Consistency::Linearizable,
             query,
         };
-        Ok(self.dispatch(slot, request, false))
+        let op = op_of(&request);
+        Ok(self.dispatch(slot, request, false, op))
     }
 
     /// Collect whatever has finished, waiting up to `timeout` for the first of
@@ -247,13 +275,29 @@ impl Pipeline {
     // ------------------------------------------------------------- internals
 
     /// Put a request on the wire and remember it.
-    fn dispatch(&mut self, slot: usize, request: Request, internal: bool) -> RequestId {
+    ///
+    /// The history records the invocation here, at the moment the request goes
+    /// out, and the completion when it comes back — so an operation's interval
+    /// is what it really was, and a checker sees the concurrency that actually
+    /// existed rather than a serialisation of it.
+    fn dispatch(
+        &mut self,
+        slot: usize,
+        request: Request,
+        internal: bool,
+        op: Option<Op>,
+    ) -> RequestId {
         let id = self.next_id;
         self.next_id += 1;
+        let recorded = match (self.history.as_mut(), op) {
+            (Some(history), Some(op)) => Some(history.invoke(op)),
+            _ => None,
+        };
         self.outstanding.insert(
             id,
             Outstanding {
                 slot,
+                recorded,
                 request: request.clone(),
                 since: Instant::now(),
                 internal,
@@ -370,6 +414,9 @@ impl Pipeline {
     ) -> Option<Completion> {
         let outstanding = self.outstanding.remove(&id)?;
         self.sessions[outstanding.slot].busy = false;
+        if let (Some(history), Some(at)) = (self.history.as_mut(), outstanding.recorded) {
+            history.complete(at, crate::outcome_of(&result));
+        }
         if outstanding.internal {
             return None;
         }
@@ -395,7 +442,7 @@ impl Pipeline {
     fn register(&mut self, slot: usize) {
         let nonce = self.sessions[slot].nonce;
         self.sessions[slot].busy = true;
-        self.dispatch(slot, Request::Register { nonce }, true);
+        self.dispatch(slot, Request::Register { nonce }, true, None);
     }
 
     /// Open every slot's session, all of them in flight at once.
@@ -441,6 +488,31 @@ impl Pipeline {
 /// it is: something to try next, not truth.
 type NodeIdHint = keel_raft::NodeId;
 
+/// What a request looks like to a linearizability checker.
+///
+/// Derived from the request rather than passed alongside it, so a caller cannot
+/// record one operation and send another — which is the one bug in a recorder
+/// that makes every check downstream vacuous.
+fn op_of(request: &Request) -> Option<Op> {
+    match request {
+        Request::Command { command, .. } => Some(match command {
+            Command::Put { key, value } => Op::Put(key.to_vec(), value.to_vec()),
+            Command::Delete { key } => Op::Delete(key.to_vec()),
+            Command::Cas { key, expect, value } => Op::Cas(
+                key.to_vec(),
+                expect.as_ref().map(|e| e.to_vec()),
+                value.as_ref().map(|v| v.to_vec()),
+            ),
+            Command::Incr { key, by } => Op::Incr(key.to_vec(), *by),
+        }),
+        Request::Query {
+            query: Query::Get { key },
+            ..
+        } => Some(Op::Get(key.to_vec())),
+        Request::Query { .. } | Request::Register { .. } | Request::KeepAlive { .. } => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,6 +547,7 @@ mod tests {
             next_id: 1,
             retry: Retry::default(),
             request_timeout: Duration::from_secs(10),
+            history: None,
         }
     }
 
