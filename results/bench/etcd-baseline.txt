@@ -1,0 +1,79 @@
+=== etcd baseline, and Keel measured the same way ===
+host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
+commit: ea002a1
+date:   2026-08-25T01:08:56Z
+
+etcd version:  v3.5.17, single node, in Docker
+value bytes:   128
+clients:       8
+total ops:     20000
+tier:          Exploratory — both sides. Neither is a headline number.
+
+What this comparison is measuring, and what it is not:
+
+  etcd runs in a Linux container on a macOS host, so its writes cross a
+  virtual machine boundary that Keel's do not. A ratio measured across
+  that boundary is partly a measurement of the boundary. This harness
+  exists so that the same comparison on Linux hardware is one command;
+  the number below is not that comparison.
+
+  The mechanism behind any difference is not a mystery: etcd stores in
+  bbolt, a B+tree with a per-transaction fsync, and speaks gRPC over
+  HTTP/2. Keel stores in an LSM with group commit, where one fsync
+  retires every batch queued behind it, and speaks length-prefixed
+  frames over TCP. Different trades, not different amounts of effort.
+
+--- etcd, by its own benchmark tool
+
+ 0 / 20000    0.00%2026/08/24 21:08:56 INFO: [core] [Channel #1 SubChannel #2] Subchannel Connectivity change to READY
+2026/08/24 21:08:56 INFO: [roundrobin] roundrobinPicker: Build called with info: {map[SubConn(id:2):{{Addr: "127.0.0.1:2379", ServerName: "127.0.0.1:2379", }}]}
+2026/08/24 21:08:56 INFO: [core] [Channel #1] Channel Connectivity change to READY
+ 1434 / 20000    7.17% 00m02s 3016 / 20000   15.08% 00m02s 4566 / 20000   22.83% 00m02s 6041 / 20000   30.20% 00m01s 7552 / 20000   37.76% 00m01s 9126 / 20000   45.63% 00m01s 10754 / 20000   53.77% 00m01s 12368 / 20000   61.84% 13977 / 20000   69.89% 15559 / 20000   77.80% 17158 / 20000   85.79% 18745 / 20000   93.72% 20000 / 20000  100.00% 2s
+Summary:
+  Total:	2.5610 secs.
+  Slowest:	0.0081 secs.
+  Fastest:	0.0004 secs.
+  Average:	0.0010 secs.
+  Stddev:	0.0004 secs.
+  Requests/sec:	7809.5783
+Response time histogram:
+  0.0004 [1]	|
+  0.0011 [14155]	|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎
+  0.0019 [5323]	|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎
+  0.0027 [436]	|∎
+  0.0035 [40]	|
+  0.0042 [24]	|
+  0.0050 [8]	|
+  0.0058 [5]	|
+  0.0065 [0]	|
+  0.0073 [6]	|
+  0.0081 [2]	|
+Latency distribution:
+  10% in 0.0007 secs.
+  25% in 0.0008 secs.
+  50% in 0.0009 secs.
+  75% in 0.0012 secs.
+  90% in 0.0014 secs.
+  95% in 0.0017 secs.
+  99% in 0.0023 secs.
+  99.9% in 0.0044 secs.
+
+--- the asymmetry that dominates this comparison
+
+etcd here is fsyncing inside a Linux virtual machine on a macOS host.
+Keel is fsyncing natively with F_FULLFSYNC, which is the only primitive
+on this platform that actually forces a drive cache flush — fdatasync on
+Linux, and every fsync inside a Docker Desktop VM, may return once the
+write reaches the host's page cache.
+
+So the two sides are not making the same promise, and the gap below is
+mostly that. A durability number compared against a number that may not
+be durable is not a comparison of two systems; it is a comparison of two
+definitions. The same script on Linux hardware, where both sides use the
+same primitive against the same device, is the run that would settle it.
+
+The honest internal control is Keel's own fsync-off arm:
+results/bench/ablation-fsync-off.txt, where the same cluster with writes
+neither ordered nor durable does four times the throughput at a quarter
+of the latency. That is the cost of the promise, measured on one machine
+with one variable changed.

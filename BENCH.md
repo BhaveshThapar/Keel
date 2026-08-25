@@ -134,16 +134,23 @@ curve in `campaign-writes.svg`.
 
 | offered | achieved | acknowledged | p50 | p99 |
 |---:|---:|---:|---:|---:|
-| 25 | 25 | 100% | 44 ms | 155 ms |
-| 50 | 48 | 100% | 42 ms | 161 ms |
-| 100 | 96 | 100% | 52 ms | 92 ms |
-| 200 | 140 | 100% | — | 1.8 s |
-| 400 | 130 | 100% | — | 4.1 s |
+| 25 | 25 | 100% | 44 ms | 141 ms |
+| 50 | 48 | 100% | 42 ms | 141 ms |
+| 100 | 96 | 100% | 65 ms | 139 ms |
+| 200 | 110 | 100% | 1.7 s | 2.7 s |
+| 400 | 109 | 100% | 3.4 s | 4.4 s |
 
 The knee is between 100 and 200 offered: the cluster saturates at roughly
-**130–140 writes a second**. Rows past it are marked in the file because the
-senders could not hold the schedule, so their offered column is a request rather
-than a fact.
+**110 writes a second**, and holds around 100 ms at the tail up to that point.
+Rows past the knee are marked in the file because the senders could not hold the
+schedule, so their offered column is a request rather than a fact.
+
+Every row acknowledges 100%. That column exists because an earlier version of
+this harness reported half its operations failing and it read as saturation — it
+was reusing session nonces, so each new client replayed sequence numbers below
+its session's floor and the cluster refused them, correctly. A cluster refusing
+half its requests and a cluster serving all of them slowly produce the same
+achieved number, and only that column tells them apart.
 
 ### What that costs is durability, and here is the control
 
@@ -154,10 +161,11 @@ is exactly what the admitted path is for.
 
 | | saturation | p99 at 400 offered |
 |---|---:|---:|
-| `durable` (`F_FULLFSYNC`) | ~135 ops/s | 4.1 s |
-| `none` (no fsync at all) | ~510 ops/s | 28 ms |
+| `durable` (`F_FULLFSYNC`) | ~110 ops/s | 4.4 s |
+| `none` (no fsync at all) | ~400 ops/s | 24 ms |
 
-Roughly **four and a half times the throughput** without the promise. That is
+Roughly **four times the throughput** without the promise, and two orders of
+magnitude less tail latency at the same offered rate. That is
 the price of durability on this machine, measured with one variable changed.
 
 ### Failover
@@ -167,9 +175,9 @@ tick, 109 usable.
 
 | | |
 |---|---:|
-| median time to the first acknowledged write after the leader was killed | **629 ms** |
+| median time to the first acknowledged write after the leader was killed | **633 ms** |
 | p99 | 1,250 ms |
-| max | 1,449 ms |
+| max | 1,256 ms |
 
 The clock starts at the kill and stops at an *acknowledgement*, not at an
 election — election is an internal event a client cannot observe, and it is
@@ -180,17 +188,17 @@ before it can serve.
 
 [`results/bench/etcd-baseline.txt`](results/bench/etcd-baseline.txt): etcd
 v3.5.17, single node, in Docker, driven by etcd's own `tools/benchmark` built
-from a clone at the same tag. **8,948 requests/s, average 0.9 ms.**
+from a clone at the same tag. **7,810 requests/s, average 1.0 ms.**
 
 That is far faster than Keel here, and the honest reading of it is not "Keel is
-eighty times slower":
+seventy times slower":
 
 - **The two sides are not making the same promise.** etcd is fsyncing inside a
   Linux virtual machine on a macOS host; Keel is using `F_FULLFSYNC` natively,
   which is the only primitive on this platform that forces a drive cache flush.
   A durability number compared against a number that may not be durable is a
   comparison of two definitions.
-- **Keel's own fsync-off arm still only reaches ~510 ops/s**, so durability does
+- **Keel's own fsync-off arm still only reaches ~400 ops/s**, so durability does
   not explain all of the gap. The rest is the client model: Keel's client is
   blocking with one request in flight per thread and eight threads, against a
   gRPC benchmark that pipelines. That is a real difference and it is a

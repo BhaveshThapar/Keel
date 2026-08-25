@@ -1,0 +1,41 @@
+host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, kernel 25.2.0, aarch64
+commit: ea002a1
+date:   2026-08-25T01:03:48Z
+data:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-campaign-E8A4pZ on apfs
+tier:   Exploratory — not a headline number; see BENCH.md for what that means
+sync:   durable (F_FULLSYNC or fdatasync, per platform)
+runs:   3
+
+** Every number below is from this host and this configuration.
+** It is reproducible, and it is not a claim about how fast Keel
+** is in general.
+
+mix          writes (100% update)
+value        128 B
+key space    10000
+clients      8
+nodes        3
+tick         10 ms
+seconds      6 per run
+repetitions  3 per rate, median reported
+
+offered   achieved      acked       p50       p99      p999       max   late
+  ops/s      ops/s  /attempt        ms        ms        ms        ms
+     25         25    100.0%    46.662   140.509   140.509   140.240      0
+     50         48    100.0%    46.662   140.509   140.509   140.391      0
+    100         96    100.0%    73.925   139.461   139.461   138.834    232  *
+    200        110    100.0%  1400.898  2734.686  2751.463  2747.653   3576  *
+    400        109    100.0%  2021.655  4395.631  4429.185  4404.974   7176  *
+    800         99    100.0%  2617.246  5268.046  5301.600  5281.908  14376  *
+
+*  the senders could not keep to this rate's schedule. The offered
+             *  column is a request rather than a fact on those rows, and the
+             *  achieved throughput says as much about the load generator as about
+             *  the cluster. They are printed rather than dropped because where a
+             *  harness stops keeping up is itself worth knowing.
+
+Percentiles are the upper edge of the histogram bucket a sample fell in,
+         so they are never optimistic — and so a p99 can read slightly above the
+         max, which is the one raw value in the table.
+
+curve: results/bench/campaign-writes.svg

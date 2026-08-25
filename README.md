@@ -100,6 +100,26 @@ commit rule, **ReadIndex** and **lease** reads with follower forwarding,
 **leader transfer**, voluntary **step-down**, and **learners with
 joint-consensus** membership changes.
 
+## Measured
+
+Every number is **Exploratory tier** — an Apple M2 Pro laptop, macOS,
+`F_FULLFSYNC`, three nodes over loopback. Reproducible, and not a claim about how
+fast Keel is. Full methodology and the caveats that matter are in
+[BENCH.md](BENCH.md); the raw files are in [`results/bench/`](results/bench/).
+
+| | |
+|---|---:|
+| writes, 128 B, 3 nodes, saturation | ~110 ops/s |
+| …p99 at 100 offered | 139 ms |
+| the same cluster with fsync off | ~400 ops/s, p99 24 ms |
+| failover: median to the first acknowledged write after the leader is killed | 633 ms |
+| …p99, over 109 usable trials | 1,250 ms |
+
+The fsync-off row is the control, not a result: it is recorded as **NOT
+PUBLISHABLE** with the reason stamped into its header, and it is there to say
+what durability costs on this machine — four times the throughput, and two orders
+of magnitude of tail latency.
+
 ## Correctness
 
 All five Raft safety properties, plus "no committed entry lost", are checked

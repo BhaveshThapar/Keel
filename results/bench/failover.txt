@@ -1,0 +1,30 @@
+host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, kernel 25.2.0, aarch64
+commit: ea002a1
+date:   2026-08-25T01:06:59Z
+data:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-failover-A1v2q9 on apfs
+tier:   Exploratory — not a headline number; see BENCH.md for what that means
+sync:   durable (F_FULLSYNC or fdatasync, per platform)
+runs:   3
+
+** Every number below is from this host and this configuration.
+** It is reproducible, and it is not a claim about how fast Keel
+** is in general.
+
+nodes        3
+tick         30 ms
+sync         durable
+
+trials       110
+recovered    108
+not healthy  2 (discarded: the cluster was not serving writes when the trial began)
+timed out    0
+
+time to the first acknowledged write after the leader was killed
+median  633.3 ms
+p99     1249.9 ms
+max     1256.4 ms
+
+The clock starts when the kill signal is sent and stops when a client's
+write is acknowledged — not when a new leader is elected. Election is an
+internal event a client cannot observe, and it is strictly earlier: the
+new leader must also commit its own term's no-op before it can serve.
