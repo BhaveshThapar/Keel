@@ -4,8 +4,8 @@ Pre-vote: how many terms a partitioned node burns without it
   3 nodes, 25 seeds x 40000 steps, profile chaos
 ==============================================================
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
-commit: a53612b
-date:   2026-08-24T23:45:03Z
+commit: c523c71
+date:   2026-08-25T06:49:56Z
 
 Both arms are clean. Pre-vote costs availability, not safety, so what is
 compared is disruption rather than violations.

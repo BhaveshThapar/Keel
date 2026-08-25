@@ -1,7 +1,7 @@
 keel-chaos — a real cluster under a seeded fault schedule
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
-commit: 5c4d217
-date:   2026-08-24T18:51:49Z
+commit: c523c71
+date:   2026-08-25T06:44:21Z
 
 sync mode:  durable
 nodes:      3
@@ -51,8 +51,10 @@ cluster up: 3 nodes
     37.958s  restart n0
     40.158s  kill n1
     44.077s  restart n1
-faults injected 18, skipped 0; workload attempted 1024, acknowledged 1024; proxy carried 245245 bytes, refused 312 connections, severed 12
-counter: acknowledged 1024, final value 1024
+faults injected 18, skipped 0
+proxy carried 689498 bytes, refused 306 connections, severed 12
+workload attempted 3169, acknowledged 3169
+counter: acknowledged 3169, 3169 values reported, 3169 distinct (0 answered from the dedup cache), highest 3169, final value 3169
 PASS no acknowledged write was lost
 
 ==============================================================
@@ -98,8 +100,10 @@ cluster up: 3 nodes
     37.624s  restart n2
     41.525s  split, minority [1]
     43.037s  heal
-faults injected 18, skipped 0; workload attempted 1197, acknowledged 1197; proxy carried 294833 bytes, refused 303 connections, severed 7
-counter: acknowledged 1197, final value 1197
+faults injected 18, skipped 0
+proxy carried 830710 bytes, refused 286 connections, severed 7
+workload attempted 3899, acknowledged 3899
+counter: acknowledged 3899, 3899 values reported, 3899 distinct (0 answered from the dedup cache), highest 3899, final value 3899
 PASS no acknowledged write was lost
 
 ==============================================================
@@ -145,8 +149,10 @@ cluster up: 3 nodes
     36.468s  resume n0
     40.070s  isolate n0 (Backward)
     42.544s  heal
-faults injected 18, skipped 0; workload attempted 991, acknowledged 991; proxy carried 253668 bytes, refused 231 connections, severed 7
-counter: acknowledged 991, final value 991
+faults injected 18, skipped 0
+proxy carried 782578 bytes, refused 219 connections, severed 8
+workload attempted 3548, acknowledged 3548
+counter: acknowledged 3548, 3548 values reported, 3548 distinct (0 answered from the dedup cache), highest 3548, final value 3548
 PASS no acknowledged write was lost
 
 ==============================================================
@@ -192,8 +198,10 @@ cluster up: 3 nodes
     38.469s  restart n2
     40.544s  split, minority [2]
     43.318s  heal
-faults injected 18, skipped 0; workload attempted 1138, acknowledged 1138; proxy carried 273598 bytes, refused 562 connections, severed 20
-counter: acknowledged 1138, final value 1138
+faults injected 18, skipped 0
+proxy carried 660202 bytes, refused 533 connections, severed 21
+workload attempted 3129, acknowledged 3129
+counter: acknowledged 3129, 3129 values reported, 3129 distinct (0 answered from the dedup cache), highest 3129, final value 3129
 PASS no acknowledged write was lost
 
 ==============================================================

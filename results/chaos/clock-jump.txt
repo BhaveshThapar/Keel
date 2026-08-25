@@ -1,13 +1,14 @@
 keel-chaos — the clock nemesis, inside a Linux container
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
-commit: ce4e1cf
-date:   2026-08-24T19:04:19Z
+commit: c523c71
+date:   2026-08-25T06:47:48Z
 
 why a container: macOS strips DYLD_INSERT_LIBRARIES under System Integrity
                  Protection and does not interpose the commpage that
                  mach_absolute_time reads, so libfaketime cannot move
                  CLOCK_MONOTONIC there at all.
 image:           keel-chaos-linux (rust:1-slim-bookworm + faketime)
+runtime:         docker Docker version 28.3.2, build 578ccf6
 sync mode:       durable
 nodes:           3
 seconds:         45 per seed
@@ -16,12 +17,12 @@ seeds:           1 2
 guest kernel: Linux 6.10.14-linuxkit aarch64
 libfaketime:  0.9.10-2.1
 
-   Compiling keel-node v0.1.0 (/work/crates/keel-node)
-   Compiling keel-server v0.1.0 (/work/crates/keel-server)
-    Finished `release` profile [optimized] target(s) in 5.89s
+   Compiling keel-node v2.0.0 (/work/crates/keel-node)
+   Compiling keel-server v2.0.0 (/work/crates/keel-server)
+    Finished `release` profile [optimized] target(s) in 5.07s
 
 --- the probe: does a jump reach CLOCK_MONOTONIC ---
-probe: 60 readings, CLOCK_MONOTONIC advanced 33189 ms in 3247 ms of real time
+probe: 60 readings, CLOCK_MONOTONIC advanced 33315 ms in 3377 ms of real time
 PASS the jump reached CLOCK_MONOTONIC
 
 --- the full schedule, with clock jumps in it ---
@@ -65,8 +66,10 @@ cluster up: 3 nodes
     34.523s  restart n1
     36.942s  kill n0
     39.487s  restart n0
-faults injected 17, skipped 0; workload attempted 2833, acknowledged 2833; proxy carried 601336 bytes, refused 245 connections, severed 11
-counter: acknowledged 2833, final value 2833
+faults injected 17, skipped 0
+proxy carried 2816689 bytes, refused 253 connections, severed 9
+workload attempted 14084, acknowledged 14084
+counter: acknowledged 14084, 14084 values reported, 14084 distinct (0 answered from the dedup cache), highest 14084, final value 14084
 PASS no acknowledged write was lost
 
 ==============================================================
@@ -109,8 +112,10 @@ cluster up: 3 nodes
     35.223s  clock forward 21s (offset now +21s)
     39.236s  split, minority [2]
     41.039s  heal
-faults injected 17, skipped 0; workload attempted 3306, acknowledged 3306; proxy carried 684642 bytes, refused 313 connections, severed 8
-counter: acknowledged 3306, final value 3306
+faults injected 17, skipped 0
+proxy carried 3402504 bytes, refused 306 connections, severed 9
+workload attempted 17269, acknowledged 17269
+counter: acknowledged 17269, 17269 values reported, 17269 distinct (0 answered from the dedup cache), highest 17269, final value 17269
 PASS no acknowledged write was lost
 
 ==============================================================
