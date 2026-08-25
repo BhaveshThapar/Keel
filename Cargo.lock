@@ -302,6 +302,7 @@ name = "keel-bench"
 version = "1.0.0"
 dependencies = [
  "clap",
+ "keel-api",
  "keel-chaos",
  "keel-client",
  "keel-log",
@@ -418,6 +419,7 @@ version = "1.0.0"
 name = "keel-server"
 version = "1.0.0"
 dependencies = [
+ "bytes",
  "clap",
  "keel-api",
  "keel-log",

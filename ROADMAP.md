@@ -13,12 +13,26 @@ as the record of what was sequenced and why, because the reasoning about
 come before which, and what it cost when the answer was got wrong.
 
 What each milestone actually decided is in [DESIGN.md](DESIGN.md) as ADR-001
-through ADR-032; what it enforces is in [CORRECTNESS.md](CORRECTNESS.md); what it
-broke on the way is in [BUGS.md](BUGS.md), where **four of the ten entries turned
-out to be the harness rather than the code it tests**. That ratio is the single
-most useful number in this repository: it is why a red sweep is treated as a
-question rather than a verdict, and why [KEEL-8](BUGS.md) is still open instead
-of resolved by assertion.
+through ADR-035; what it enforces is in [CORRECTNESS.md](CORRECTNESS.md); what it
+broke on the way is in [BUGS.md](BUGS.md), where **six of the eighteen entries
+turned out to be the harness rather than the code it tests**. That ratio is the
+single most useful number in this repository: it is why a red sweep is treated as
+a question rather than a verdict, and why [KEEL-8](BUGS.md) stayed open for a
+phase instead of being resolved by assertion.
+
+It was right to. [KEEL-8](BUGS.md) is closed now and it was seven defects, not
+one: three in the harness, as it suspected, and four in the code — among them a
+recovery path that spliced two histories together, and a stale snapshot install
+that rewound a node's applied index below entries it had already acknowledged.
+The judgement it made about which was more likely was wrong; the rule it stated —
+a check that fails is a hypothesis to test, not a check to weaken — is what found
+them.
+
+Three of the seven came from putting the profile *into* the sweep rather than
+from settling the original question, and one of those was killing the process
+rather than failing it: a sixty-six gigabyte allocation in the oracle, which
+reports nothing at all. A profile left out of a sweep is not a profile whose
+result is unknown. It is a profile whose failures are invisible.
 
 Three orderings turned out to be load-bearing rather than tidy:
 
@@ -29,8 +43,9 @@ Three orderings turned out to be load-bearing rather than tidy:
   more to apply than to count. Turning it on found two real defects.
 - **P16's own internal order: digest rebase first, snapshots second.** Reversed,
   the sweep goes red on correct code and the day is spent proving it was the
-  oracle. The prediction held, and the phase still found [KEEL-8](BUGS.md), which
-  is a second and different way an install changes a digest.
+  oracle. The prediction held, and the phase still found [KEEL-8](BUGS.md) —
+  which turned out to be four things at once, only one of them the second way an
+  install changes a digest that the prediction anticipated.
 - **P24 before P25.** The gate that makes an unpublishable measurement impossible
   to publish was built before any code that could produce a number. A gate added
   afterwards is a gate that has already been bypassed once, and the number that
@@ -91,7 +106,7 @@ feature set per package per invocation, so `cargo test --workspace` would build
 | ~~P13~~ | ~~`lsm-kv` checkpoints; `keel-sm`'s applied-state digest~~ | **Done** ([upstream #9](https://github.com/BhaveshThapar/LSM-Tree-Key-Value-Storage-Engine/pull/9)). A hard-link checkpoint opens with the same contents *and session table*, and survives the source losing the names it linked. The read-only `Manifest` view this asked for was not needed: the live set is already in memory under a lock the checkpoint takes |
 | ~~P14~~ | ~~The chunk stream, staging, publish-rename~~ | **Done.** Cut at *every* chunk boundary in turn, each resumes and completes with the sender's digest; a rejected chunk does not advance the position; a digest mismatch throws the staging directory away |
 | ~~P15~~ | ~~Snapshots end to end in the host loop~~ | **Done.** Killed mid-stream and resumed: the second attempt provably sends fewer chunks than the whole snapshot, and the two attempts together cover it exactly once |
-| P16 | **Snapshots in the simulator, digest rebase first** | **Partly done.** The rebase landed first and is proven; snapshots are taken, streamed, interrupted, resumed and installed, with `streams_interrupted` and `streams_resumed` both non-zero. **Not claimed:** a clean `snapshot-hunt` sweep — 59 of 60 seeds pass and seed 14 is [KEEL-8](BUGS.md) |
+| ~~P16~~ | ~~Snapshots in the simulator, digest rebase first~~ | **Done.** The rebase landed first and is proven; snapshots are taken, streamed, interrupted, resumed and installed, with `streams_interrupted` and `streams_resumed` both non-zero. `snapshot-hunt` sweeps clean at three and five nodes and is in `scripts/sweep.sh` and in CI. Getting there cost four defects — [KEEL-11](BUGS.md) through [KEEL-13](BUGS.md) and [KEEL-15](BUGS.md) — two of them in the code |
 | ~~P17~~ | ~~`keel-chaos`: partition proxy, process nemesis, clock jumps~~ | **Done.** One proxy per *ordered pair*, so partitions can be one-directional; `SIGSTOP` kept distinct from `SIGKILL`; the clock jump moves `CLOCK_MONOTONIC` and a probe confirms it advanced 33,189 ms in 3,247 ms of real time ([results/chaos/](results/chaos/)). The clock arm runs in a Linux container — macOS cannot host it at all, see [ADR-026](DESIGN.md) |
 | ~~P18~~ | ~~Real cluster killed in a loop; Porcupine; Maelstrom under partition~~ | **Done.** 1,000 kill cycles, 7,311 acknowledged writes, none lost; Porcupine v1.3.0 accepts the real history and rejects it with one read's result replaced; Maelstrom under `--nemesis partition`. The kill loop found [KEEL-9](BUGS.md), which the simulator could not have — it drives `keel-node` directly and has no client connections to park |
 

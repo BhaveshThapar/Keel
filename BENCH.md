@@ -83,6 +83,29 @@ not issue on time, and a run that was late on more than a twentieth of them says
 so in its own output: its "achieved throughput" is a statement about the harness,
 not about the system.
 
+### Depth, and the ceiling it lifted
+
+A sender that waits for each answer before sending again cannot offer more than
+one request per round trip, so achieved throughput is capped at senders divided
+by per-request latency whatever the cluster could do. Every number in this file
+before ADR-033 was measured that way, and this document said so under "not
+measured" and named the client as the ceiling.
+
+`depth` is how many requests one sender may keep outstanding, it is in the shape
+named in every result header, and depth 1 is exactly the old behaviour. The
+cluster's own batching is what makes it worth having: one fsync retires every
+proposal queued behind it, so requests that arrive together cost barely more than
+one that arrives alone — which is a regime a closed-loop client can never reach.
+
+**The client was not the ceiling.** Depth changed the number by nothing at all
+until three defects behind it were fixed: a node loop that slept a millisecond
+between turns whether or not it had work (ADR-034), a session table that was read
+in full on every applied entry ([KEEL-14](BUGS.md)), and a state machine that
+took one full disk flush per operation because it committed entries one at a time
+(ADR-035). The honest order of events is that the fix meant to raise the number
+instead made the real ceilings measurable, and each of the three is recorded
+where it was found rather than folded into a single "optimisation" commit.
+
 ### Curves, not points
 
 A single throughput number is a claim about a saturation point whose latency
@@ -111,7 +134,8 @@ interface.
 # What this host is allowed to publish, before anything is measured.
 cargo run --release -p keel-bench -- gate --dir /tmp
 
-# A cluster, and a campaign against it.
+# A cluster, and a campaign against it. The fourth argument is the pipeline
+# depth; the committed curve uses 16.
 scripts/campaign.sh
 
 # The etcd comparison, on the same machine in the same hour.

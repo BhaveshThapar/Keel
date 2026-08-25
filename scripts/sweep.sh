@@ -57,6 +57,18 @@ provenance_of "$OUT"
             --nodes "$nodes" --profile read-hunt | tail -2
     done
 
+    # Snapshots, streamed in small chunks with a third of them dropped, so a
+    # transfer is interrupted and resumed rather than arriving whole. Out of this
+    # sweep until KEEL-8 was settled; in it since, because what settled KEEL-8
+    # was four defects rather than a tuned oracle, and a profile nobody sweeps is
+    # a profile nobody remembers is excluded.
+    for nodes in 3 5; do
+        echo "--- profile=snapshot-hunt nodes=$nodes"
+        ./target/release/keel-sim run \
+            --from 0 --count "$SEEDS" --steps "$STEPS" \
+            --nodes "$nodes" --profile snapshot-hunt | tail -2
+    done
+
     # A calm cluster whose leader has the slowest clock in it. Clean here
     # because reads are confirmed by a heartbeat round; the lease arm, which is
     # not clean, is scripts/negative-demos/lease-drift.sh.

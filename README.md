@@ -278,15 +278,12 @@ hardware and no commit behind it. Both run in CI.
   and Knossos check histories from real clusters. The simulator itself still
   checks only Raft's internal safety properties; it has no client and records no
   history.
-- **One snapshot profile is not claimed clean.** `snapshot-hunt` passes 59 of 60
-  seeds and seed 14 is [KEEL-8](BUGS.md), open. It is out of the sweep and out of
-  CI's matrix rather than quietly excluded.
-- **One simulator seed is still an open question.** `snapshot-hunt` passes 59 of
-  60 seeds; seed 14 is [KEEL-8](BUGS.md), open. Whether the oracle or the code is
-  wrong there has not been settled, so the profile is out of the sweep and out of
-  CI rather than quietly passing. Four of the ten entries in BUGS.md turned out to
-  be harness bugs, which is why that question stays open rather than being
-  resolved by assertion.
+- **The Apptainer path in the container scripts has never been run.** The clock
+  nemesis and the etcd baseline detect Docker, Podman or Apptainer, because a
+  shared cluster gives users the third and not the first two. Docker is what the
+  committed artifacts came from; the Apptainer branch is written from its
+  documentation and no machine here has it. The scripts say so in their output
+  and [`scripts/lib/container.sh`](scripts/lib/container.sh) says why.
 - **Single Raft group.** No sharding, no cross-shard transactions, no
   geo-replication, no Byzantine fault tolerance, no TLS or authentication.
 - **The crates are not on crates.io**, and the release checklist checks their

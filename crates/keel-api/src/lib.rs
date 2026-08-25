@@ -190,6 +190,39 @@ pub enum Request {
     KeepAlive { client: ClientId },
 }
 
+/// A client's own label for a request, echoed on the answer that belongs to it.
+///
+/// Unique within one connection and nowhere else. The server does not interpret
+/// it, store it, or deduplicate on it — that is what `(client, seq)` is for, and
+/// conflating the two would make a retry under a fresh label apply twice.
+pub type RequestId = u64;
+
+/// A request or a response with the label that ties them together.
+///
+/// A client with one request outstanding does not need this: the next thing to
+/// arrive on its connection is the answer. A client with several outstanding
+/// does, because the answers do not come back in the order the requests went
+/// out — a read waits for a heartbeat round and a write queued behind it can
+/// apply first, and a park that times out is answered before either. Matching
+/// by arrival order in that world hands each answer to the wrong caller, and
+/// every one of them looks plausible.
+///
+/// It is a separate type rather than a field on every variant because the
+/// Maelstrom adapter carries [`Request`] and [`Response`] over a transport that
+/// has correlation of its own, and would have to invent a value for a field it
+/// does not use.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Envelope<T> {
+    pub id: RequestId,
+    pub body: T,
+}
+
+impl<T> Envelope<T> {
+    pub fn new(id: RequestId, body: T) -> Self {
+        Self { id, body }
+    }
+}
+
 /// What a server sends back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Response {
@@ -464,6 +497,34 @@ mod tests {
                 data: b("chunk"),
             },
         ]
+    }
+
+    /// The label survives the encoding, and a payload with one is not the same
+    /// bytes as the payload without it — so a peer that forgot to wrap cannot be
+    /// read as one that did.
+    #[test]
+    fn an_envelope_round_trips_and_is_distinct_from_its_body() {
+        for request in every_request() {
+            let wrapped = Envelope::new(0x0102_0304_0506_0708, request.clone());
+            let bytes = encode(&wrapped).unwrap();
+            assert_eq!(decode::<Envelope<Request>>(&bytes).unwrap(), wrapped);
+            assert_ne!(bytes, encode(&request).unwrap());
+        }
+        for response in every_response() {
+            let wrapped = Envelope::new(7, response.clone());
+            let bytes = encode(&wrapped).unwrap();
+            assert_eq!(decode::<Envelope<Response>>(&bytes).unwrap(), wrapped);
+        }
+    }
+
+    /// Two answers to the same request differ in their bodies; two answers under
+    /// different labels differ even when the bodies are identical. A transport
+    /// that matched on the body would confuse the second pair.
+    #[test]
+    fn envelopes_with_the_same_body_and_different_labels_are_distinct() {
+        let a = encode(&Envelope::new(1, Response::Applied)).unwrap();
+        let b = encode(&Envelope::new(2, Response::Applied)).unwrap();
+        assert_ne!(a, b);
     }
 
     #[test]

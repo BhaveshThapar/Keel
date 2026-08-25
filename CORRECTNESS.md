@@ -90,6 +90,22 @@ takes the same history, replaces one completed read's returned value with a
 value nothing in the run ever wrote, and requires a rejection. Both arms are in
 the committed output, side by side.
 
+## A client that keeps several requests in flight
+
+| Property | Enforced by | Status |
+|---|---|---|
+| Many requests on one connection are answered by label, in any order | `clients::tests::several_requests_on_one_connection_are_answered_by_label_in_any_order` | enforced |
+| The outstanding count returns to zero however a request is answered | `clients::tests::the_outstanding_count_returns_to_zero_however_a_request_is_answered` — a drift here silently stops a healthy connection being read from | enforced |
+| A dropped connection leaves nothing behind in the tables that find requests | `clients::tests::a_dropped_connection_leaves_nothing_behind_in_the_tables` | enforced |
+| Answering leaves the connection readable without blocking | `clients::tests::a_connection_that_has_been_answered_is_still_read_without_blocking` — a socket left blocking stalls the loop that also ticks the election clock, and the symptom is a cluster that never elects a leader | enforced |
+| A read is answered under its own label once its index is applied | `clients::tests::a_read_is_answered_under_its_label_once_its_index_is_applied` | enforced |
+| No two in-flight requests share a session | `pipeline::tests::no_two_outstanding_requests_share_a_session` — the property the whole design turns on, because a retry must always be of its session's highest sequence number | enforced |
+| A resend carries the same session pair under the same label | `pipeline::tests::a_redirect_resends_the_same_session_pair_under_the_same_label` | enforced |
+| A finished request frees its slot, and the sequence number moves on | `pipeline::tests::finishing_frees_the_slot_and_the_sequence_number_moves_on` | enforced |
+| A full pipeline refuses rather than queueing without bound | `pipeline::tests::a_full_pipeline_refuses_the_next_submission` | enforced |
+| A request past its deadline is reported as a timeout, never as a refusal | `pipeline::tests::a_request_past_its_deadline_is_reported_as_a_timeout` — a checker must read it as "may or may not have happened" | enforced |
+| **Against a real cluster: many in flight, each applied exactly once** | `cluster::a_pipeline_keeps_many_requests_in_flight_and_applies_each_once` — 400 increments at depth 16, read back from a second client, and a double-apply reads as 2 | enforced |
+
 ## A cluster of real processes
 
 | Property | Enforced by | Status |
@@ -228,6 +244,7 @@ network or a disk, so a panic is a node a stranger can stop with one bad byte.
 | Several `Ready`s outstanding at once is permitted, because that is group commit | `audit::tests::several_readys_may_be_outstanding_at_once` | enforced |
 | One `Ready` may be acknowledged twice, by a host whose fsync and apply land separately | `audit::tests::one_ready_may_be_acknowledged_twice` | enforced |
 | The applied watermark never goes backwards | `audit::tests::an_applied_watermark_that_goes_backwards_is_caught` | enforced |
+| A `Ready`'s committed entries reach the state machine as one batch | `Node::apply` calls `StateMachine::apply_batch` once per `Ready`; the equivalence is `state_machine::a_batch_of_entries_means_what_applying_them_one_at_a_time_means` | enforced |
 | The simulator cannot reach a socket or a storage engine | `simulation::the_simulator_cannot_reach_a_socket_or_a_storage_engine` (dependency assertion) | enforced |
 
 ## What a node says about itself
@@ -252,6 +269,11 @@ network or a disk, so a panic is a node a stranger can stop with one bad byte.
 | A frame arriving one byte at a time is still one frame | `frame::tests::a_frame_split_across_arbitrary_reads_is_still_one_frame` (exhaustive over every chunk size) | enforced |
 | Both transports behave identically | `keel_net::conformance::check`, run against `LoopbackPair` and against `TcpTransport` | enforced |
 | A `Message` survives either transport unchanged | `transport_conformance::a_message_round_trips_identically_through_both_transports` | enforced |
+| A request's label survives the encoding, and an envelope is not its body | `tests::an_envelope_round_trips_and_is_distinct_from_its_body` | enforced |
+| Two answers under different labels are distinct even with identical bodies | `tests::envelopes_with_the_same_body_and_different_labels_are_distinct` | enforced |
+| A frame split across reads is not lost by the poll that found half of it | `transport::tests::a_frame_split_across_reads_survives_the_poll_that_found_half_of_it` | enforced |
+| Several answers in one read come out one at a time | `transport::tests::several_answers_in_one_read_come_out_one_at_a_time` | enforced |
+| A single-request caller ignores answers that are not its own | `transport::tests::a_round_trip_skips_answers_that_are_not_its_own` | enforced |
 
 ## The state machine
 
@@ -286,6 +308,11 @@ network or a disk, so a panic is a node a stranger can stop with one bad byte.
 | A fresh node is brought up past a compacted floor, killed mid-stream, and **resumes** | `snapshot_end_to_end::a_fresh_node_is_brought_up_by_a_snapshot_that_is_killed_mid_stream` — asserts the second attempt sent fewer chunks than the whole snapshot, and that the two attempts together cover it exactly once | enforced |
 | A transfer interrupted repeatedly still converges, re-sending nothing verified | `snapshot_end_to_end::a_transfer_interrupted_repeatedly_still_converges` | enforced |
 | A checkpoint is due by entries applied, not by time passed | `snapshots::tests::a_checkpoint_is_due_by_entries_applied_rather_than_by_time` | enforced |
+| **A batch of entries means what applying them one at a time means** | `state_machine::a_batch_of_entries_means_what_applying_them_one_at_a_time_means` — an increment reading what the increment before it wrote, a compare-and-swap against a value set earlier in the batch, a duplicate sequence number, and an expiry, all in one | enforced |
+| A client registered in a batch can be used later in the same batch | `state_machine::a_client_registered_in_a_batch_can_be_used_later_in_the_same_batch` | enforced |
+| A batch leaves the applied index at its highest entry, and a replay changes nothing | `state_machine::a_batch_leaves_the_applied_index_at_its_highest_entry` | enforced |
+| Every idle session is collected however wide the table is | `state_machine::every_idle_session_is_collected_even_when_the_table_is_far_wider_than_one_sweep` — 200 sessions against a 16-wide rolling window | enforced |
+| The expiry sweep is a function of the log, cursor and all | `state_machine::two_machines_fed_the_same_entries_expire_the_same_sessions` | enforced |
 | Both stores apply the same log to the same state | `state_machine::both_stores_apply_the_same_log_to_the_same_state`; `keel_sm::conformance::check` run against `MemStore` and `LsmStore` | enforced |
 
 ## The durable log
@@ -304,6 +331,8 @@ network or a disk, so a panic is a node a stranger can stop with one bad byte.
 | A commit index a torn tail invalidated is clamped, and reported | `recovery::a_commit_index_the_tear_took_with_it_is_clamped_and_reported` | enforced |
 | A truncation survives a restart, replacement and all | `recovery::a_truncation_survives_a_restart` | enforced |
 | A compacted log recovers from its floor, not from index 1 | `fold::tests::a_compacted_log_starts_at_its_floor_rather_than_at_index_one`; `recovery::compaction_drops_only_segments_the_snapshot_covers` | enforced |
+| **A conflicting installed snapshot discards the log on disk, not only in memory** | `fold::tests::a_snapshot_that_conflicts_with_the_log_discards_all_of_it` — a crash between an install and the next append otherwise recovers two histories spliced ([KEEL-15](BUGS.md)) | enforced |
+| …and a snapshot the log agrees with still only compacts | `fold::tests::a_snapshot_the_log_agrees_with_only_compacts`; `fold::tests::a_snapshot_at_the_existing_floor_is_not_a_conflict` | enforced |
 | An append never changes a segment's size | `recovery::preallocation_leaves_the_segment_at_its_full_size_from_the_start` | enforced |
 | A sync covers what was written before it and nothing later | `recovery::a_sync_covers_exactly_what_was_written_before_it` | enforced |
 | Two handles cannot open one log directory | `recovery::a_second_handle_on_a_live_directory_is_refused` | enforced |
@@ -339,7 +368,9 @@ comparison, which is what makes per-event checking affordable.
 | A quiet file does not shift the tear stream | `fault_fs::a_file_with_nothing_staged_does_not_shift_the_tear_stream` | enforced |
 | Snapshots are taken, streamed, interrupted and resumed | `simulation::snapshots_are_actually_taken_streamed_and_resumed` — `checkpoints_taken`, `streams_started`, `streams_interrupted`, `streams_resumed` and `streams_completed` all non-zero | enforced |
 | A compacted floor carries its digest rather than inventing one | `digest::rebase_tests::a_rebased_digest_agrees_with_one_that_was_never_compacted`; a floor with no digest is a violation in its own right | enforced |
-| The `snapshot-hunt` profile sweeps clean | — | **not claimed**: 59 of 60 seeds pass; seed 14 is [KEEL-8](BUGS.md) |
+| An install that only compacts discards nothing, and moves no digest above the floor | `digest::rebase_tests::adopting_a_snapshot_the_log_already_agrees_with_discards_nothing` | enforced |
+| …and one that replaces history still reports what it replaced | `digest::rebase_tests::adopting_a_snapshot_that_replaces_history_reports_what_it_replaced` | enforced |
+| **The `snapshot-hunt` profile sweeps clean** | `scripts/sweep.sh` at 500 seeds and 60,000 steps for three and five nodes, and CI's matrix; [KEEL-8](BUGS.md) is closed | enforced |
 | The profile list cannot drift from the constructor | `simulation::the_profile_list_and_the_named_constructor_cannot_drift` | enforced |
 
 ### Coverage

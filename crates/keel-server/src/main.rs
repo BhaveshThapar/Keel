@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use keel_log::SyncMode;
-use keel_server::{NodeConfig, Server};
+use keel_server::{Busy, NodeConfig, Server};
 
 #[derive(Parser)]
 #[command(
@@ -161,12 +161,19 @@ fn main() -> ExitCode {
     };
 
     loop {
-        if let Err(e) = server.turn() {
-            // A node that cannot turn cannot serve, and carrying on would mean
-            // answering reads from state it can no longer extend.
-            eprintln!("node {} failed: {e}", cli.id);
-            return ExitCode::FAILURE;
+        match server.turn() {
+            // Nothing to do, so stay off the CPU until there might be.
+            Ok(Busy::No) => std::thread::sleep(Server::IDLE_PAUSE),
+            // Something happened, so come straight back: this is the only
+            // thread that proposes, replicates, applies and answers, and a
+            // pause here is a pause in all four.
+            Ok(Busy::Yes) => {}
+            Err(e) => {
+                // A node that cannot turn cannot serve, and carrying on would
+                // mean answering reads from state it can no longer extend.
+                eprintln!("node {} failed: {e}", cli.id);
+                return ExitCode::FAILURE;
+            }
         }
-        std::thread::sleep(Duration::from_millis(1));
     }
 }

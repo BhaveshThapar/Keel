@@ -77,28 +77,45 @@ impl LogDigest {
 
     /// Adopt a snapshot installed from a leader: the floor and the digest there.
     ///
-    /// Returns every `(index, digest)` this discards, because adopting is a
-    /// *rewrite* and has to be reported as one.
+    /// Returns every `(index, digest)` this discards, which — and this is the
+    /// whole of [KEEL-13](../../../BUGS.md) — is *not* everything above the
+    /// snapshot's index.
     ///
-    /// A node may hold entries above the snapshot's index — an uncommitted,
-    /// divergent tail the leader has not overwritten yet. Those entries survive
-    /// the install, but the prefix beneath them does not: it becomes the
-    /// snapshot's. So their cumulative digests change, and the node reports
-    /// values for indexes it has already reported different values for.
+    /// An install is one of two things and the caller cannot tell them apart by
+    /// looking at the meta alone. `RaftLog::restore_snapshot` decides by asking
+    /// whether the log holds `index` at the snapshot's term:
     ///
-    /// Left unreported, that reads as a Log Matching violation on correct code
-    /// — the same entry at the same index and term with two digests. Reported
-    /// as a discard, it goes through the check that already knows the
-    /// difference: discarding a divergent entry is healthy Raft, and discarding
-    /// one that was actually committed is the violation.
+    /// **It compacts.** The prefixes already agree, so any entries the node
+    /// holds above the snapshot survive the install *and their digests do not
+    /// move* — they were chained from this very value already. Nothing is
+    /// discarded, and reporting them as discarded says a committed entry went
+    /// missing when nothing went anywhere. That is what the check saw, and it
+    /// is why `snapshot-hunt` could not sweep clean.
+    ///
+    /// **It replaces.** The node's history above the floor is gone, so those
+    /// entries are discarded and their old digests go through the check that
+    /// knows the difference: discarding a divergent entry is healthy Raft, and
+    /// discarding one that was actually committed is the violation.
+    ///
+    /// The test here is the digest rather than the term, which is the same test
+    /// and a stronger one: two logs agreeing at `(index, term)` agree on the
+    /// whole prefix, which is exactly what the cumulative digest encodes.
     pub fn adopt_snapshot(&mut self, index: Index, digest: u64) -> Vec<DiscardedEntry> {
         if index < self.base_index {
             return Vec::new();
         }
-        // Only what the snapshot does *not* cover. Entries between the old
-        // floor and the snapshot's index are subsumed by it, not lost — and
-        // reporting them as discarded says a committed entry went missing when
-        // the snapshot is exactly what preserves it.
+        if self.at(index).is_some_and(|(_, held)| held == digest) {
+            // A compaction. The floor moves; nothing above it does.
+            let drop = (index - self.base_index) as usize;
+            self.entries.drain(..drop.min(self.entries.len()));
+            self.base_index = index;
+            self.base_digest = digest;
+            self.floor_without_a_digest = None;
+            return Vec::new();
+        }
+        // A replacement. Only what the snapshot does *not* cover: entries
+        // between the old floor and the snapshot's index are subsumed by it,
+        // not lost, and the snapshot is exactly what preserves them.
         let discarded: Vec<DiscardedEntry> = (index + 1..=self.last_index())
             .filter_map(|i| self.at(i).map(|(_, d)| (i, d)))
             .collect();
@@ -114,8 +131,14 @@ impl LogDigest {
         self.floor_without_a_digest
     }
 
-    /// The digest at the floor: what a node carries across a restart, and what
-    /// a snapshot carries to a follower installing it.
+    /// The digest at the floor: where this chain starts, and the value every
+    /// index above it is chained from.
+    ///
+    /// Read by the tests rather than by the simulator. What a node carries
+    /// across a restart is its *checkpoint's* index and digest, which are one
+    /// object — the simulator kept a second copy of the pair here and the two
+    /// drifted apart, which is [KEEL-18](../../../BUGS.md).
+    #[cfg(test)]
     pub fn base(&self) -> (Index, u64) {
         (self.base_index, self.base_digest)
     }
@@ -170,11 +193,30 @@ impl LogDigest {
             }
         }
 
+        // A floor above the log's own end, which is a state the digest cannot
+        // describe and must not try to.
+        //
+        // The loop below shrinks the digest to the log by popping entries, and
+        // it cannot shrink past `base_index` — there is nothing under it to pop.
+        // Written without this guard it spun there, pushing the same index into
+        // `discarded` until the process was killed, which is how it was found:
+        // one seed of `snapshot-hunt` at five nodes taking sixty gigabytes.
+        //
+        // Reported rather than repaired. The digest's base comes from what the
+        // harness carried across a restart, and a log that does not reach it
+        // means the two disagree about where this node's history starts —
+        // comparing anything from here would compare invented numbers, which is
+        // the same failure `floor_without_a_digest` exists to refuse.
+        if self.base_index > log.last_index() {
+            self.floor_without_a_digest = Some(self.base_index);
+            return (Vec::new(), Vec::new());
+        }
+
         // Drop anything above the log's end, then anything the log rewrote.
         // A rewrite always replaces a suffix, so walking back from the end
         // costs only what actually changed.
         let mut discarded: Vec<DiscardedEntry> = Vec::new();
-        while self.last_index() > log.last_index() {
+        while self.last_index() > log.last_index() && !self.entries.is_empty() {
             let idx = self.last_index();
             if let Some((_, d)) = self.at(idx) {
                 discarded.push((idx, d));
@@ -274,6 +316,57 @@ mod rebase_tests {
         let mut carried = LogDigest::rebased(10, 0xabcd);
         carried.sync(&compacted);
         assert_eq!(carried.floor_without_a_digest(), None);
+    }
+
+    /// [KEEL-13](../../../BUGS.md). An install that only compacts discards
+    /// nothing, and the entries above the new floor keep the digests they had.
+    #[test]
+    fn adopting_a_snapshot_the_log_already_agrees_with_discards_nothing() {
+        let entries: Vec<Entry> = (1..=20)
+            .map(|i| Entry::new(1, i, EntryPayload::Normal(vec![i as u8; 4].into())))
+            .collect();
+        let mut digest = LogDigest::new();
+        digest.sync(&RaftLog::restore(None, entries, 20));
+        let before: Vec<Option<(Term, u64)>> = (11..=20).map(|i| digest.at(i)).collect();
+
+        // The snapshot's digest at index 10 is the one this node already holds
+        // there, which is what an install that compacts rather than replaces
+        // means.
+        let (floor, floor_digest) = (10, digest.at(10).expect("a digest at 10").1);
+        let discarded = digest.adopt_snapshot(floor, floor_digest);
+
+        assert!(
+            discarded.is_empty(),
+            "an install that only compacted reported {} entries as discarded, and              the committed ones among them read as lost",
+            discarded.len()
+        );
+        assert_eq!(digest.base(), (floor, floor_digest));
+        let after: Vec<Option<(Term, u64)>> = (11..=20).map(|i| digest.at(i)).collect();
+        assert_eq!(
+            after, before,
+            "a compaction moved the digests above the floor"
+        );
+    }
+
+    /// And an install that replaces history still reports what it replaced, so
+    /// a committed entry going missing is still caught.
+    #[test]
+    fn adopting_a_snapshot_that_replaces_history_reports_what_it_replaced() {
+        let entries: Vec<Entry> = (1..=20)
+            .map(|i| Entry::new(1, i, EntryPayload::Normal(vec![i as u8; 4].into())))
+            .collect();
+        let mut digest = LogDigest::new();
+        digest.sync(&RaftLog::restore(None, entries, 20));
+
+        // A digest at index 10 that is not the one this node holds there: the
+        // leader's history and this node's have diverged below the floor.
+        let discarded = digest.adopt_snapshot(10, 0xfeed_face_dead_beef);
+        assert_eq!(
+            discarded.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+            (11..=20).collect::<Vec<_>>()
+        );
+        assert_eq!(digest.base(), (10, 0xfeed_face_dead_beef));
+        assert_eq!(digest.last_index(), 10);
     }
 
     /// Installing a snapshot adopts the floor and the digest together.

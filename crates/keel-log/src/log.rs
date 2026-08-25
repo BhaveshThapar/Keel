@@ -454,7 +454,23 @@ impl<F: Fs> Log<F> {
     }
 
     /// Record that a snapshot covers everything through `meta.index`.
+    ///
+    /// A snapshot at or below the floor already recorded is stale and is
+    /// ignored. `RaftCore::on_snapshot_taken` refuses one for the same reason —
+    /// adopting it would replace a configuration that is newer with one that is
+    /// older — and the log has to refuse it too, because the log is what
+    /// recovery reads. Left in, it moves the durable floor *backwards*, and the
+    /// node comes up with a log that starts before its own state machine does
+    /// ([KEEL-16](../../../BUGS.md)).
     pub fn install_snapshot(&mut self, meta: &SnapshotMeta) -> Result<SyncToken> {
+        if self
+            .snapshot
+            .as_ref()
+            .is_some_and(|held| meta.index <= held.index)
+        {
+            // Nothing staged, so nothing for a sync to cover.
+            return Ok(SyncToken(self.next_token));
+        }
         let token = self.write(Record::Snapshot(meta.clone()))?;
         self.last_index = self.last_index.max(meta.index);
         self.snapshot = Some(meta.clone());

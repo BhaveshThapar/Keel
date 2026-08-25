@@ -23,6 +23,16 @@ use keel_sm::{LsmStore, StateMachine};
 use crate::clients::{Clients, Incoming};
 use crate::{Admin, Kind, Metric, Observable, ServerError, Status, write_ready_file};
 
+/// Whether a turn found anything to do.
+///
+/// A bool would do and would read as a bool: `if turn()? { sleep() }` says the
+/// opposite of what it means. This says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Busy {
+    Yes,
+    No,
+}
+
 /// Everything a node needs to be told.
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
@@ -155,7 +165,17 @@ impl Server {
     }
 
     /// One turn: tick if the clock says so, drive the loop, answer scrapes.
-    pub fn turn(&mut self) -> Result<(), ServerError> {
+    ///
+    /// Reports whether the turn did anything, because the caller's decision to
+    /// sleep depends on it. A node with a backlog that sleeps between turns is
+    /// not idling politely, it is rationing itself: the loop is the only thread
+    /// that proposes, replicates, applies and answers, so a millisecond of
+    /// sleep is a millisecond none of that happens in. Under load that put a
+    /// hard ceiling of about one thousand operations a second on this daemon
+    /// whatever the disk or the network could do, and the ceiling did not move
+    /// when clients were given more requests to have in flight — which is how
+    /// it was found (ADR-034).
+    pub fn turn(&mut self) -> Result<Busy, ServerError> {
         if self.last_tick.elapsed() >= self.cfg.tick {
             self.last_tick = Instant::now();
             self.node.tick();
@@ -165,7 +185,10 @@ impl Server {
         // request wait a turn for no reason.
         let status = self.node.status();
         let is_leader = status.role == Role::Leader;
-        for item in self.clients.poll(is_leader, status.leader)? {
+        let mut busy = false;
+        let incoming = self.clients.poll(is_leader, status.leader)?;
+        busy |= !incoming.is_empty();
+        for item in incoming {
             match item {
                 Incoming::Propose { request, .. } | Incoming::Register { request, .. } => {
                     if let Some(proposal) = proposal_of(request, Self::now_ms()) {
@@ -176,15 +199,21 @@ impl Server {
             }
         }
 
-        self.node
+        let turn = self
+            .node
             .turn()
             .map_err(|e| ServerError::Io(std::io::Error::other(e.to_string())))?;
+        busy |= turn.did_something();
 
-        for answer in self.node.take_answers() {
+        let answers = self.node.take_answers();
+        busy |= !answers.is_empty();
+        for answer in answers {
             self.clients
                 .answer_write(answer.session, answer.registration, &answer.response);
         }
-        for (ctx, index) in self.node.take_reads() {
+        let reads = self.node.take_reads();
+        busy |= !reads.is_empty();
+        for (ctx, index) in reads {
             self.clients.confirm_read(ctx, index);
         }
         {
@@ -205,25 +234,29 @@ impl Server {
         let _ = self.node.state_machine().store().maintain();
 
         let reported = self.status();
-        self.admin.poll(&StatusOnly(reported.clone()))?;
+        self.admin
+            .poll(&Reported(reported.clone(), self.node.progress()))?;
         let status = reported;
 
         if !self.announced {
             write_ready_file(&self.cfg.dir.join("keel.ready"), &status)?;
             self.announced = true;
         }
-        Ok(())
+        Ok(if busy { Busy::Yes } else { Busy::No })
     }
 
-    /// Turn until `deadline`, sleeping briefly when there is nothing to do.
+    /// How long an idle node waits before turning again.
     ///
-    /// The sleep is what keeps an idle node off the CPU. It is short enough
-    /// that a tick is never late by more than itself, which matters because a
-    /// late tick is an election timeout that fires late.
+    /// Short enough that a tick is never late by more than itself, which
+    /// matters because a late tick is an election timeout that fires late.
+    pub const IDLE_PAUSE: Duration = Duration::from_millis(1);
+
+    /// Turn until `deadline`, pausing only when there is nothing to do.
     pub fn run_until(&mut self, deadline: Instant) -> Result<(), ServerError> {
         while Instant::now() < deadline {
-            self.turn()?;
-            std::thread::sleep(Duration::from_millis(1));
+            if self.turn()? == Busy::No {
+                std::thread::sleep(Self::IDLE_PAUSE);
+            }
         }
         Ok(())
     }
@@ -319,17 +352,18 @@ fn resolve(sm: &StateMachine<LsmStore>, query: &keel_api::Query) -> keel_api::Re
 }
 
 /// The admin surface needs an [`Observable`], and the node is already borrowed
-/// mutably by the turn that is answering. A snapshot of the status is enough:
-/// a scrape is a point in time by definition.
-struct StatusOnly(Status);
+/// mutably by the turn that is answering. A snapshot of the status and the
+/// counters is enough: a scrape is a point in time by definition.
+struct Reported(Status, keel_node::Progress);
 
-impl Observable for StatusOnly {
+impl Observable for Reported {
     fn status(&self) -> Status {
         self.0.clone()
     }
 
     fn metrics(&self) -> Vec<Metric> {
         let s = &self.0;
+        let p = &self.1;
         vec![
             Metric {
                 name: "keel_term",
@@ -384,6 +418,53 @@ impl Observable for StatusOnly {
                 help: "1 if this node has latched a fatal storage error",
                 kind: Kind::Gauge,
                 value: if s.failure.is_some() { 1.0 } else { 0.0 },
+            },
+            // The loop's own counters. Entries divided by readies is the batch
+            // size, and the batch size is what says whether group commit is
+            // doing anything: a node appending one entry per `Ready` is paying
+            // a whole round of persist, replicate and apply per operation,
+            // whatever it was told about batching.
+            Metric {
+                name: "keel_turns_total",
+                help: "Turns of the node loop",
+                kind: Kind::Counter,
+                value: p.turns as f64,
+            },
+            Metric {
+                name: "keel_readies_total",
+                help: "Ready batches handled",
+                kind: Kind::Counter,
+                value: p.readies as f64,
+            },
+            Metric {
+                name: "keel_entries_appended_total",
+                help: "Log entries written by this node",
+                kind: Kind::Counter,
+                value: p.entries_appended as f64,
+            },
+            Metric {
+                name: "keel_entries_applied_total",
+                help: "Log entries applied to the state machine",
+                kind: Kind::Counter,
+                value: p.entries_applied as f64,
+            },
+            Metric {
+                name: "keel_messages_sent_total",
+                help: "Consensus messages sent to peers",
+                kind: Kind::Counter,
+                value: p.messages_sent as f64,
+            },
+            Metric {
+                name: "keel_messages_received_total",
+                help: "Consensus messages received from peers",
+                kind: Kind::Counter,
+                value: p.messages_received as f64,
+            },
+            Metric {
+                name: "keel_proposals_dropped_total",
+                help: "Proposals refused before they reached the log",
+                kind: Kind::Counter,
+                value: p.proposals_dropped as f64,
             },
         ]
     }

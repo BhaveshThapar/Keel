@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }
+keel-api = { workspace = true }
 keel-chaos = { workspace = true }
 keel-client = { workspace = true }
 keel-log = { workspace = true }

@@ -360,6 +360,15 @@ fn main() -> ExitCode {
             println!("  bytes discarded  {}", s.bytes_discarded_by_tears);
             println!("  commits clamped  {}", s.commits_clamped);
             println!("  segments recovered {}", s.segments_recovered);
+            println!(
+                "  checkpoints taken {}, streams started/interrupted/resumed/completed/abandoned {}/{}/{}/{}/{}",
+                s.checkpoints_taken,
+                s.streams_started,
+                s.streams_interrupted,
+                s.streams_resumed,
+                s.streams_completed,
+                s.streams_abandoned
+            );
             println!("  tears during partition {}", s.tears_during_partition);
             let d = world.disk_stats();
             println!(

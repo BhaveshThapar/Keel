@@ -28,16 +28,20 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 mod history;
+mod pipeline;
 mod transport;
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use keel_api::{ApiError, ClientId, Command, Consistency, Query, Request, Response, Seq};
+use keel_api::{
+    ApiError, ClientId, Command, Consistency, Query, Request, RequestId, Response, Seq,
+};
 use keel_raft::NodeId;
 
 pub use history::{History, Op, Outcome};
+pub use pipeline::{Completion, Pipeline, PipelineError};
 pub use transport::Endpoint;
 
 #[derive(Debug, thiserror::Error)]
@@ -88,6 +92,10 @@ pub struct Client {
     session: Option<ClientId>,
     nonce: u64,
     seq: Seq,
+    /// The label the next request goes out under. One request is outstanding at
+    /// a time here, so this exists only so an answer to an abandoned attempt
+    /// cannot be read as the answer to the current one.
+    next_id: RequestId,
     retry: Retry,
     history: Option<History>,
 }
@@ -101,6 +109,7 @@ impl Client {
             session: None,
             nonce,
             seq: 0,
+            next_id: 1,
             retry: Retry::default(),
             history: None,
         }
@@ -295,7 +304,9 @@ impl Client {
         while Instant::now() < deadline {
             for _ in 0..self.endpoints.len() {
                 let index = self.next % self.endpoints.len();
-                match self.endpoints[index].round_trip(request) {
+                let id = self.next_id;
+                self.next_id += 1;
+                match self.endpoints[index].round_trip(id, request) {
                     Ok(Response::NotLeader { leader }) => {
                         // A hint, not truth. Follow it if it names an endpoint
                         // this client knows; otherwise move on to the next one.

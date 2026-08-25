@@ -40,10 +40,13 @@ CLIENTS="${2:-8}"
 TOTAL="${3:-20000}"
 ETCD_VERSION=v3.5.17
 
-if ! command -v docker >/dev/null || ! docker info >/dev/null 2>&1; then
-    echo "the etcd baseline needs Docker, and none is running" >&2
+# shellcheck source=scripts/lib/container.sh
+source "$(dirname "$0")/lib/container.sh"
+if ! container_detect; then
+    container_missing
     exit 1
 fi
+ETCD_IMAGE="gcr.io/etcd-development/etcd:$ETCD_VERSION"
 GO="$(command -v go || echo /opt/homebrew/bin/go)"
 if [ ! -x "$GO" ]; then
     echo "the etcd baseline builds etcd's own benchmark tool, which needs Go" >&2
@@ -58,7 +61,16 @@ provenance_of "$OUT" || exit 1
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/keel-etcd-XXXXXX")"
 BENCH="$WORK/benchmark"
-trap 'docker rm -f keel-etcd-baseline >/dev/null 2>&1; rm -rf "$WORK"' EXIT
+ETCD_PID=""
+cleanup() {
+    if container_is_oci; then
+        "$KEEL_CONTAINER" rm -f keel-etcd-baseline >/dev/null 2>&1
+    elif [ -n "$ETCD_PID" ]; then
+        kill "$ETCD_PID" >/dev/null 2>&1
+    fi
+    rm -rf "$WORK"
+}
+trap cleanup EXIT
 
 # Built from a clone rather than with `go install`, and not by choice: etcd's
 # go.mod carries replace directives, so `go install <module>@<version>` refuses
@@ -75,31 +87,65 @@ git clone -q --depth 1 --branch "$ETCD_VERSION" https://github.com/etcd-io/etcd 
     exit 1
 }
 
-echo "starting a single-node etcd $ETCD_VERSION" >&2
-docker rm -f keel-etcd-baseline >/dev/null 2>&1
-docker run -d --name keel-etcd-baseline \
-    -p 2379:2379 -p 2380:2380 \
-    "gcr.io/etcd-development/etcd:$ETCD_VERSION" \
-    /usr/local/bin/etcd \
-    --name node1 \
-    --listen-client-urls http://0.0.0.0:2379 \
-    --advertise-client-urls http://0.0.0.0:2379 \
-    --listen-peer-urls http://0.0.0.0:2380 \
-    --initial-advertise-peer-urls http://0.0.0.0:2380 \
-    --initial-cluster node1=http://0.0.0.0:2380 \
-    >/dev/null || exit 1
+echo "starting a single-node etcd $ETCD_VERSION with $KEEL_CONTAINER" >&2
+if container_is_oci; then
+    "$KEEL_CONTAINER" rm -f keel-etcd-baseline >/dev/null 2>&1
+    "$KEEL_CONTAINER" run -d --name keel-etcd-baseline \
+        -p 2379:2379 -p 2380:2380 \
+        "$ETCD_IMAGE" \
+        /usr/local/bin/etcd \
+        --name node1 \
+        --listen-client-urls http://0.0.0.0:2379 \
+        --advertise-client-urls http://0.0.0.0:2379 \
+        --listen-peer-urls http://0.0.0.0:2380 \
+        --initial-advertise-peer-urls http://0.0.0.0:2380 \
+        --initial-cluster node1=http://0.0.0.0:2380 \
+        >/dev/null || exit 1
+else
+    # Apptainer shares the host's network namespace, so there is no port
+    # mapping to do and nothing to publish: etcd binds the host's 2379 directly.
+    # Its data directory is bound in rather than living inside the image, which
+    # is read-only.
+    mkdir -p "$WORK/etcd-data"
+    "$KEEL_CONTAINER" exec --cleanenv \
+        --bind "$WORK/etcd-data:/etcd-data" \
+        "docker://$ETCD_IMAGE" \
+        /usr/local/bin/etcd \
+        --name node1 \
+        --data-dir /etcd-data \
+        --listen-client-urls http://0.0.0.0:2379 \
+        --advertise-client-urls http://0.0.0.0:2379 \
+        --listen-peer-urls http://0.0.0.0:2380 \
+        --initial-advertise-peer-urls http://0.0.0.0:2380 \
+        --initial-cluster node1=http://0.0.0.0:2380 \
+        >"$WORK/etcd.log" 2>&1 &
+    ETCD_PID=$!
+fi
 
-# Wait for it rather than sleeping a guess.
+# Wait for it rather than sleeping a guess. The health check goes over the
+# client port either way, so it does not care which runtime started it — and the
+# benchmark tool that follows reaches etcd the same way.
+healthy=0
 for _ in $(seq 1 60); do
-    if docker exec keel-etcd-baseline etcdctl endpoint health >/dev/null 2>&1; then break; fi
+    if "$BENCH" --endpoints=http://127.0.0.1:2379 --conns=1 --clients=1 \
+        put --key-size=16 --sequential-keys --total=1 --val-size=1 >/dev/null 2>&1; then
+        healthy=1
+        break
+    fi
     sleep 1
 done
+if [ "$healthy" -ne 1 ]; then
+    echo "etcd did not become reachable on 127.0.0.1:2379" >&2
+    [ -f "$WORK/etcd.log" ] && tail -20 "$WORK/etcd.log" >&2
+    exit 1
+fi
 
 {
     echo "=== etcd baseline, and Keel measured the same way ==="
     provenance_header
     echo
-    echo "etcd version:  $ETCD_VERSION, single node, in Docker"
+    echo "etcd version:  $ETCD_VERSION, single node, in a container"
+    container_header
     echo "value bytes:   $VALUE_BYTES"
     echo "clients:       $CLIENTS"
     echo "total ops:     $TOTAL"

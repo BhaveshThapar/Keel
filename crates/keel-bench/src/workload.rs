@@ -22,7 +22,17 @@
 //! answer different questions: closed-loop measures what a fixed number of
 //! clients get, open-loop measures what a fixed offered rate costs. It is
 //! labelled in the output so the two can never be compared by accident.
+//!
+//! **The second measurement decision is the pipeline depth**, and it is the one
+//! that used to be missing. A sender that waits for each answer before sending
+//! again cannot offer more than one request per round trip, so achieved
+//! throughput is capped at senders divided by per-request latency whatever the
+//! cluster could do — and at that ceiling the number being reported is the
+//! generator's, not the system's. `depth` is how many requests one sender may
+//! have outstanding, it is carried in the shape's name and into every result
+//! header, and depth 1 is exactly the old behaviour.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -82,28 +92,44 @@ impl Mix {
 /// How load is offered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Loop {
-    /// A fixed number of clients, each waiting for its answer before sending
-    /// again. Measures what those clients get.
-    Closed { clients: usize },
+    /// A fixed number of senders, each keeping up to `depth` requests
+    /// outstanding. Measures what those senders get.
+    Closed { clients: usize, depth: usize },
     /// A fixed offered rate, with latency measured from when each request was
     /// due. Measures what that rate costs.
-    Open { rate_per_s: u64, clients: usize },
+    Open {
+        rate_per_s: u64,
+        clients: usize,
+        depth: usize,
+    },
 }
 
 impl Loop {
     pub fn name(self) -> String {
+        let depth = self.depth();
         match self {
-            Self::Closed { clients } => format!("closed-loop, {clients} clients"),
+            Self::Closed { clients, .. } => {
+                format!("closed-loop, {clients} senders, depth {depth}")
+            }
             Self::Open {
                 rate_per_s,
                 clients,
-            } => format!("open-loop, {rate_per_s} ops/s offered, {clients} senders"),
+                ..
+            } => format!("open-loop, {rate_per_s} ops/s offered, {clients} senders, depth {depth}"),
         }
     }
 
     pub fn clients(self) -> usize {
         match self {
-            Self::Closed { clients } | Self::Open { clients, .. } => clients.max(1),
+            Self::Closed { clients, .. } | Self::Open { clients, .. } => clients.max(1),
+        }
+    }
+
+    /// How many requests one sender may have outstanding. One is a closed
+    /// client: send, wait, send again.
+    pub fn depth(self) -> usize {
+        match self {
+            Self::Closed { depth, .. } | Self::Open { depth, .. } => depth.max(1),
         }
     }
 }
@@ -211,34 +237,110 @@ pub fn value_bytes(size: usize, seq: u64) -> Vec<u8> {
     v
 }
 
+/// The thing under test, as the driver needs to see it.
+///
+/// A sender takes operations and gives back outcomes, and the two are not
+/// required to happen together. That separation is the whole of what lets one
+/// driver measure both a client that waits for every answer and one with
+/// sixteen requests on the wire — and it is why the driver never calls anything
+/// that blocks until an answer exists.
+pub trait Sender: Send {
+    /// How many operations this sender may hold at once. One is a closed client.
+    fn capacity(&self) -> usize;
+    /// How many it is holding now.
+    fn inflight(&self) -> usize;
+    /// Offer an operation. `None` means it could not be taken; the driver polls
+    /// and tries again, which is backpressure rather than an error.
+    fn submit(&mut self, op: Op, seq: u64) -> Option<u64>;
+    /// Collect whatever has finished, waiting up to `timeout` for the first of
+    /// it. An empty result is the ordinary state of a sender still waiting.
+    fn poll(&mut self, timeout: Duration) -> Vec<(u64, bool)>;
+}
+
+/// A sender built from a function that blocks until the answer arrives.
+///
+/// Capacity one, by construction: the operation is complete before `submit`
+/// returns. This is the shape every result before ADR-033 was measured with,
+/// kept so that the etcd baseline, the null harness used to measure this
+/// harness, and depth-1 arms all run through the same driver.
+pub struct Blocking<F> {
+    perform: F,
+    client: usize,
+    next: u64,
+    finished: Vec<(u64, bool)>,
+}
+
+impl<F> Blocking<F> {
+    pub fn new(client: usize, perform: F) -> Self {
+        Self {
+            perform,
+            client,
+            next: 0,
+            finished: Vec::new(),
+        }
+    }
+}
+
+impl<F> Sender for Blocking<F>
+where
+    F: FnMut(usize, Op, u64) -> bool + Send,
+{
+    fn capacity(&self) -> usize {
+        1
+    }
+
+    fn inflight(&self) -> usize {
+        self.finished.len()
+    }
+
+    fn submit(&mut self, op: Op, seq: u64) -> Option<u64> {
+        let token = self.next;
+        self.next += 1;
+        let ok = (self.perform)(self.client, op, seq);
+        self.finished.push((token, ok));
+        Some(token)
+    }
+
+    fn poll(&mut self, _timeout: Duration) -> Vec<(u64, bool)> {
+        std::mem::take(&mut self.finished)
+    }
+}
+
+/// How long the driver waits on a poll that finds nothing.
+///
+/// Short enough that an open-loop sender's schedule is not distorted by it, and
+/// long enough that a sender waiting on a commit is not spinning a core.
+const POLL_WAIT: Duration = Duration::from_micros(200);
+
 /// Drive one run against a cluster.
 ///
-/// `perform` is the thing under test: it is handed an operation and returns
-/// whether the cluster acknowledged it. Passing it in rather than building a
-/// client here is what lets the same loop drive Keel, an etcd baseline, or a
-/// null implementation used to measure the harness's own overhead.
-pub fn run(
+/// `make_sender` is handed a sender index and returns the thing under test.
+/// Passing it in rather than building a client here is what lets the same loop
+/// drive Keel, an etcd baseline, or a null implementation used to measure the
+/// harness's own overhead.
+pub fn run_with(
     shape: Loop,
     mix: Mix,
     seed: u64,
     key_space: u64,
     value_bytes_len: usize,
     duration: Duration,
-    perform: impl Fn(usize, Op, u64) -> bool + Send + Sync + 'static,
+    make_sender: impl Fn(usize) -> Box<dyn Sender> + Send + Sync + 'static,
 ) -> Run {
-    let perform = Arc::new(perform);
+    let make_sender = Arc::new(make_sender);
     let stop = Arc::new(AtomicBool::new(false));
     let acknowledged = Arc::new(AtomicU64::new(0));
     let attempted = Arc::new(AtomicU64::new(0));
     let late = Arc::new(AtomicU64::new(0));
     let clients = shape.clients();
+    let depth = shape.depth();
 
-    let started = Instant::now();
-    let deadline = started + duration;
+    let started_at = Instant::now();
+    let deadline = started_at + duration;
     let mut handles = Vec::with_capacity(clients);
 
     for client in 0..clients {
-        let perform = Arc::clone(&perform);
+        let make_sender = Arc::clone(&make_sender);
         let stop = Arc::clone(&stop);
         let acknowledged = Arc::clone(&acknowledged);
         let attempted = Arc::clone(&attempted);
@@ -246,20 +348,46 @@ pub fn run(
         handles.push(std::thread::spawn(move || {
             let mut plan = Plan::new(seed.wrapping_add(client as u64), mix, key_space);
             let mut hist = Histogram::new();
+            let mut sender = make_sender(client);
+            // What each outstanding operation's latency is measured from. For a
+            // closed loop that is when it was sent; for an open loop it is when
+            // it was *due*, which is the line that makes the tail honest.
+            let mut reference: HashMap<u64, Instant> = HashMap::new();
             let mut seq = 0u64;
+
+            // Collect finished work and charge each operation to its own
+            // reference instant.
+            let collect = |sender: &mut Box<dyn Sender>,
+                           hist: &mut Histogram,
+                           reference: &mut HashMap<u64, Instant>,
+                           wait: Duration| {
+                for (token, ok) in sender.poll(wait) {
+                    let Some(from) = reference.remove(&token) else {
+                        continue;
+                    };
+                    if ok {
+                        acknowledged.fetch_add(1, Ordering::Relaxed);
+                        hist.record(from.elapsed().as_nanos() as u64);
+                    }
+                }
+            };
+
             match shape {
                 Loop::Closed { .. } => {
                     while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
-                        let op = plan.draw();
-                        seq += 1;
-                        attempted.fetch_add(1, Ordering::Relaxed);
-                        let sent = Instant::now();
-                        let ok = perform(client, op, seq);
-                        let elapsed = sent.elapsed();
-                        if ok {
-                            acknowledged.fetch_add(1, Ordering::Relaxed);
-                            hist.record(elapsed.as_nanos() as u64);
+                        while sender.inflight() < depth.min(sender.capacity()) {
+                            let op = plan.draw();
+                            seq += 1;
+                            attempted.fetch_add(1, Ordering::Relaxed);
+                            let sent = Instant::now();
+                            match sender.submit(op, seq) {
+                                Some(token) => {
+                                    reference.insert(token, sent);
+                                }
+                                None => break,
+                            }
                         }
+                        collect(&mut sender, &mut hist, &mut reference, POLL_WAIT);
                     }
                 }
                 Loop::Open { rate_per_s, .. } => {
@@ -270,7 +398,7 @@ pub fn run(
                     // lands on every request that was due during it.
                     let share = (rate_per_s / clients as u64).max(1);
                     let interval = Duration::from_nanos(1_000_000_000 / share);
-                    let mut due = started;
+                    let mut due = started_at;
                     while !stop.load(Ordering::Relaxed) && due < deadline {
                         let now = Instant::now();
                         // The run ends on the wall clock, not on the schedule.
@@ -302,19 +430,32 @@ pub fn run(
                             // the load generator.
                             late.fetch_add(1, Ordering::Relaxed);
                         }
+                        // Make room. A full pipeline is backpressure, and the
+                        // wait for a slot is charged to everything that was due
+                        // while it lasted — which is the point of the schedule.
+                        while sender.inflight() >= depth.min(sender.capacity())
+                            && Instant::now() < deadline
+                        {
+                            collect(&mut sender, &mut hist, &mut reference, POLL_WAIT);
+                        }
                         let op = plan.draw();
                         seq += 1;
                         attempted.fetch_add(1, Ordering::Relaxed);
-                        let ok = perform(client, op, seq);
-                        if ok {
-                            acknowledged.fetch_add(1, Ordering::Relaxed);
-                            // From `due`, not from the send. This is the line
-                            // that makes the tail honest.
-                            hist.record(due.elapsed().as_nanos() as u64);
+                        if let Some(token) = sender.submit(op, seq) {
+                            reference.insert(token, due);
                         }
+                        collect(&mut sender, &mut hist, &mut reference, Duration::ZERO);
                         due += interval;
                     }
                 }
+            }
+
+            // Whatever is still on the wire when the clock runs out is given a
+            // brief chance to land. Anything that does not is simply not
+            // acknowledged, which is what it was.
+            let drain_until = Instant::now() + Duration::from_secs(2);
+            while !reference.is_empty() && Instant::now() < drain_until {
+                collect(&mut sender, &mut hist, &mut reference, POLL_WAIT);
             }
             hist
         }));
@@ -333,12 +474,41 @@ pub fn run(
         shape,
         value_bytes: value_bytes_len,
         key_space,
-        duration: started.elapsed(),
+        duration: started_at.elapsed(),
         acknowledged: acknowledged.load(Ordering::Relaxed),
         attempted: attempted.load(Ordering::Relaxed),
         latency,
         late: late.load(Ordering::Relaxed),
     }
+}
+
+/// Drive one run with a function that blocks until each answer arrives.
+///
+/// The old signature, kept because it is the right one for everything whose
+/// capacity really is one: the etcd baseline speaks through a blocking client,
+/// and the null harness measures this harness.
+pub fn run(
+    shape: Loop,
+    mix: Mix,
+    seed: u64,
+    key_space: u64,
+    value_bytes_len: usize,
+    duration: Duration,
+    perform: impl Fn(usize, Op, u64) -> bool + Send + Sync + 'static,
+) -> Run {
+    let perform = Arc::new(perform);
+    run_with(
+        shape,
+        mix,
+        seed,
+        key_space,
+        value_bytes_len,
+        duration,
+        move |client| {
+            let perform = Arc::clone(&perform);
+            Box::new(Blocking::new(client, move |c, op, seq| perform(c, op, seq)))
+        },
+    )
 }
 
 /// Addresses, parsed from a comma-separated list.
@@ -397,6 +567,7 @@ mod tests {
             shape: Loop::Open {
                 rate_per_s: 1000,
                 clients: 1,
+                depth: 1,
             },
             value_bytes: 128,
             key_space: 1,
@@ -410,7 +581,10 @@ mod tests {
         run.late = 200;
         assert!(!run.offered_what_it_claimed());
         // A closed loop has no schedule to fall behind.
-        run.shape = Loop::Closed { clients: 4 };
+        run.shape = Loop::Closed {
+            clients: 4,
+            depth: 1,
+        };
         assert!(run.offered_what_it_claimed());
     }
 
@@ -426,6 +600,7 @@ mod tests {
             Loop::Open {
                 rate_per_s: 500,
                 clients: 1,
+                depth: 1,
             },
             Mix::Writes,
             1,
@@ -452,7 +627,10 @@ mod tests {
     #[test]
     fn a_closed_loop_run_reports_throughput_and_a_latency_distribution() {
         let run = run(
-            Loop::Closed { clients: 2 },
+            Loop::Closed {
+                clients: 2,
+                depth: 1,
+            },
             Mix::C,
             1,
             16,
@@ -463,6 +641,125 @@ mod tests {
         assert!(run.acknowledged > 0);
         assert!(run.throughput() > 0);
         assert_eq!(run.latency.count(), run.acknowledged);
+    }
+
+    /// A sender that takes `capacity` operations at once and answers each one a
+    /// fixed time later. It stands in for a cluster whose latency does not
+    /// depend on how many requests are in flight — which is the regime group
+    /// commit puts a real one in, and the regime a closed client can never
+    /// reach.
+    struct Delayed {
+        capacity: usize,
+        latency: Duration,
+        next: u64,
+        outstanding: Vec<(u64, Instant)>,
+        deepest: Arc<AtomicU64>,
+    }
+
+    impl Sender for Delayed {
+        fn capacity(&self) -> usize {
+            self.capacity
+        }
+
+        fn inflight(&self) -> usize {
+            self.outstanding.len()
+        }
+
+        fn submit(&mut self, _op: Op, _seq: u64) -> Option<u64> {
+            if self.outstanding.len() >= self.capacity {
+                return None;
+            }
+            let token = self.next;
+            self.next += 1;
+            self.outstanding
+                .push((token, Instant::now() + self.latency));
+            self.deepest
+                .fetch_max(self.outstanding.len() as u64, Ordering::Relaxed);
+            Some(token)
+        }
+
+        fn poll(&mut self, timeout: Duration) -> Vec<(u64, bool)> {
+            let until = Instant::now() + timeout;
+            loop {
+                let now = Instant::now();
+                let ready: Vec<u64> = self
+                    .outstanding
+                    .iter()
+                    .filter(|(_, due)| *due <= now)
+                    .map(|(token, _)| *token)
+                    .collect();
+                if !ready.is_empty() || now >= until {
+                    self.outstanding.retain(|(token, _)| !ready.contains(token));
+                    return ready.into_iter().map(|token| (token, true)).collect();
+                }
+                std::thread::sleep(Duration::from_micros(100));
+            }
+        }
+    }
+
+    fn delayed_run(depth: usize, latency: Duration, secs_ms: u64) -> (Run, u64) {
+        let deepest = Arc::new(AtomicU64::new(0));
+        let seen = Arc::clone(&deepest);
+        let run = run_with(
+            Loop::Closed { clients: 1, depth },
+            Mix::Writes,
+            1,
+            16,
+            8,
+            Duration::from_millis(secs_ms),
+            move |_| {
+                Box::new(Delayed {
+                    capacity: depth,
+                    latency,
+                    next: 0,
+                    outstanding: Vec::new(),
+                    deepest: Arc::clone(&seen),
+                })
+            },
+        );
+        let deepest = deepest.load(Ordering::Relaxed);
+        (run, deepest)
+    }
+
+    /// The ceiling depth exists to lift. Against a sender whose latency does not
+    /// change with load, depth 8 must beat depth 1 by something close to eight
+    /// — and a driver that quietly serialised would report the same number
+    /// twice.
+    #[test]
+    fn depth_lifts_the_throughput_ceiling_a_closed_client_imposes() {
+        let latency = Duration::from_millis(2);
+        let (shallow, shallow_depth) = delayed_run(1, latency, 400);
+        let (deep, deep_depth) = delayed_run(8, latency, 400);
+
+        assert_eq!(
+            shallow_depth, 1,
+            "depth 1 kept more than one request in flight"
+        );
+        assert!(
+            deep_depth > 1,
+            "depth 8 never had more than one request in flight, so the driver              serialised what it was told to pipeline"
+        );
+        assert!(
+            deep.throughput() > shallow.throughput() * 3,
+            "depth 8 managed {} ops/s against depth 1's {}, so the ceiling is              still the driver's rather than the sender's",
+            deep.throughput(),
+            shallow.throughput()
+        );
+    }
+
+    /// Every acknowledged operation is charged to its own reference instant, so
+    /// a deep pipeline reports the latency each request actually saw rather than
+    /// the time the whole batch took.
+    #[test]
+    fn a_deep_pipeline_charges_each_operation_its_own_latency() {
+        let latency = Duration::from_millis(2);
+        let (deep, _) = delayed_run(8, latency, 400);
+        assert_eq!(deep.latency.count(), deep.acknowledged);
+        let p50 = deep.latency.quantile(0.5);
+        assert!(
+            (1_000_000..20_000_000).contains(&p50),
+            "a 2 ms sender reported a p50 of {p50} ns, so latency is being              charged to the wrong instant"
+        );
     }
 
     #[test]

@@ -1,0 +1,33 @@
+# The clock nemesis, as an Apptainer image.
+#
+# The same thing scripts/docker/chaos-linux.Dockerfile builds, in the format a
+# shared cluster can build and run without a daemon and without root. Kept
+# beside it rather than replacing it, because the two runtimes are for two
+# different machines: Docker for the laptop the Exploratory numbers came from,
+# Apptainer for the Linux hardware the Reference tier is waiting on.
+#
+# Built by scripts/chaos-clock.sh. Needs `--fakeroot`, which a cluster normally
+# grants through user namespaces; if it does not, ask the administrators for it
+# rather than working around it, because the alternative is an image nobody can
+# reproduce.
+
+Bootstrap: docker
+From: rust:1-slim-bookworm
+
+%post
+    # faketime brings libfaketime.so, which is the whole point of the image.
+    # pkg-config is what the vendored storage engine's build needs.
+    apt-get update
+    apt-get install -y --no-install-recommends faketime pkg-config ca-certificates
+    rm -rf /var/lib/apt/lists/*
+
+%environment
+    # A separate target directory: the host's is full of Mach-O when the host is
+    # a Mac, and sharing it would make every switch between the two a full
+    # rebuild in both directions. On a Linux host it is still separate, because
+    # the artifact says which directory it built in and two builds in one
+    # directory are not two builds.
+    export CARGO_TARGET_DIR=/work/target-linux
+
+%runscript
+    exec /bin/bash "$@"

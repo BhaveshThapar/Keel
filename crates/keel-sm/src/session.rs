@@ -19,7 +19,7 @@ use keel_api::{ClientId, Response, Seq, decode, encode};
 use serde::{Deserialize, Serialize};
 
 use crate::StateMachineError;
-use crate::store::{Batch, Space, Store};
+use crate::store::{Batch, Space, Store, read_through};
 
 /// How long a session survives without being heard from.
 ///
@@ -35,7 +35,26 @@ pub const SESSION_TIMEOUT_MS: u64 = 10 * 60 * 1000;
 /// unbounded write. The rest are collected by the next entry.
 const EXPIRY_BUDGET: usize = 8;
 
+/// How many sessions one entry's apply may *look at*.
+///
+/// A separate bound from the one above, and the more important of the two.
+/// Bounding the deletes still left every apply reading the whole session table
+/// to find them — `usize::MAX` rows, materialised into a vector, keys and values
+/// copied — so the cost of applying one entry grew with the number of open
+/// sessions, and the cost of a run grew with their product. On this machine that
+/// was ninety percent of the leader's CPU under load, and it is what made a
+/// deeper client pipeline *slower*: more requests in flight meant more sessions,
+/// and more sessions meant a longer scan per entry. [KEEL-14](../../../BUGS.md).
+const EXPIRY_SCAN: usize = 16;
+
 pub(crate) const NEXT_CLIENT_KEY: &[u8] = b"next-client";
+/// Where the last expiry sweep stopped.
+///
+/// In the store rather than beside it, for the reason everything else here is:
+/// expiry has to be a function of the replicated log and nothing else. A cursor
+/// held in memory would put two nodes at different points in the table, and they
+/// would expire different sessions at the same index.
+const EXPIRY_CURSOR_KEY: &[u8] = b"expiry-cursor";
 const SESSION_PREFIX: &[u8] = b"session/";
 const NONCE_PREFIX: &[u8] = b"nonce/";
 
@@ -90,11 +109,13 @@ fn nonce_key(nonce: u64) -> Vec<u8> {
     key
 }
 
+/// One client's session, as the batch will leave it.
 pub(crate) fn read<S: Store>(
     store: &S,
+    batch: &Batch,
     client: ClientId,
 ) -> Result<Option<Session>, StateMachineError> {
-    match store.get(Space::Internal, &session_key(client))? {
+    match read_through(store, batch, Space::Internal, &session_key(client))? {
         None => Ok(None),
         Some(bytes) => decode::<Session>(&bytes)
             .map(Some)
@@ -127,11 +148,13 @@ pub(crate) fn record_nonce(nonce: u64, client: ClientId, batch: &mut Batch) {
 
 pub(crate) fn client_for_nonce<S: Store>(
     store: &S,
+    batch: &Batch,
     nonce: u64,
 ) -> Result<Option<ClientId>, StateMachineError> {
-    Ok(store
-        .get(Space::Internal, &nonce_key(nonce))?
-        .and_then(|b| b.as_ref().try_into().ok().map(ClientId::from_le_bytes)))
+    Ok(
+        read_through(store, batch, Space::Internal, &nonce_key(nonce))?
+            .and_then(|b| b.as_ref().try_into().ok().map(ClientId::from_le_bytes)),
+    )
 }
 
 /// Every open session's client id, ascending.
@@ -153,12 +176,20 @@ pub(crate) fn all<S: Store>(store: &S) -> Result<Vec<ClientId>, StateMachineErro
         .collect())
 }
 
-/// Drop sessions not heard from within [`SESSION_TIMEOUT_MS`], at most
-/// [`EXPIRY_BUDGET`] of them.
+/// Drop sessions not heard from within [`SESSION_TIMEOUT_MS`], looking at at
+/// most [`EXPIRY_SCAN`] of them and dropping at most [`EXPIRY_BUDGET`].
 ///
-/// Deterministic in every part: the scan order is the key order, the budget is
-/// a constant, and the only clock is the one the leader stamped. Two nodes
-/// applying the same entry expire the same sessions.
+/// A rolling sweep rather than a full pass. Each apply picks up where the last
+/// one stopped, so the work per entry is a constant and every session is still
+/// visited — it just takes as many entries as the table is windows wide. A
+/// ten-minute timeout has room for that on any cluster doing enough work for
+/// the table to be large.
+///
+/// Deterministic in every part, which is what expiry has to be or two nodes
+/// disagree about who is registered: the scan order is the key order, the
+/// window and the budget are constants, the cursor is in the store and moves
+/// inside the same batch as the deletes it authorised, and the only clock is
+/// the one the leader stamped.
 pub(crate) fn expire<S: Store>(
     store: &S,
     now_ms: u64,
@@ -172,13 +203,11 @@ pub(crate) fn expire<S: Store>(
     };
 
     let end = upper_bound(SESSION_PREFIX);
+    let start = resume_from(store, batch, &end)?;
+    let rows = store.scan(Space::Internal, Some(&start), Some(&end), EXPIRY_SCAN)?;
+
     let mut dropped = 0;
-    for (key, value) in store.scan(
-        Space::Internal,
-        Some(SESSION_PREFIX),
-        Some(&end),
-        usize::MAX,
-    )? {
+    for (key, value) in &rows {
         if dropped == EXPIRY_BUDGET {
             break;
         }
@@ -186,18 +215,71 @@ pub(crate) fn expire<S: Store>(
         // this entry. The store does not know that yet — the batch has not been
         // committed — so asking the store would expire the session the same
         // batch just renewed.
-        if batch.touches(Space::Internal, &key) {
+        if batch.touches(Space::Internal, key) {
             continue;
         }
-        let Ok(session) = decode::<Session>(&value) else {
+        let Ok(session) = decode::<Session>(value) else {
             continue;
         };
         if session.last_seen_ms < deadline {
-            batch.delete(Space::Internal, &key);
+            batch.delete(Space::Internal, key);
             dropped += 1;
         }
     }
+
+    // A full window means there may be more above it, so the next sweep starts
+    // just past the last key this one saw. A short one means the table ran out,
+    // so the next sweep starts over.
+    //
+    // Nothing is written when the whole table fits in one window and the cursor
+    // is already at the beginning, which is the ordinary case: a cursor written
+    // on every apply would be a second key per entry to pay for a sweep that
+    // never moves.
+    let full = rows.len() == EXPIRY_SCAN;
+    if full && let Some((key, _)) = rows.last() {
+        batch.put(
+            Space::Internal,
+            EXPIRY_CURSOR_KEY,
+            Bytes::from(successor(key)),
+        );
+    } else if !full && start != SESSION_PREFIX {
+        batch.put(
+            Space::Internal,
+            EXPIRY_CURSOR_KEY,
+            Bytes::copy_from_slice(SESSION_PREFIX),
+        );
+    }
     Ok(())
+}
+
+/// Where this sweep starts: the stored cursor, or the beginning of the table if
+/// there is none or it no longer points inside it.
+fn resume_from<S: Store>(
+    store: &S,
+    batch: &Batch,
+    end: &[u8],
+) -> Result<Vec<u8>, StateMachineError> {
+    let cursor = read_through(store, batch, Space::Internal, EXPIRY_CURSOR_KEY)?;
+    Ok(match cursor {
+        Some(bytes)
+            if bytes.as_ref() > SESSION_PREFIX
+                && bytes.as_ref() < end
+                && bytes.starts_with(SESSION_PREFIX) =>
+        {
+            bytes.to_vec()
+        }
+        _ => SESSION_PREFIX.to_vec(),
+    })
+}
+
+/// The smallest key strictly greater than `key`.
+///
+/// Appending a zero byte, because a scan's lower bound is inclusive and there is
+/// no key between `k` and `k\0`.
+fn successor(key: &[u8]) -> Vec<u8> {
+    let mut next = key.to_vec();
+    next.push(0);
+    next
 }
 
 /// The first key after every key with this prefix.

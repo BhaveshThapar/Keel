@@ -243,6 +243,205 @@ fn identities_are_a_function_of_the_log() {
     assert_eq!(run(), run());
 }
 
+// ------------------------------------------------------------------ batches
+
+/// ADR-035's contract, and the only one that matters: applying a run of entries
+/// as one batch means exactly what applying them one at a time means.
+///
+/// Everything that can read is exercised — an increment that reads what the
+/// increment before it wrote, a compare-and-swap against a value set earlier in
+/// the same batch, a registration whose client then issues a command, a
+/// duplicate sequence number, and an expiry — because a read that was left
+/// pointing at the store instead of at the batch is invisible until one of
+/// these lands in the same `Ready` as the write it depends on.
+#[test]
+fn a_batch_of_entries_means_what_applying_them_one_at_a_time_means() {
+    let script = |sm: &mut StateMachine<MemStore>| -> Vec<(u64, Proposal)> {
+        let first = sm.register(1, 1_000, 101).unwrap();
+        let second = sm.register(2, 1_000, 102).unwrap();
+        vec![
+            (
+                3,
+                command(first, 1, 1_001, Command::Incr { key: b("n"), by: 5 }),
+            ),
+            // Reads what the entry above wrote.
+            (
+                4,
+                command(second, 1, 1_002, Command::Incr { key: b("n"), by: 7 }),
+            ),
+            (
+                5,
+                command(
+                    first,
+                    2,
+                    1_003,
+                    Command::Put {
+                        key: b("k"),
+                        value: b("first"),
+                    },
+                ),
+            ),
+            // Compares against a value this batch set.
+            (
+                6,
+                command(
+                    second,
+                    2,
+                    1_004,
+                    Command::Cas {
+                        key: b("k"),
+                        expect: Some(b("first")),
+                        value: Some(b("second")),
+                    },
+                ),
+            ),
+            // And one whose expectation this batch has already invalidated.
+            (
+                7,
+                command(
+                    first,
+                    3,
+                    1_005,
+                    Command::Cas {
+                        key: b("k"),
+                        expect: Some(b("first")),
+                        value: Some(b("third")),
+                    },
+                ),
+            ),
+            // A retry of an entry earlier in the same batch.
+            (
+                8,
+                command(
+                    first,
+                    3,
+                    1_006,
+                    Command::Incr {
+                        key: b("n"),
+                        by: 99,
+                    },
+                ),
+            ),
+            (
+                9,
+                command(second, 3, 1_007, Command::Delete { key: b("k") }),
+            ),
+            (
+                10,
+                command(first, 4, 1_008, Command::Incr { key: b("n"), by: 1 }),
+            ),
+        ]
+    };
+
+    let mut one_at_a_time = StateMachine::new(MemStore::new());
+    let entries = script(&mut one_at_a_time);
+    let single: Vec<Response> = entries
+        .iter()
+        .map(|(index, proposal)| one_at_a_time.apply(*index, proposal).unwrap())
+        .collect();
+
+    let mut batched = StateMachine::new(MemStore::new());
+    let same = script(&mut batched);
+    assert_eq!(
+        entries, same,
+        "the two scripts diverged before they were run"
+    );
+    let batch = batched.apply_batch(&same).unwrap();
+
+    assert_eq!(batch, single, "a batch answered differently");
+    assert_eq!(
+        batched.counter(b"n").unwrap(),
+        one_at_a_time.counter(b"n").unwrap()
+    );
+    assert_eq!(batched.get(b"k").unwrap(), one_at_a_time.get(b"k").unwrap());
+    assert_eq!(
+        batched.state_digest().unwrap(),
+        one_at_a_time.state_digest().unwrap(),
+        "the two machines hold different state"
+    );
+}
+
+/// A registration and a command from the client it creates, in one batch.
+///
+/// The command has to find a session the store does not hold yet. Reading the
+/// store instead of the batch refuses it as expired — and the client is told its
+/// session is gone one entry after it was granted.
+#[test]
+fn a_client_registered_in_a_batch_can_be_used_later_in_the_same_batch() {
+    let mut sm = StateMachine::new(MemStore::new());
+    // The identity the registration will mint, so the command can name it.
+    let mut probe = StateMachine::new(MemStore::new());
+    let client = probe.register(1, 1_000, 555).unwrap();
+
+    let responses = sm
+        .apply_batch(&[
+            (
+                1,
+                Proposal {
+                    stamped_ms: 1_000,
+                    session: None,
+                    body: ProposalBody::Register { nonce: 555 },
+                },
+            ),
+            (
+                2,
+                command(client, 1, 1_001, Command::Incr { key: b("n"), by: 3 }),
+            ),
+        ])
+        .unwrap();
+
+    assert_eq!(responses[0], Response::Registered { client });
+    assert_eq!(
+        responses[1],
+        Response::Counter(3),
+        "a command from a session opened in the same batch was refused"
+    );
+    assert_eq!(sm.counter(b"n").unwrap(), 3);
+}
+
+/// The applied index moves to the highest entry in the batch and no further, so
+/// a replay after a crash starts where the batch actually ended.
+#[test]
+fn a_batch_leaves_the_applied_index_at_its_highest_entry() {
+    let mut sm = StateMachine::new(MemStore::new());
+    let client = sm.register(1, 1_000, 7).unwrap();
+    sm.apply_batch(&[
+        (
+            2,
+            command(client, 1, 1_001, Command::Incr { key: b("n"), by: 1 }),
+        ),
+        (
+            3,
+            command(client, 2, 1_002, Command::Incr { key: b("n"), by: 1 }),
+        ),
+        (
+            4,
+            command(client, 3, 1_003, Command::Incr { key: b("n"), by: 1 }),
+        ),
+    ])
+    .unwrap();
+    assert_eq!(sm.applied(), 4);
+
+    // Replaying the same run changes nothing.
+    sm.apply_batch(&[
+        (
+            2,
+            command(client, 1, 1_001, Command::Incr { key: b("n"), by: 1 }),
+        ),
+        (
+            3,
+            command(client, 2, 1_002, Command::Incr { key: b("n"), by: 1 }),
+        ),
+    ])
+    .unwrap();
+    assert_eq!(
+        sm.counter(b"n").unwrap(),
+        3,
+        "a replayed batch applied again"
+    );
+    assert_eq!(sm.applied(), 4);
+}
+
 // ------------------------------------------------------------------ expiry
 
 /// Expiry reads the leader's stamp, never a local clock — so it is a function
@@ -271,6 +470,73 @@ fn a_session_expires_on_the_leaders_clock_and_only_on_it() {
         "the idle session was not expired, or the busy one was"
     );
     assert!(sm.session(idle).unwrap().is_none());
+}
+
+/// [KEEL-14](../../../BUGS.md). Every session expires eventually, even when
+/// there are far more of them than one apply is allowed to look at.
+///
+/// The sweep is a rolling window now rather than a full pass, so this is the
+/// property that replaced "every apply checks everything": a session past its
+/// timeout is collected within a bounded number of further entries, however
+/// many other sessions are in the table. Two hundred sessions against a window
+/// of sixteen is thirteen windows, and the entries below are far more than
+/// that.
+#[test]
+fn every_idle_session_is_collected_even_when_the_table_is_far_wider_than_one_sweep() {
+    let mut sm = StateMachine::new(MemStore::new());
+    const SESSIONS: u64 = 200;
+    for nonce in 1..=SESSIONS {
+        sm.register(nonce, 1_000, nonce).unwrap();
+    }
+    assert_eq!(sm.open_sessions().unwrap().len() as u64, SESSIONS);
+
+    // One client stays alive; the rest fall silent.
+    let busy = sm.register(SESSIONS + 1, 1_000, SESSIONS + 1).unwrap();
+    let long_after = 1_000 + SESSION_TIMEOUT_MS + 1;
+    for index in (SESSIONS + 2..).take(SESSIONS as usize) {
+        sm.apply(
+            index,
+            &Proposal {
+                stamped_ms: long_after,
+                session: Some((busy, 0)),
+                body: ProposalBody::KeepAlive,
+            },
+        )
+        .unwrap();
+    }
+
+    assert_eq!(
+        sm.open_sessions().unwrap(),
+        vec![busy],
+        "sessions were left behind, so the rolling sweep does not reach the \
+         whole table"
+    );
+}
+
+/// And the sweep is a function of the log, not of anything a node remembers:
+/// two machines fed the same entries hold the same table, cursor and all.
+#[test]
+fn two_machines_fed_the_same_entries_expire_the_same_sessions() {
+    let build = || {
+        let mut sm = StateMachine::new(MemStore::new());
+        for nonce in 1..=40u64 {
+            sm.register(nonce, 1_000 + nonce, nonce).unwrap();
+        }
+        let busy = sm.register(41, 1_000, 41).unwrap();
+        for (n, index) in (42..70u64).enumerate() {
+            sm.apply(
+                index,
+                &Proposal {
+                    stamped_ms: 1_000 + SESSION_TIMEOUT_MS + n as u64,
+                    session: Some((busy, 0)),
+                    body: ProposalBody::KeepAlive,
+                },
+            )
+            .unwrap();
+        }
+        sm.open_sessions().unwrap()
+    };
+    assert_eq!(build(), build());
 }
 
 /// A command from an expired session is refused rather than applied without

@@ -74,6 +74,14 @@ pub enum Mutation {
 #[derive(Debug, Clone, Default)]
 pub struct Batch {
     ops: Vec<(Vec<u8>, Mutation)>,
+    /// Where each key's mutation sits in `ops`.
+    ///
+    /// A batch used to be append-only and searched by walking it, which was
+    /// fine while a batch described one entry and held a handful of keys. A
+    /// batch now describes a whole `Ready` — that is what lets one fsync retire
+    /// the lot — and every apply in it reads what the applies before it wrote,
+    /// so the walk would be quadratic in the batch.
+    index: std::collections::HashMap<Vec<u8>, usize>,
 }
 
 impl Batch {
@@ -82,13 +90,36 @@ impl Batch {
     }
 
     pub fn put(&mut self, space: Space, key: &[u8], value: Bytes) -> &mut Self {
-        self.ops.push((tagged(space, key), Mutation::Put(value)));
+        self.set(tagged(space, key), Mutation::Put(value));
         self
     }
 
     pub fn delete(&mut self, space: Space, key: &[u8]) -> &mut Self {
-        self.ops.push((tagged(space, key), Mutation::Delete));
+        self.set(tagged(space, key), Mutation::Delete);
         self
+    }
+
+    /// One mutation per key, the last one winning.
+    ///
+    /// Keeping both would leave the store to resolve them by order, which every
+    /// implementation of it would then have to get right; and it would let a
+    /// batch grow without bound while one entry rewrote one key.
+    fn set(&mut self, key: Vec<u8>, mutation: Mutation) {
+        match self.index.get(&key) {
+            Some(&at) => self.ops[at].1 = mutation,
+            None => {
+                self.index.insert(key.clone(), self.ops.len());
+                self.ops.push((key, mutation));
+            }
+        }
+    }
+
+    /// What this batch will leave at `key`, if it says anything about it.
+    pub fn get(&self, space: Space, key: &[u8]) -> Option<&Mutation> {
+        self.index
+            .get(&tagged(space, key))
+            .and_then(|at| self.ops.get(*at))
+            .map(|(_, mutation)| mutation)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -113,8 +144,28 @@ impl Batch {
     /// is the fix, and it is exactly right: a client the entry mentions has been
     /// heard from.
     pub fn touches(&self, space: Space, key: &[u8]) -> bool {
-        let tagged = tagged(space, key);
-        self.ops.iter().any(|(k, _)| *k == tagged)
+        self.index.contains_key(&tagged(space, key))
+    }
+}
+
+/// Read `key` as this batch will leave it: the batch's own mutation where it has
+/// one, and the store otherwise.
+///
+/// Every read on the apply path goes through here, and that is the whole of what
+/// makes applying several entries into one batch mean the same thing as applying
+/// them one at a time. Two increments of the same key in one batch that both
+/// read the store would both read the old value, and the second would overwrite
+/// the first rather than add to it.
+pub fn read_through<S: Store + ?Sized>(
+    store: &S,
+    batch: &Batch,
+    space: Space,
+    key: &[u8],
+) -> Result<Option<Bytes>, StateMachineError> {
+    match batch.get(space, key) {
+        Some(Mutation::Put(value)) => Ok(Some(value.clone())),
+        Some(Mutation::Delete) => Ok(None),
+        None => store.get(space, key),
     }
 }
 

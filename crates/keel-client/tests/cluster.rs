@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use keel_client::Client;
+use keel_client::{Client, Pipeline};
 
 /// A port nobody is using, released before the server binds it.
 ///
@@ -252,6 +252,80 @@ fn writes_survive_a_leader_being_killed() {
         assert_eq!(
             client.get(format!("after{i}").as_bytes()).unwrap(),
             Some(b"value".to_vec())
+        );
+    }
+}
+
+/// ADR-033, against a real cluster: many requests outstanding on one connection,
+/// answered in whatever order they finish, and every one of them applied exactly
+/// once.
+///
+/// The exactly-once half is the part worth a test rather than a paragraph. Each
+/// key is incremented once and no more, so a write that applied twice — the
+/// failure a pipelined retry invites — shows up as a counter reading 2, and a
+/// write that was acknowledged and never applied shows up as a counter that is
+/// absent. Neither is distinguishable from success by looking at the
+/// acknowledgements alone, which is why they are checked afterwards from a
+/// second client.
+#[test]
+fn a_pipeline_keeps_many_requests_in_flight_and_applies_each_once() {
+    let cluster = Cluster::start(3);
+    const DEPTH: usize = 16;
+    const OPS: usize = 400;
+
+    let mut pipeline =
+        Pipeline::open(&cluster.client_addrs, 500_000, DEPTH).expect("open a pipeline");
+    assert_eq!(pipeline.depth(), DEPTH);
+
+    let mut submitted = 0usize;
+    let mut acknowledged = 0usize;
+    let mut deepest = 0usize;
+    let mut failures = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(60);
+
+    while acknowledged < OPS && Instant::now() < deadline {
+        while submitted < OPS {
+            let command = keel_api::Command::Incr {
+                key: format!("p{submitted:04}").into_bytes().into(),
+                by: 1,
+            };
+            match pipeline.submit(command) {
+                Ok(_) => submitted += 1,
+                // Backpressure, not a failure: poll and come back.
+                Err(_) => break,
+            }
+        }
+        deepest = deepest.max(pipeline.inflight());
+        for completion in pipeline.poll(Duration::from_millis(20)) {
+            match completion.result {
+                Ok(_) => acknowledged += 1,
+                Err(e) => failures.push(e.to_string()),
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} of {OPS} operations failed: {:?}",
+        failures.len(),
+        &failures[..failures.len().min(5)]
+    );
+    assert_eq!(acknowledged, OPS, "not every operation was acknowledged");
+    assert!(
+        deepest > 1,
+        "never more than one request was outstanding, so nothing here was \
+         pipelined and the test proves only that a single request works"
+    );
+
+    // Read back from a client that shares nothing with the pipeline.
+    let mut checker = cluster.client(999);
+    checker.register().expect("register");
+    for i in 0..OPS {
+        let key = format!("p{i:04}");
+        assert_eq!(
+            checker.get(key.as_bytes()).unwrap(),
+            Some(1i64.to_le_bytes().to_vec()),
+            "key {key} was applied a number of times that is not once"
         );
     }
 }

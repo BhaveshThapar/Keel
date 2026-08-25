@@ -18,12 +18,13 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use keel_api::{Command, Query};
 use keel_bench::failover::Trial;
 use keel_bench::plot::{Point, Series, throughput_vs_latency};
 use keel_bench::workload::{Loop, Mix, Op, key_bytes, parse_nodes, value_bytes};
 use keel_bench::{Admitted, Environment, Publishable, Tier, workload, write_result};
 use keel_chaos::cluster::{Cluster, ClusterConfig};
-use keel_client::Client;
+use keel_client::{Client, Pipeline};
 use keel_log::SyncMode;
 
 #[derive(Parser)]
@@ -65,6 +66,15 @@ enum Verb {
         value_bytes: usize,
         #[arg(long, default_value_t = 10_000)]
         keys: u64,
+        /// How many requests one sender may keep outstanding.
+        ///
+        /// One is a closed client: send, wait for the answer, send again. That
+        /// caps achievable throughput at senders divided by per-request
+        /// latency whatever the cluster could do, so any number measured at
+        /// depth 1 is partly a measurement of this harness. It is carried into
+        /// the result header for that reason.
+        #[arg(long, default_value_t = 1)]
+        depth: usize,
         #[arg(long, default_value_t = 1)]
         seed: u64,
     },
@@ -83,6 +93,15 @@ enum Verb {
         value_bytes: usize,
         #[arg(long, default_value_t = 10_000)]
         keys: u64,
+        /// How many requests one sender may keep outstanding.
+        ///
+        /// One is a closed client: send, wait for the answer, send again. That
+        /// caps achievable throughput at senders divided by per-request
+        /// latency whatever the cluster could do, so any number measured at
+        /// depth 1 is partly a measurement of this harness. It is carried into
+        /// the result header for that reason.
+        #[arg(long, default_value_t = 1)]
+        depth: usize,
         /// Independent repetitions per rate. Three is the floor the gate
         /// enforces; the median of them is what is plotted.
         #[arg(long, default_value_t = 3)]
@@ -157,6 +176,7 @@ fn main() -> ExitCode {
             secs,
             value_bytes,
             keys,
+            depth,
             seed,
         } => single(SingleArgs {
             nodes,
@@ -166,6 +186,7 @@ fn main() -> ExitCode {
             secs,
             value_len: value_bytes,
             keys,
+            depth,
             seed,
         }),
         Verb::Campaign {
@@ -175,6 +196,7 @@ fn main() -> ExitCode {
             secs,
             value_bytes,
             keys,
+            depth,
             runs,
             cluster_nodes,
             tick_ms,
@@ -192,6 +214,7 @@ fn main() -> ExitCode {
             secs,
             value_len: value_bytes,
             keys,
+            depth,
             runs,
             cluster_nodes,
             tick_ms,
@@ -309,13 +332,14 @@ fn ms(ns: u64) -> f64 {
     ns as f64 / 1_000_000.0
 }
 
-fn shape_for(rate: u64, clients: usize) -> Loop {
+fn shape_for(rate: u64, clients: usize, depth: usize) -> Loop {
     if rate == 0 {
-        Loop::Closed { clients }
+        Loop::Closed { clients, depth }
     } else {
         Loop::Open {
             rate_per_s: rate,
             clients,
+            depth,
         }
     }
 }
@@ -334,9 +358,62 @@ fn shape_for(rate: u64, clients: usize) -> Loop {
 /// system. It is [KEEL-9](../../../BUGS.md)'s shape seen from the client side,
 /// and the acknowledged-fraction column is what made it visible.
 fn fresh_nonce() -> u64 {
+    reserve_nonces(1)
+}
+
+/// Reserve `count` consecutive nonces, so a pipeline's sessions cannot collide
+/// with another sender's.
+fn reserve_nonces(count: u64) -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(900_000);
-    NEXT.fetch_add(1, Ordering::SeqCst)
+    NEXT.fetch_add(count.max(1), Ordering::SeqCst)
+}
+
+/// A pipelined client, as the driver sees it.
+///
+/// The whole of what depth buys: `submit` puts an operation on the wire and
+/// returns, and `poll` collects whatever the cluster has finished. Nothing here
+/// waits for a specific answer, which is what lets one sender have sixteen
+/// operations outstanding without sixteen threads.
+struct Pipelined {
+    pipeline: Pipeline,
+    value_len: usize,
+}
+
+impl workload::Sender for Pipelined {
+    fn capacity(&self) -> usize {
+        self.pipeline.depth()
+    }
+
+    fn inflight(&self) -> usize {
+        self.pipeline.inflight()
+    }
+
+    fn submit(&mut self, op: Op, seq: u64) -> Option<u64> {
+        match op {
+            Op::Read { key } => self
+                .pipeline
+                .submit_query(Query::Get {
+                    key: key_bytes(key).into(),
+                })
+                .ok(),
+            Op::Write { key } => self
+                .pipeline
+                .submit(Command::Put {
+                    key: key_bytes(key).into(),
+                    value: value_bytes(self.value_len, seq).into(),
+                })
+                .ok(),
+        }
+    }
+
+    fn poll(&mut self, timeout: Duration) -> Vec<(u64, bool)> {
+        self.pipeline
+            .poll(timeout)
+            .into_iter()
+            .map(|c| (c.id, c.result.is_ok()))
+            .collect()
+    }
 }
 
 /// One run against a real cluster.
@@ -350,6 +427,35 @@ fn measure(
     secs: u64,
 ) -> workload::Run {
     let addrs = addrs.to_vec();
+    // Depth one is the closed client, unchanged: one request on the wire, the
+    // thread blocked until it is answered. Everything measured before ADR-033
+    // was measured this way, and the etcd baseline still is, so the two remain
+    // comparable at that depth.
+    if shape.depth() > 1 {
+        let depth = shape.depth();
+        return workload::run_with(
+            shape,
+            mix,
+            seed,
+            keys,
+            value_len,
+            Duration::from_secs(secs),
+            move |_client| {
+                // One pipeline per sender thread, with `depth` sessions of its
+                // own. Two senders sharing a nonce would share a session, and
+                // the second one's writes would be answered out of the first
+                // one's exactly-once cache and never applied — KEEL-9 from the
+                // client side, reported as a cluster failing half its requests.
+                let base = reserve_nonces(depth as u64);
+                let pipeline = Pipeline::open(&addrs, base, depth)
+                    .unwrap_or_else(|e| panic!("could not open a pipeline of {depth}: {e}"));
+                Box::new(Pipelined {
+                    pipeline,
+                    value_len,
+                })
+            },
+        );
+    }
     workload::run(
         shape,
         mix,
@@ -422,6 +528,7 @@ struct SingleArgs {
     secs: u64,
     value_len: usize,
     keys: u64,
+    depth: usize,
     seed: u64,
 }
 
@@ -437,7 +544,7 @@ fn single(args: SingleArgs) -> ExitCode {
     }
     let run = measure(
         &addrs,
-        shape_for(args.rate, args.clients),
+        shape_for(args.rate, args.clients, args.depth),
         mix,
         args.seed,
         args.keys,
@@ -457,6 +564,7 @@ struct CampaignArgs {
     secs: u64,
     value_len: usize,
     keys: u64,
+    depth: usize,
     runs: usize,
     cluster_nodes: usize,
     tick_ms: u64,
@@ -538,7 +646,7 @@ fn campaign(args: CampaignArgs) -> ExitCode {
 
     let mut points = Vec::new();
     for rate in &rates {
-        let shape = shape_for(*rate, args.clients);
+        let shape = shape_for(*rate, args.clients, args.depth);
         // Independent repetitions, and the *median* rather than the best. The
         // best of three is a number about luck.
         let (mut tp, mut p50, mut p99, mut p999, mut top) =

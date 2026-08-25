@@ -948,6 +948,112 @@ max, which is the one raw value in the table, and why the table says so.
 
 ---
 
+## ADR-033 — A client connection carries many requests, and each answer carries its label
+
+A parked request used to own its connection. The node read one request from a
+socket, moved the socket into the parked table, and answered on it once — so a
+client had exactly one request in flight per connection, and a benchmark's
+achieved throughput was capped at senders divided by per-request latency
+whatever the cluster could do. BENCH.md said so under "not measured" and named
+the client as the ceiling.
+
+The connection now stays in the read set and parked requests refer to it by
+slot. Two consequences, both load-bearing:
+
+**Answers leave out of order, so every answer carries a label.** A read waits
+for a heartbeat round while a write queued behind it commits first; a park that
+times out is answered before either. `Envelope { id, body }` wraps both
+directions of the client wire, the id is the client's own and the server does
+not interpret it, and a client that matched answers by arrival order would hand
+each one to the wrong caller. The label is *not* a dedup key: `(client, seq)` is
+that, and conflating the two would make a retry under a fresh label apply twice.
+
+**One session per in-flight slot, not one per client.** The exactly-once cache
+holds one response per session — `last_seq` and what it produced — so a retry of
+`last_seq` is answerable and anything below it is `SequenceTooOld` with no
+answer at all. One session with eight requests in flight breaks on the first
+leader change: seqs 1..8 go out, 1..5 commit, the client hears about 1..3, and
+its retry of 4 meets a floor of 5. So `Pipeline` opens a session per slot and
+never has two requests outstanding under one. The depth lives in the connection,
+where it costs a slot, rather than in the session, where it would cost the
+guarantee.
+
+**Backpressure is a constant, not an error.** A connection at
+`MAX_INFLIGHT_PER_CONN` is simply not read from; the bytes stay in the kernel
+buffer and then in the sender's window. There is no new refusal to invent, and
+the memory one client can pin here is bounded by a constant rather than by how
+fast it can type.
+
+**What it did not fix.** The client was not the ceiling. Depth changed the
+number by nothing at all until ADR-034 and ADR-035, and the two defects those
+record were only visible once a client could offer enough load to expose them.
+That is the honest order of events: the fix that was supposed to raise the
+number instead made the real ceilings measurable.
+
+---
+
+## ADR-034 — A node pauses only when it has nothing to do
+
+The daemon's loop ran a turn and slept a millisecond, unconditionally. The sleep
+is right for an idle node — it keeps it off the CPU, and it is short enough that
+a tick is never late by more than itself, which matters because a late tick is an
+election timeout that fires late. It is wrong for a busy one.
+
+That loop is the only thread in the node. It proposes, replicates, applies and
+answers, so a millisecond of sleep is a millisecond in which none of those
+happen, and under load the node was rationing itself to about a thousand turns a
+second whatever the disk or the network could do. `Server::turn` now reports
+whether it did anything — client work read, a `Ready` handled, an answer or a
+read confirmed — and the caller pauses only on `Busy::No`.
+
+**Why it took a pipelined client to find.** With one request in flight per
+sender the offered load never reached the ceiling, so the loop looked fast
+enough. It is the sort of thing a profile finds in a second and a review never
+does: the sleep is three lines with a correct comment attached, and the comment
+is about the case that is not the problem.
+
+---
+
+## ADR-035 — A `Ready`'s committed entries apply as one batch
+
+The log already amortised its fsync across a batch: a hundred queued proposals
+cost one append and one sync, and there is a test named after it. The state
+machine did not. `StateMachine::apply` committed one entry, and `Store::commit`
+is one durable write, so a durable state machine paid a full disk flush *per
+operation* — and on this machine that pinned write throughput at about a hundred
+a second while the log's own batch grew to thirty entries beside it.
+
+`apply_batch` takes a run of committed entries and makes one `Store::commit` of
+all of them. Atomicity is unchanged and is still ADR-010's: the applied index
+goes into the same batch as the data, so a crash leaves a store that has applied
+everything through the highest index in the run or nothing of it, and the log
+replays from whichever it finds.
+
+**What batching changes is reads, and that is the whole risk.** An entry has to
+see the entries ahead of it in the same batch, which the store does not hold yet.
+Two increments of one key that both read the store would both read the old value
+and the second would overwrite the first rather than add to it; a command from a
+session registered two entries earlier would be refused as expired. So every read
+on the apply path goes through `read_through(store, batch, ..)`, which consults
+the batch's own mutation first — session lookups, nonce lookups, compare-and-swap,
+the counter read behind `Incr`, and the expiry cursor.
+
+**The simulator applies in batches too**, and that is deliberate rather than
+incidental. A simulator that applied entry at a time would sweep a path
+production does not take, and the difference is not cosmetic: a batch is one
+atomic store write, so a crash cannot land in the middle of it. The property that
+holds it all together is a test, not an argument — a scripted run of entries
+that reads and writes across itself must produce the same responses and the same
+state whether applied one at a time or as a batch.
+
+**The measured effect.** With `F_FULLFSYNC` on an Apple M2 Pro, three nodes,
+eight senders at depth 64: 115 operations a second before, 4,149 after. The
+fsync-off arm barely moves, which is the point — one flush now retires the whole
+batch, so durability costs what the batch amortises it to rather than one flush
+per operation.
+
+---
+
 ## Planned
 
 These are decided but not yet built. They are recorded here so the shape is

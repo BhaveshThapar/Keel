@@ -5,8 +5,8 @@ mod common;
 
 use common::Cluster;
 use keel_raft::{
-    ChangeKind, ConfChangeSingle, ConfChangeV2, Config, DropReason, Input, ReadOnlyOption, Role,
-    SnapshotMeta,
+    Advance, ChangeKind, ConfChangeSingle, ConfChangeV2, Config, DropReason, Input, ReadOnlyOption,
+    Role, SnapshotMeta,
 };
 
 fn add_voter(node: u64) -> ConfChangeV2 {
@@ -559,6 +559,53 @@ fn a_checkpoint_above_what_was_applied_is_refused() {
 /// A checkpoint that goes backwards is refused. Adopting it would discard
 /// entries a follower may still need while claiming coverage it does not have,
 /// and would replace a newer configuration with an older one.
+#[test]
+fn a_stale_installed_snapshot_is_refused() {
+    // [KEEL-17](../../../BUGS.md). A snapshot that arrives from a leader after
+    // the follower has caught up past it must not be adopted: `restore_snapshot`
+    // sets the floor, the commit index and the applied index from the
+    // snapshot's index, so adopting a stale one rewinds all three and the node
+    // un-applies entries it has already acknowledged.
+    let mut c = Cluster::new(&[1, 2, 3]);
+    let leader = c.elect_leader();
+    for i in 0..50 {
+        c.propose(leader, i, &format!("v{i}"));
+    }
+    c.run(6);
+
+    let before = c.node(leader).status();
+    assert!(before.applied > 10, "the cluster applied nothing to rewind");
+    let conf = before.conf.clone();
+    let refused_before = before.snapshots_refused;
+
+    // An install naming an index the node is already past. Acknowledged against
+    // a `Ready` this core really issued, because `advance` refuses any other.
+    let core = c.node_mut(leader);
+    let number = core.ready().number;
+    core.advance(Advance {
+        ready_number: number,
+        persisted: None,
+        applied: None,
+        snapshot_installed: Some(SnapshotMeta {
+            index: before.applied - 5,
+            term: before.term,
+            conf,
+        }),
+    });
+
+    let after = c.node(leader).status();
+    assert_eq!(
+        (after.applied, after.commit),
+        (before.applied, before.commit),
+        "a stale install rewound the watermarks"
+    );
+    assert_eq!(
+        after.snapshots_refused,
+        refused_before + 1,
+        "the refusal was not counted, so a sweep could not tell it happened"
+    );
+}
+
 #[test]
 fn a_stale_checkpoint_is_refused() {
     let mut c = Cluster::new(&[1, 2, 3]);

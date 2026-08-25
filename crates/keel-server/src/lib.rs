@@ -33,7 +33,7 @@ use std::path::Path;
 
 pub use clients::Clients;
 pub use metrics::{Kind, Metric};
-pub use node::{NodeConfig, Server};
+pub use node::{Busy, NodeConfig, Server};
 pub use status::{Status, sync_mode_name};
 
 #[derive(Debug, thiserror::Error)]

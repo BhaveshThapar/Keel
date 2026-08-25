@@ -1435,10 +1435,26 @@ impl RaftCore {
         );
 
         if let Some(meta) = ack.snapshot_installed {
-            self.log.restore_snapshot(meta.index, meta.term);
-            self.tracker.set_conf(meta.conf, self.log.last_index() + 1);
-            self.emitted_applied = self.log.applied();
-            self.hard_state_dirty = true;
+            // Stale, and refused for the same reason `on_snapshot_taken`
+            // refuses a stale checkpoint: a snapshot at or below what this log
+            // has already committed carries nothing the log does not have, and
+            // adopting it pulls the floor backwards — and, because
+            // `restore_snapshot` sets all three watermarks from the snapshot's
+            // index, the commit and applied indices with it. A node that
+            // rewinds its applied index has un-applied entries it has already
+            // acknowledged ([KEEL-17](../../../BUGS.md)).
+            //
+            // A leader can offer one: it sends a snapshot at its own floor, and
+            // by the time the transfer completes the follower may have caught
+            // up past it by ordinary replication.
+            if meta.index <= self.log.committed().max(self.log.snapshot_index()) {
+                self.snapshots_refused += 1;
+            } else {
+                self.log.restore_snapshot(meta.index, meta.term);
+                self.tracker.set_conf(meta.conf, self.log.last_index() + 1);
+                self.emitted_applied = self.log.applied();
+                self.hard_state_dirty = true;
+            }
         }
 
         // The term is what makes a late ack safe. A `Ready` can be in flight to

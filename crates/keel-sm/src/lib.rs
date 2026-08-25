@@ -53,7 +53,7 @@ use keel_raft::Index;
 #[cfg(feature = "lsm")]
 pub use lsm::LsmStore;
 pub use session::{SESSION_TIMEOUT_MS, Session};
-pub use store::{Batch, MemStore, Mutation, Space, Store, tagged, untagged};
+pub use store::{Batch, MemStore, Mutation, Space, Store, read_through, tagged, untagged};
 pub use transfer::{Accepted, CHUNK_BYTES, Chunk, Receiver, Sender};
 
 #[derive(Debug, thiserror::Error)]
@@ -106,25 +106,67 @@ impl<S: Store> StateMachine<S> {
         index: Index,
         proposal: &Proposal,
     ) -> Result<Response, StateMachineError> {
-        // The log replaying below the store's watermark. Nothing to do, and
-        // nothing to say: the response for this entry went to a client that has
-        // long since had it.
-        if index <= self.store.applied() {
-            return Ok(Response::Applied);
+        let mut responses = self.apply_batch(std::slice::from_ref(&(index, proposal.clone())))?;
+        Ok(responses.pop().unwrap_or(Response::Applied))
+    }
+
+    /// Apply a run of committed entries as one atomic write.
+    ///
+    /// One [`Store::commit`], and therefore one fsync, for the whole run. That
+    /// is the whole point of it: with a durable state machine, committing each
+    /// entry on its own costs one full disk flush per operation, and on this
+    /// machine that pinned write throughput at about a hundred a second no
+    /// matter what else improved — the log's own fsync per `Ready` was already
+    /// amortised across a batch of thirty entries while the state machine's was
+    /// not (ADR-035).
+    ///
+    /// Atomicity is unchanged and is still the contract ADR-010 describes: the
+    /// applied index goes into the same batch as the data, so a crash leaves a
+    /// store that has applied everything through the highest index here or
+    /// nothing of it, and the log replays from whichever it finds.
+    ///
+    /// What batching *does* change is that an entry now has to see the entries
+    /// ahead of it in the same batch, which the store does not hold yet. Every
+    /// read on this path goes through [`read_through`] for that reason: two
+    /// increments of one key in one batch that both read the store would both
+    /// read the old value.
+    ///
+    /// Returns one response per entry, in order.
+    pub fn apply_batch(
+        &mut self,
+        entries: &[(Index, Proposal)],
+    ) -> Result<Vec<Response>, StateMachineError> {
+        let mut batch = Batch::new();
+        let mut responses = Vec::with_capacity(entries.len());
+        let mut highest = 0;
+        let floor = self.store.applied();
+
+        for (index, proposal) in entries {
+            // The log replaying below the store's watermark. Nothing to do, and
+            // nothing to say: the response for this entry went to a client that
+            // has long since had it.
+            if *index <= floor {
+                responses.push(Response::Applied);
+                continue;
+            }
+            let response = match &proposal.body {
+                ProposalBody::Register { nonce } => {
+                    self.apply_register(*nonce, proposal.stamped_ms, &mut batch)?
+                }
+                ProposalBody::KeepAlive => self.apply_keep_alive(proposal, &mut batch)?,
+                ProposalBody::Command(command) => {
+                    self.apply_command(command, proposal, &mut batch)?
+                }
+            };
+            session::expire(&self.store, proposal.stamped_ms, &mut batch)?;
+            responses.push(response);
+            highest = highest.max(*index);
         }
 
-        let mut batch = Batch::new();
-        let response = match &proposal.body {
-            ProposalBody::Register { nonce } => {
-                self.apply_register(*nonce, proposal.stamped_ms, &mut batch)?
-            }
-            ProposalBody::KeepAlive => self.apply_keep_alive(proposal, &mut batch)?,
-            ProposalBody::Command(command) => self.apply_command(command, proposal, &mut batch)?,
-        };
-
-        session::expire(&self.store, proposal.stamped_ms, &mut batch)?;
-        self.store.commit(index, batch)?;
-        Ok(response)
+        if highest > 0 {
+            self.store.commit(highest, batch)?;
+        }
+        Ok(responses)
     }
 
     /// Register a client outside the log. For tests and for the doctest above;
@@ -163,7 +205,7 @@ impl<S: Store> StateMachine<S> {
         // a second one would leave it holding two, whose sequence numbers
         // deduplicate against different rows, and the retries it sends under
         // the new one would apply twice.
-        if let Some(existing) = session::client_for_nonce(&self.store, nonce)? {
+        if let Some(existing) = session::client_for_nonce(&self.store, batch, nonce)? {
             return Ok(Response::Registered { client: existing });
         }
 
@@ -195,7 +237,7 @@ impl<S: Store> StateMachine<S> {
         let Some((client, _)) = proposal.session else {
             return Ok(Response::Error(ApiError::SessionExpired));
         };
-        match session::read(&self.store, client)? {
+        match session::read(&self.store, batch, client)? {
             Some(mut session) => {
                 session.last_seen_ms = proposal.stamped_ms;
                 session::write(client, &session, batch);
@@ -214,7 +256,7 @@ impl<S: Store> StateMachine<S> {
         let Some((client, seq)) = proposal.session else {
             return Ok(Response::Error(ApiError::SessionExpired));
         };
-        let Some(mut session) = session::read(&self.store, client)? else {
+        let Some(mut session) = session::read(&self.store, batch, client)? else {
             // Expired, or never registered. The client re-registers; whether
             // its earlier commands applied is exactly what the session existed
             // to make knowable, and it is now unknowable.
@@ -257,7 +299,7 @@ impl<S: Store> StateMachine<S> {
                 Response::Applied
             }
             Command::Cas { key, expect, value } => {
-                let actual = self.store.get(Space::User, key)?;
+                let actual = read_through(&self.store, batch, Space::User, key)?;
                 if actual.as_ref() != expect.as_ref() {
                     Response::CasMismatch { actual }
                 } else {
@@ -268,7 +310,7 @@ impl<S: Store> StateMachine<S> {
                     Response::Applied
                 }
             }
-            Command::Incr { key, by } => match self.counter(key) {
+            Command::Incr { key, by } => match self.counter_in(batch, key) {
                 Ok(current) => {
                     let next = current.saturating_add(*by);
                     batch.put(
@@ -302,7 +344,12 @@ impl<S: Store> StateMachine<S> {
 
     /// The counter at `key`, zero if absent.
     pub fn counter(&self, key: &[u8]) -> Result<i64, StateMachineError> {
-        match self.store.get(Space::User, key)? {
+        self.counter_in(&Batch::new(), key)
+    }
+
+    /// The counter at `key` as `batch` will leave it.
+    fn counter_in(&self, batch: &Batch, key: &[u8]) -> Result<i64, StateMachineError> {
+        match read_through(&self.store, batch, Space::User, key)? {
             None => Ok(0),
             Some(bytes) => bytes
                 .as_ref()
@@ -343,7 +390,7 @@ impl<S: Store> StateMachine<S> {
         }
         for client in session::all(&self.store)? {
             mix(&client.to_be_bytes());
-            if let Some(session) = session::read(&self.store, client)? {
+            if let Some(session) = session::read(&self.store, &Batch::new(), client)? {
                 mix(&session.last_seq.to_be_bytes());
             }
         }
@@ -352,7 +399,7 @@ impl<S: Store> StateMachine<S> {
 
     /// The session for `client`, if it is still open.
     pub fn session(&self, client: ClientId) -> Result<Option<Session>, StateMachineError> {
-        session::read(&self.store, client)
+        session::read(&self.store, &Batch::new(), client)
     }
 
     /// Every open session's client id. For metrics and for tests that assert
@@ -363,6 +410,6 @@ impl<S: Store> StateMachine<S> {
 
     /// The sequence number `client` has applied through.
     pub fn last_seq(&self, client: ClientId) -> Result<Option<Seq>, StateMachineError> {
-        Ok(session::read(&self.store, client)?.map(|s| s.last_seq))
+        Ok(session::read(&self.store, &Batch::new(), client)?.map(|s| s.last_seq))
     }
 }

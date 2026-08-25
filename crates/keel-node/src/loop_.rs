@@ -46,7 +46,12 @@ pub struct Turn {
 }
 
 impl Turn {
-    fn did_something(&self) -> bool {
+    /// Whether this turn moved anything at all.
+    ///
+    /// A host decides whether to pause on this, so it is public: a node with a
+    /// backlog that pauses between turns is rationing itself, and one that
+    /// never pauses when idle is a busy loop.
+    pub fn did_something(&self) -> bool {
         *self != Turn::default()
     }
 }
@@ -360,13 +365,10 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
             }
         }
 
-        // 3. Apply.
-        let mut applied = None;
-        for entry in &ready.committed_entries {
-            self.apply(entry)?;
-            applied = Some(entry.index);
-            turn.entries_applied += 1;
-        }
+        // 3. Apply. The whole run in one batch, so one fsync in the state
+        //    machine retires all of it — see `apply` below.
+        let applied = self.apply(&ready.committed_entries)?;
+        turn.entries_applied += ready.committed_entries.len() as u64;
 
         for read in &ready.read_states {
             self.reads.push((read.ctx, read.index));
@@ -387,46 +389,70 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
         Ok(())
     }
 
-    fn apply(&mut self, entry: &Entry) -> Result<(), NodeError> {
-        match &entry.payload {
-            // A no-op moves the applied index and nothing else. It still has to
-            // be committed to the store, or the log would hand it back forever.
-            EntryPayload::Noop | EntryPayload::ConfChange(_) => {
-                self.sm.apply(
-                    entry.index,
-                    &Proposal {
-                        stamped_ms: 0,
-                        session: None,
-                        body: keel_api::ProposalBody::KeepAlive,
-                    },
-                )?;
-            }
-            EntryPayload::Normal(data) => {
-                let proposal = decode::<Proposal>(data).map_err(|e| NodeError::MalformedEntry {
-                    index: entry.index,
-                    why: e.to_string(),
-                })?;
-                let response = self.sm.apply(entry.index, &proposal)?;
-                // Matched on the session pair rather than on the order entries
-                // were proposed. A leadership change can drop a proposal and
-                // renumber what follows it, so position is not an identity;
-                // `(client, seq)` is one, and it is already in the entry
-                // because the state machine deduplicates on it.
-                //
-                // A registration has no session pair yet, so its nonce travels
-                // alongside for the same reason.
-                let registration = match &proposal.body {
-                    keel_api::ProposalBody::Register { nonce } => Some(*nonce),
-                    _ => None,
-                };
-                self.answers.push(Answer {
-                    index: entry.index,
-                    session: proposal.session,
-                    registration,
-                    response,
-                });
-            }
+    /// Apply a `Ready`'s committed entries, and report the highest index that
+    /// reached the state machine.
+    ///
+    /// All of them in one [`StateMachine::apply_batch`], which is one write and
+    /// therefore one fsync for the whole run. Entry at a time, a durable state
+    /// machine pays a full disk flush per operation — the log's own fsync is
+    /// already amortised across the batch and the state machine's was not, so
+    /// write throughput sat at one over the flush latency however large the
+    /// batch grew (ADR-035).
+    fn apply(&mut self, entries: &[Entry]) -> Result<Option<Index>, NodeError> {
+        if entries.is_empty() {
+            return Ok(None);
         }
-        Ok(())
+        // A no-op and a configuration change move the applied index and nothing
+        // else. They still go through the store, or the log would hand them
+        // back forever.
+        let mut proposals = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let proposal = match &entry.payload {
+                EntryPayload::Noop | EntryPayload::ConfChange(_) => Proposal {
+                    stamped_ms: 0,
+                    session: None,
+                    body: keel_api::ProposalBody::KeepAlive,
+                },
+                EntryPayload::Normal(data) => {
+                    decode::<Proposal>(data).map_err(|e| NodeError::MalformedEntry {
+                        index: entry.index,
+                        why: e.to_string(),
+                    })?
+                }
+            };
+            proposals.push((entry.index, proposal));
+        }
+
+        let responses = self.sm.apply_batch(&proposals)?;
+
+        for ((entry, (_, proposal)), response) in
+            entries.iter().zip(proposals.iter()).zip(responses)
+        {
+            if matches!(
+                entry.payload,
+                EntryPayload::Noop | EntryPayload::ConfChange(_)
+            ) {
+                continue;
+            }
+            // Matched on the session pair rather than on the order entries were
+            // proposed. A leadership change can drop a proposal and renumber
+            // what follows it, so position is not an identity; `(client, seq)`
+            // is one, and it is already in the entry because the state machine
+            // deduplicates on it.
+            //
+            // A registration has no session pair yet, so its nonce travels
+            // alongside for the same reason.
+            let registration = match &proposal.body {
+                keel_api::ProposalBody::Register { nonce } => Some(*nonce),
+                _ => None,
+            };
+            self.answers.push(Answer {
+                index: entry.index,
+                session: proposal.session,
+                registration,
+                response,
+            });
+        }
+        Ok(entries.last().map(|e| e.index))
     }
 }

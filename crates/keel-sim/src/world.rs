@@ -680,31 +680,42 @@ struct Receiving {
 /// that went in — which is exactly the class of failure the disk model exists to
 /// produce, and skipping it would let the simulator report a clean run over a
 /// corrupted log.
-fn apply_entry(node: &mut SimNode, entry: &Entry) -> Result<AppliedKind, String> {
-    let proposal = match &entry.payload {
-        EntryPayload::Noop | EntryPayload::ConfChange(_) => Proposal {
-            stamped_ms: 0,
-            session: None,
-            body: ProposalBody::KeepAlive,
-        },
-        EntryPayload::Normal(data) => decode::<Proposal>(data)
-            .map_err(|e| format!("entry {} did not decode as a proposal: {e}", entry.index))?,
-    };
+/// Apply a contiguous run of committed entries as one batch.
+fn apply_run(node: &mut SimNode, entries: &[Entry]) -> Result<Vec<AppliedKind>, String> {
+    let mut proposals = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let proposal = match &entry.payload {
+            EntryPayload::Noop | EntryPayload::ConfChange(_) => Proposal {
+                stamped_ms: 0,
+                session: None,
+                body: ProposalBody::KeepAlive,
+            },
+            EntryPayload::Normal(data) => decode::<Proposal>(data)
+                .map_err(|e| format!("entry {} did not decode as a proposal: {e}", entry.index))?,
+        };
+        proposals.push((entry.index, proposal));
+    }
+
     let before = node.sm.applied();
-    let response = node
+    let responses = node
         .sm
-        .apply(entry.index, &proposal)
-        .map_err(|e| format!("entry {} would not apply: {e}", entry.index))?;
-    if node.sm.applied() != entry.index {
+        .apply_batch(&proposals)
+        .map_err(|e| format!("entries from {} would not apply: {e}", before + 1))?;
+
+    let last = entries.last().map(|e| e.index).unwrap_or(before);
+    if node.sm.applied() != last {
         return Err(format!(
-            "entry {} was handed to a state machine already at {before}; it moved to {} \
-             instead. An entry handed back below the watermark is skipped, and its effect \
-             is lost",
-            entry.index,
+            "a run through {last} was handed to a state machine at {before}; it moved to \
+             {} instead. An entry handed back below the watermark is skipped, and its \
+             effect is lost",
             node.sm.applied()
         ));
     }
-    Ok(AppliedKind::of(&proposal, &response))
+    Ok(proposals
+        .iter()
+        .zip(responses)
+        .map(|((_, proposal), response)| AppliedKind::of(proposal, &response))
+        .collect())
 }
 
 /// What applying an entry turned out to be, so a run can report whether it
@@ -810,13 +821,6 @@ struct SimNode {
     checkpoint: Option<(SnapshotMeta, Vec<u8>, u64)>,
     /// A snapshot this node is receiving, and how far it has verified.
     receiving: Option<Receiving>,
-    /// The digest at this node's snapshot floor.
-    ///
-    /// Held on the node rather than in the `LogDigest`, because it has to
-    /// outlive the crash that drops one — the entries below a compacted floor
-    /// are gone, so their cumulative hash cannot be recomputed and has to be
-    /// carried. A real node carries the same thing in its snapshot metadata.
-    snapshot_digest: (Index, u64),
     /// The node's disk. Held here as well as by the `Log`, because it has to
     /// outlive the crash that drops one: cloning gives another handle on the
     /// same bytes.
@@ -971,6 +975,11 @@ pub struct Stats {
     pub streams_resumed: u64,
     /// Streams that decoded and installed.
     pub streams_completed: u64,
+    /// Streams whose bytes all arrived and whose floor would not go down
+    /// durably, so nothing was adopted. Not a violation — the leader offers the
+    /// snapshot again — but counted, because a profile where every stream ends
+    /// this way has tested the give-up path and nothing else.
+    pub streams_abandoned: u64,
     // Reads. A read is three things — asked for, confirmed at an index, and
     // answered out of a store that has reached it — and each of them can fail
     // to happen. Counting all three is how a profile that turned reads on and
@@ -1216,7 +1225,6 @@ impl World {
                     last_checkpoint: 0,
                     checkpoint: None,
                     receiving: None,
-                    snapshot_digest: (0, 0),
                     alive: true,
                     epoch: 0,
                     tick_period,
@@ -1457,13 +1465,22 @@ impl World {
                     }
                 }
             }
-            while let Some(entry) = node.pending_apply.remove(&(node.sm.applied() + 1)) {
-                match apply_entry(node, &entry) {
-                    Ok(kind) => applied_kinds.push(kind),
-                    Err(why) => {
-                        apply_failure = Some(why);
-                        break;
-                    }
+            // The contiguous run, applied as one batch — the same call the
+            // daemon makes. Entry at a time would sweep a path production does
+            // not take, and the difference is not cosmetic: a batch is one
+            // atomic store write, so a crash cannot land in the middle of it,
+            // and every entry in it reads what the entries ahead of it wrote
+            // (ADR-035).
+            let mut run: Vec<Entry> = Vec::new();
+            let mut next = node.sm.applied() + 1;
+            while let Some(entry) = node.pending_apply.remove(&next) {
+                run.push(entry);
+                next += 1;
+            }
+            if !run.is_empty() {
+                match apply_run(node, &run) {
+                    Ok(kinds) => applied_kinds.extend(kinds),
+                    Err(why) => apply_failure = Some(why),
                 }
             }
             let applied = node.sm.applied();
@@ -1856,11 +1873,27 @@ impl World {
         let Some(node) = self.nodes.get_mut(&id) else {
             return;
         };
-        // The *log's* applied index, not the state machine's. They track each
-        // other, but the digest and the log are indexed by the first and mixing
-        // the two attaches a cumulative hash to an index the digest never
-        // described.
-        let applied = node.core.log().applied().min(node.sm.applied());
+        // The same two indices, and the same rule: a checkpoint is labelled with
+        // the index its bytes actually reflect, which is the state machine's.
+        //
+        // Taking the lower of the two and serialising the store as it stands
+        // produces a checkpoint that claims to be a snapshot at index N while
+        // holding everything through some M > N. Nothing catches it at the time:
+        // the core accepts the label, because it is at or below what the log has
+        // applied. It surfaces on whatever restores those bytes — this node on a
+        // restart, a follower on an install — as a node claiming an applied
+        // index whose state it does not hold.
+        //
+        // So the checkpoint waits until the two agree rather than splitting the
+        // difference. Labelling it with the state machine's index instead would
+        // be refused by `on_snapshot_taken`, correctly: the core will not compact
+        // past what its own log says has been applied. Waiting costs a turn, and
+        // `checkpoints_taken` is asserted non-zero, so a profile where the two
+        // never agree fails rather than quietly taking no snapshots.
+        if node.core.log().applied() != node.sm.applied() {
+            return;
+        }
+        let applied = node.sm.applied();
         if applied == 0 || applied.saturating_sub(node.last_checkpoint) < every {
             return;
         }
@@ -1881,7 +1914,6 @@ impl World {
         };
         node.checkpoint = Some((meta.clone(), node.sm.store().to_bytes(), log_digest));
         node.last_checkpoint = applied;
-        node.snapshot_digest = (applied, log_digest);
         let _ = node.core.step(Input::SnapshotTaken { meta });
         self.stats.checkpoints_taken += 1;
     }
@@ -2026,6 +2058,33 @@ impl World {
             }
         };
 
+        // The log's floor moves first, and durably, before the state machine
+        // adopts anything.
+        //
+        // The two are separate durable stores and a crash can land between
+        // them. In this order the worst case is a log whose floor moved while
+        // the state machine did not follow, and that node is simply offered the
+        // snapshot again. In the other order the crash leaves a state machine
+        // holding the leader's history and a log still holding this node's own —
+        // and because it is the *state machine's* applied index that a restart
+        // trusts (ADR-010), the node then replays its own abandoned entries on
+        // top of the leader's state. That was [KEEL-12](BUGS.md).
+        //
+        // The fsync is the whole of the fix. `install_snapshot` on its own only
+        // stages the record, and a stream that completes between two `Ready`s
+        // has no fsync of its own to ride on.
+        let landed = match node.log.as_mut() {
+            Some(log) => log.install_snapshot(&receiving.meta).is_ok() && log.sync().is_ok(),
+            None => false,
+        };
+        if !landed {
+            // Nothing is adopted. The staged record may or may not survive; a
+            // recovery that finds it comes up at the floor with no state to
+            // match it, and is offered the snapshot again either way.
+            self.stats.streams_abandoned += 1;
+            return;
+        }
+
         // The installed snapshot *is* this node's checkpoint from now on. A
         // node that treated it as transient would restart into an empty store
         // with a compacted log, and the entries that built the state below the
@@ -2046,7 +2105,6 @@ impl World {
         let discarded = node
             .digest
             .adopt_snapshot(receiving.meta.index, receiving.log_digest);
-        node.snapshot_digest = (receiving.meta.index, receiving.log_digest);
         node.last_checkpoint = receiving.meta.index;
         if !discarded.is_empty()
             && let Some(v) = self.oracle.check_rewrite(follower, &discarded)
@@ -2054,9 +2112,6 @@ impl World {
             self.violations.push(v);
         }
 
-        if let Some(log) = node.log.as_mut() {
-            let _ = log.install_snapshot(&receiving.meta);
-        }
         node.core.advance(Advance {
             ready_number: receiving.ready_number,
             persisted: None,
@@ -2157,8 +2212,51 @@ impl World {
         // that still holds the entries below it — a State Machine Safety
         // violation reported on correct code, which is the failure this whole
         // arrangement exists to avoid.
-        let (floor, floor_digest) = node.snapshot_digest;
-        node.digest = LogDigest::rebased(floor, floor_digest);
+        //
+        // But at the floor the *recovered log* has, not the one the harness
+        // remembered. The two can differ: the harness's record of the floor
+        // survives a crash and the log's `Snapshot` record may not, so a restart
+        // can find a log that still holds everything below a floor this node
+        // thought it had compacted past. Carrying the remembered floor there
+        // leaves the digest based above the log's own end — a state it cannot
+        // describe, and one it used to spin in rather than report.
+        //
+        // When they disagree the digest starts from nothing, which is right when
+        // the log came back uncompacted and is caught by
+        // `floor_without_a_digest` when it did not.
+        //
+        // The floor comes from the *checkpoint*, which is the one object that
+        // carries an index and the digest at that index together. The harness
+        // used to keep a second copy of the pair on the node, and the two
+        // drifted: a node whose recovered log floor was 40, holding a checkpoint
+        // at 40 with the right digest, rebased at 41 with a different one on the
+        // strength of the copy. From there the digest's base sat above the log's
+        // own end, which is a state it cannot describe — and used to spin in
+        // rather than report ([KEEL-18](BUGS.md)).
+        //
+        // A recovered floor of zero needs no digest at all: the log came back
+        // holding everything, so the chain is rebuilt from nothing. A floor the
+        // checkpoint cannot account for is left to `sync`, which reports it as a
+        // floor nobody carried — the right answer, because comparing from there
+        // would compare an invented number.
+        node.digest = match &checkpoint {
+            // At the checkpoint's own index, which is the highest point this
+            // node can carry a cumulative digest for. Not at the log's floor:
+            // the two are not the same number and need not be. A checkpoint at
+            // 80 over a log whose durable floor is still 40 is ordinary — the
+            // floor moves when an *install* writes a snapshot record, and a
+            // node that checkpointed itself wrote none — and the digest simply
+            // describes the log from 80 up, leaving 41..80 to the peers that
+            // still hold them.
+            Some((meta, _, log_digest)) if meta.index > 0 => {
+                LogDigest::rebased(meta.index, *log_digest)
+            }
+            // No checkpoint, so the log holds everything from index 1 and the
+            // chain is rebuilt from nothing. If it does not, `sync` says so:
+            // a floor nobody carried is a violation in its own right, because
+            // comparing from there would compare an invented number.
+            _ => LogDigest::new(),
+        };
         // Restored from the checkpoint, which is what survived. Everything
         // written since is gone with the memory that held it, and the log
         // replays it back from the checkpoint's index.
@@ -2481,9 +2579,6 @@ impl World {
         // over: continuing would compare a made-up number against real ones,
         // and the comparison would fail on correct code.
         let orphaned_floor = node.digest.floor_without_a_digest();
-        // Kept in step, so a later restart rebases at the floor this node
-        // actually has rather than at the one it had when it started.
-        node.snapshot_digest = node.digest.base();
         // A checkpoint is taken here, after the digest has been brought in line
         // with the log, and nowhere else. Taking one earlier reads a digest that
         // may still describe entries a truncation has since replaced — and the
@@ -2500,6 +2595,19 @@ impl World {
         // alternative — comparing whole stores between nodes — is the same
         // information at far greater cost.
         let state_digest = state_digest(&node.sm);
+        // And the index that *describes* that hash, which is the state
+        // machine's own applied index and not the log's.
+        //
+        // The two are not interchangeable, and treating them as though they
+        // were was [KEEL-11](BUGS.md). The state machine applies an entry and
+        // the core only learns of it on the next `advance`, so `sm.applied()`
+        // runs ahead of `log.applied()` — by one entry in the ordinary case and
+        // by dozens after a restart or a snapshot install. Handing the log's
+        // index to a check that was given the store's hash compares the store as
+        // of one index against the world as of an earlier one, and reports the
+        // difference as State Machine Safety: a violation of the most serious
+        // class there is, on code with nothing wrong with it.
+        let sm_applied = node.sm.applied();
         let became_leader = role == Role::Leader && !node.was_leader;
         let stopped_leading = role != Role::Leader && node.was_leader;
         node.was_leader = role == Role::Leader;
@@ -2604,10 +2712,16 @@ impl World {
         // Against the model first: it is the stronger check, and naming it in
         // the report is more use than "two nodes disagree" when all of them are
         // wrong in the same way.
-        if let Some(v) = self.oracle.check_against_model(id, applied, state_digest) {
+        if let Some(v) = self
+            .oracle
+            .check_against_model(id, sm_applied, state_digest)
+        {
             found.push(v);
         }
-        if let Some(v) = self.oracle.observe_applied_state(id, applied, state_digest) {
+        if let Some(v) = self
+            .oracle
+            .observe_applied_state(id, sm_applied, state_digest)
+        {
             self.violations.push(v);
         }
         if let Some(v) = self.oracle.observe_applied(id, applied, &digest) {

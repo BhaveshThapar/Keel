@@ -767,9 +767,29 @@ impl<F: Fs> DbInner<F> {
         // locks for the length of a scan would block every writer for as long
         // as the caller took to consume it, and a scan is bounded by `limit`
         // whereas a writer's patience is not.
+        //
+        // `limit` bounds the copy as well as the output, and that is not an
+        // optimisation. Copying the whole matching range and truncating the
+        // merge afterwards makes a bounded scan cost whatever the MemTable
+        // happens to hold — so a `scan(.., limit: 16)` on a busy store copies
+        // thousands of keys and values to return sixteen. The session table's
+        // expiry sweep does exactly that on every applied entry, and on this
+        // machine it was most of the leader's CPU under load
+        // ([KEEL-14](../../../BUGS.md)).
+        //
+        // Truncating each source is sound because each is already in key order:
+        // the merge emits at most `limit` items, each from one source, so an
+        // item lying beyond position `limit` within its own source has `limit`
+        // smaller-or-equal items ahead of it there and cannot be among the
+        // first `limit` of the merge.
         let mut sources: Vec<std::vec::IntoIter<crate::scan::Item>> = Vec::new();
         let from_memtable = |table: &MemTable| -> Vec<crate::scan::Item> {
-            table.range(start, end).cloned().map(Ok).collect()
+            table
+                .range(start, end)
+                .take(limit)
+                .cloned()
+                .map(Ok)
+                .collect()
         };
         sources.push(from_memtable(&self.active.read()).into_iter());
         if let Some(frozen) = self.frozen.read().clone() {

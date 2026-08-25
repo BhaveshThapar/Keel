@@ -34,12 +34,10 @@ fi
 
 IMAGE=keel-chaos-linux
 
-if ! command -v docker >/dev/null; then
-    echo "the clock nemesis needs Docker, and none is on the path" >&2
-    exit 1
-fi
-if ! docker info >/dev/null 2>&1; then
-    echo "the Docker daemon is not running" >&2
+# shellcheck source=scripts/lib/container.sh
+source "$(dirname "$0")/lib/container.sh"
+if ! container_detect; then
+    container_missing
     exit 1
 fi
 
@@ -49,8 +47,25 @@ OUT=results/chaos/clock-jump.txt
 mkdir -p "$(dirname "$OUT")"
 provenance_of "$OUT" || exit 1
 
-echo "building $IMAGE" >&2
-docker build -q -t "$IMAGE" -f scripts/docker/chaos-linux.Dockerfile scripts/docker >&2 || exit 1
+echo "building $IMAGE with $KEEL_CONTAINER" >&2
+if container_is_oci; then
+    "$KEEL_CONTAINER" build -q -t "$IMAGE" \
+        -f scripts/docker/chaos-linux.Dockerfile scripts/docker >&2 || exit 1
+    SIF=""
+else
+    # Apptainer has no daemon and no image store, so the image is a file. It is
+    # built beside the results rather than in the source tree: it is hundreds of
+    # megabytes and it is not an artifact anybody should commit.
+    SIF="${TMPDIR:-/tmp}/$IMAGE.sif"
+    if [ ! -f "$SIF" ]; then
+        "$KEEL_CONTAINER" build --fakeroot "$SIF" scripts/container/chaos-linux.def >&2 || {
+            echo "could not build $SIF. --fakeroot needs user namespaces; on a" >&2
+            echo "cluster that is a question for the administrators rather than" >&2
+            echo "something to work around." >&2
+            exit 1
+        }
+    fi
+fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/keel-chaos-clock-XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -124,17 +139,29 @@ INSIDE
     echo "                 mach_absolute_time reads, so libfaketime cannot move"
     echo "                 CLOCK_MONOTONIC there at all."
     echo "image:           $IMAGE (rust:1-slim-bookworm + faketime)"
+    container_header
     echo "sync mode:       durable"
     echo "nodes:           3"
     echo "seconds:         $SECS per seed"
     echo "seeds:           ${SEEDS[*]}"
     echo
 
-    docker run --rm \
-        -v "$PWD:/work" \
-        -v "$WORK/inside.sh:/inside.sh:ro" \
-        -w /work \
-        "$IMAGE" bash /inside.sh 2>&1
+    if container_is_oci; then
+        "$KEEL_CONTAINER" run --rm \
+            -v "$PWD:/work" \
+            -v "$WORK/inside.sh:/inside.sh:ro" \
+            -w /work \
+            "$IMAGE" bash /inside.sh 2>&1
+    else
+        # Apptainer binds rather than mounts, runs as the invoking user, and
+        # needs no privilege for any of this. `--cleanenv` so the host's
+        # environment does not leak in and quietly change what was built.
+        "$KEEL_CONTAINER" exec --cleanenv \
+            --bind "$PWD:/work" \
+            --bind "$WORK/inside.sh:/inside.sh" \
+            --pwd /work \
+            "$SIF" bash /inside.sh 2>&1
+    fi
     echo "$?" >"$TALLY"
 } 2>&1 | tee "$OUT"
 
