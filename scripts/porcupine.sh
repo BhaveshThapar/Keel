@@ -24,8 +24,9 @@ cd "$(dirname "$0")/.." || exit 1
 
 SEED="${1:-11}"
 SECS="${2:-40}"
-# How much of the history the control arm checks. See the note it prints.
-CONTROL_OPS="${3:-8000}"
+# How long the control arm's own run records for. It gets a history of its own
+# rather than a slice of the experiment's; see the note it prints.
+CONTROL_SECS="${3:-6}"
 
 # Homebrew's Go is not on a login shell's PATH under every launcher.
 GO="$(command -v go || echo /opt/homebrew/bin/go)"
@@ -58,7 +59,8 @@ echo 0 >"$TALLY"
     echo "clients:    8, each with 8 requests outstanding — so operations overlap"
     echo "            within a client as well as between them, which is what gives"
     echo "            the checker something to reorder"
-    echo "control:    the first $CONTROL_OPS operations; see the note above that arm"
+    echo "control:    a second, shorter run of its own — $CONTROL_SECS seconds of faults"
+    echo "            rather than a slice of the first; see the note above that arm"
     echo "seed:       $SEED"
     echo "seconds:    $SECS of faults, plus 8 for the recovery the history has to cover"
     echo "sync mode:  durable"
@@ -87,16 +89,40 @@ echo 0 >"$TALLY"
         echo
         echo "--- control: one read's result replaced, and it must be rejected ---"
         echo
-        echo "Over a prefix, and the reason is in tools/porcupine/main.go:"
-        echo "refuting a history costs what accepting one does not, because the"
-        echo "search has to be exhausted rather than satisfied. On the whole"
-        echo "depth-8 history the control ran the machine out of memory and was"
-        echo "killed partway through — which is neither a pass nor a failure, and"
-        echo "an arm that reports nothing cannot make the other arm evidence."
+        echo "On a history of its own, and both halves of that matter."
         echo
-        (cd tools/porcupine && "$GO" run . -history "$WORK/history.jsonl" \
-            -mutate -out "$WORK/mutated.jsonl" -limit "$CONTROL_OPS" -timeout 900s) 2>&1
-        mutated=$?
+        echo "Shorter, because refuting costs what accepting does not: to accept,"
+        echo "the checker finds one linearization and stops; to refute, it must"
+        echo "exhaust the space and show there is none. On the whole depth-8"
+        echo "history above, that ran the machine out of memory and the control"
+        echo "was killed partway through — neither a pass nor a failure, and an"
+        echo "arm that reports nothing cannot make the other arm evidence."
+        echo
+        echo "A *history*, not a prefix of the one above, because a prefix of a"
+        echo "concurrent history is not a history. At depth 8 a read can return a"
+        echo "value written by an operation invoked after it, so the write sits"
+        echo "later in a file ordered by invocation; cut the file and the read"
+        echo "survives while the write it observed does not. The checker then"
+        echo "rejects — for a reason that has nothing to do with the mutation, and"
+        echo "the arm reports success while demonstrating nothing. That was tried."
+        echo
+        "$(pwd)/target/release/keel-chaos" run \
+            --seed "$((SEED + 1))" \
+            --nodes 3 \
+            --secs "$CONTROL_SECS" \
+            --dir "$WORK/control" \
+            --server-bin "$(pwd)/target/release/keel-server" \
+            --kv-bin "$(pwd)/target/release/kv" \
+            --sync durable \
+            --history "$WORK/control.jsonl" 2>&1 | tail -3
+        if [ ! -s "$WORK/control.jsonl" ]; then
+            echo "FAIL the control run did not produce a history"
+            mutated=1
+        else
+            (cd tools/porcupine && "$GO" run . -history "$WORK/control.jsonl" \
+                -mutate -out "$WORK/mutated.jsonl" -timeout 900s) 2>&1
+            mutated=$?
+        fi
 
         echo
         echo "=============================================================="

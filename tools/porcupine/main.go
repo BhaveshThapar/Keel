@@ -195,6 +195,16 @@ func operations(entries []entry) (map[string][]porcupine.Operation, int, int) {
 // Change one read's returned value to something no write in the history ever
 // produced, so a checker that is doing its job has to reject it.
 //
+// **A prefix of a concurrent history is not a history.** Truncating one to make
+// this arm cheaper was tried and is unsound, and it fails in the direction that
+// hides it: at depth eight a read can return a value written by an operation
+// that was *invoked* after it, so the write sits later in a file ordered by
+// invocation. Cut the file and the read survives while the write it observed
+// does not — and the checker rejects the prefix for a reason that has nothing to
+// do with the mutation. It rejects, so the arm passes, so the demonstration
+// reports success while demonstrating nothing. The control is run against a
+// whole history recorded for it instead; see scripts/porcupine.sh.
+//
 // The key chosen is the one with the most operations, because a mutation on a
 // busy key is the hardest to detect: there are more orderings for a broken
 // result to hide in.
@@ -275,7 +285,6 @@ func main() {
 	doMutate := flag.Bool("mutate", false, "corrupt one read's result before checking; the checker must then reject")
 	out := flag.String("out", "", "with -mutate, where to write the corrupted history")
 	timeout := flag.Duration("timeout", 60*time.Second, "give up after this long")
-	limit := flag.Int("limit", 0, "check only the first N operations; 0 means all")
 	flag.Parse()
 
 	if *historyPath == "" {
@@ -288,24 +297,6 @@ func main() {
 		os.Exit(2)
 	}
 	fmt.Printf("history:   %s, %d entries\n", *historyPath, len(entries))
-
-	// A bounded prefix, for the control arm.
-	//
-	// Refuting a history and accepting one are not the same problem. To accept,
-	// the checker finds one linearization and stops. To refute, it must exhaust
-	// the space and show there is none — and on a history recorded at depth
-	// eight, exhausting it took more memory than the machine had. The control
-	// was killed by the kernel partway through the first key, which reports
-	// neither a pass nor a failure, and an arm that reports nothing cannot make
-	// the other arm evidence.
-	//
-	// So the control checks a prefix and says how long it is. The experiment
-	// arm still checks everything: accepting is the cheap direction, and it is
-	// the direction the real claim is in.
-	if *limit > 0 && *limit < len(entries) {
-		entries = entries[:*limit]
-		fmt.Printf("limited:   the first %d operations\n", len(entries))
-	}
 
 	mutatedAt := -1
 	if *doMutate {
