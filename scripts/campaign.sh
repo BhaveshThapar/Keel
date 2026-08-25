@@ -13,20 +13,27 @@
 # be refused should be refused in the second it starts rather than in the hour it
 # finishes.
 #
-# Usage: scripts/campaign.sh [mix] [rates] [seconds-per-run]
+# Usage: scripts/campaign.sh [mix] [rates] [seconds-per-run] [clients] [depth]
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 MIX="${1:-writes}"
-RATES="${2:-50,100,150,200,300,400}"
+RATES="${2:-200,400,800,1600,3200,6400}"
 SECS="${3:-6}"
-# Concurrency, and it is a knob that has to be stated. The client is blocking,
-# so this many requests are in flight at once and the achieved throughput can
-# never exceed clients divided by per-request latency — a ceiling that belongs
-# to the load generator, not the cluster. It is in the result's header for that
-# reason.
+# Senders, and it is a knob that has to be stated: this many threads offer load,
+# each with `DEPTH` requests outstanding, so the ceiling belonging to the load
+# generator is clients times depth divided by per-request latency. It is in the
+# result's header for that reason.
 CLIENTS="${4:-24}"
+# How many requests one sender keeps outstanding.
+#
+# The second half of the same knob. At depth 1 a sender cannot offer more than
+# one request per round trip, so achieved throughput is capped at clients divided
+# by per-request latency however fast the cluster is — and the number then says
+# as much about this harness as about the system (ADR-033). It is in the result's
+# header for the same reason `clients` is.
+DEPTH="${5:-16}"
 
 echo "building" >&2
 cargo build --release -p keel-bench -p keel-server >&2 || exit 1
@@ -42,6 +49,7 @@ trap 'rm -rf "$WORK"' EXIT
     --rates "$RATES" \
     --secs "$SECS" \
     --clients "$CLIENTS" \
+    --depth "$DEPTH" \
     --dir "$WORK" \
     --server-bin "$(pwd)/target/release/keel-server" \
     --sync durable \
