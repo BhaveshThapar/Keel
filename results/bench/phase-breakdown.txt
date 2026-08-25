@@ -1,7 +1,7 @@
 === where the time in a write goes ===
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
-commit: c6d7208
-date:   2026-08-25T06:10:55Z
+commit: 34bb3f2
+date:   2026-08-25T08:06:15Z
 
 nodes:       3 on one host over loopback
 senders:     24, each with 16 requests outstanding
@@ -20,24 +20,24 @@ own flush, and what is left of apply is real work — decoding, the
 session table, the store.
 
 --- durable (F_FULLFSYNC)
-  acknowledged 46207 of 46207 attempted in 12.2s -> 3802 ops/s
-  latency ms  p50 100.139  p90 182.452  p99 230.687  p999 256.901  max 284.953
+  acknowledged 45114 of 45114 attempted in 12.2s -> 3697 ops/s
+  latency ms  p50 98.042  p90 218.104  p99 239.075  p999 240.124  max 273.569
   late 0
-  46591 entries applied in 986 rounds = 47.3 per round
+  45498 entries applied in 974 rounds = 46.7 per round
   phase       total s    ms/round    us/entry
-  persist       2.903       2.944        62.3
-  send          0.011       0.011         0.2
-  apply         6.082       6.169       130.5
+  persist       3.072       3.154        67.5
+  send          0.012       0.012         0.3
+  apply         5.876       6.033       129.2
 
 --- none (writes neither ordered nor durable; NOT PUBLISHABLE)
-  acknowledged 54297 of 54297 attempted in 12.1s -> 4499 ops/s
-  latency ms  p50 91.226  p90 191.889  p99 228.590  p999 322.961  max 321.568
+  acknowledged 53100 of 53100 attempted in 12.1s -> 4392 ops/s
+  latency ms  p50 89.129  p90 200.278  p99 230.687  p999 316.670  max 316.746
   late 0
-  54681 entries applied in 1916 rounds = 28.5 per round
+  53484 entries applied in 1945 rounds = 27.5 per round
   phase       total s    ms/round    us/entry
-  persist       0.017       0.009         0.3
-  send          0.010       0.005         0.2
-  apply         6.536       3.411       119.5
+  persist       0.014       0.007         0.3
+  send          0.009       0.005         0.2
+  apply         6.150       3.162       115.0
 
 send is loopback. On a real network that column is where the round trip
 would appear, and it does not appear here — the same gap as "no

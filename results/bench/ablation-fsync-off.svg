@@ -1,7 +1,7 @@
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, kernel 25.2.0, aarch64
-commit: c6d7208
-date:   2026-08-25T06:07:34Z
-data:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-ablation-mD3Qb1 on apfs
+commit: 34bb3f2
+date:   2026-08-25T08:04:26Z
+data:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-ablation-qVe77p on apfs
 tier:   NOT PUBLISHABLE
 why:    sync mode is none, not durable: writes are neither ordered nor durable. A configuration that does not survive power loss may be measured and may not be published as a durability number
 recorded because: the fsync-off arm of the durability ablation: the same cluster with writes neither ordered nor made durable
@@ -28,26 +28,26 @@ recorded because: the fsync-off arm of the durability ablation: the same cluster
 <line x1="78.00" y1="28" x2="78.00" y2="384" stroke="#e4e4e4"/>
 <text x="78.00" y="400" text-anchor="middle" fill="#555555">0</text>
 <line x1="201.60" y1="28" x2="201.60" y2="384" stroke="#e4e4e4"/>
-<text x="201.60" y="400" text-anchor="middle" fill="#555555">2 000</text>
+<text x="201.60" y="400" text-anchor="middle" fill="#555555">10 000</text>
 <line x1="325.20" y1="28" x2="325.20" y2="384" stroke="#e4e4e4"/>
-<text x="325.20" y="400" text-anchor="middle" fill="#555555">4 000</text>
+<text x="325.20" y="400" text-anchor="middle" fill="#555555">20 000</text>
 <line x1="448.80" y1="28" x2="448.80" y2="384" stroke="#e4e4e4"/>
-<text x="448.80" y="400" text-anchor="middle" fill="#555555">6 000</text>
+<text x="448.80" y="400" text-anchor="middle" fill="#555555">30 000</text>
 <line x1="572.40" y1="28" x2="572.40" y2="384" stroke="#e4e4e4"/>
-<text x="572.40" y="400" text-anchor="middle" fill="#555555">8 000</text>
+<text x="572.40" y="400" text-anchor="middle" fill="#555555">40 000</text>
 <line x1="696.00" y1="28" x2="696.00" y2="384" stroke="#e4e4e4"/>
-<text x="696.00" y="400" text-anchor="middle" fill="#555555">10 000</text>
+<text x="696.00" y="400" text-anchor="middle" fill="#555555">50 000</text>
 <line x1="78" y1="384" x2="696" y2="384" stroke="#111111"/>
 <line x1="78" y1="28" x2="78" y2="384" stroke="#111111"/>
 <text x="387" y="418" text-anchor="middle" fill="#111111">throughput (ops/s)</text>
 <text x="14" y="206" text-anchor="middle" transform="rotate(-90 14 206)" fill="#111111">latency (ms)</text>
-<polyline fill="none" stroke="#1b6ca8" stroke-width="2" points="90.05,143.23 101.92,254.28 127.07,257.08 175.95,263.61 275.27,190.82 472.16,242.15"/>
-<circle cx="90.05" cy="143.23" r="3" fill="#1b6ca8"/>
-<circle cx="101.92" cy="254.28" r="3" fill="#1b6ca8"/>
-<circle cx="127.07" cy="257.08" r="3" fill="#1b6ca8"/>
-<circle cx="175.95" cy="263.61" r="3" fill="#1b6ca8"/>
-<circle cx="275.27" cy="190.82" r="3" fill="#1b6ca8"/>
-<circle cx="472.16" cy="242.15" r="3" fill="#1b6ca8"/>
+<polyline fill="none" stroke="#1b6ca8" stroke-width="2" points="87.59,206.69 97.85,151.63 117.58,189.89 157.09,163.76 236.11,174.96 393.69,165.62"/>
+<circle cx="87.59" cy="206.69" r="3" fill="#1b6ca8"/>
+<circle cx="97.85" cy="151.63" r="3" fill="#1b6ca8"/>
+<circle cx="117.58" cy="189.89" r="3" fill="#1b6ca8"/>
+<circle cx="157.09" cy="163.76" r="3" fill="#1b6ca8"/>
+<circle cx="236.11" cy="174.96" r="3" fill="#1b6ca8"/>
+<circle cx="393.69" cy="165.62" r="3" fill="#1b6ca8"/>
 <text x="556" y="42" fill="#1b6ca8">3 nodes, writes (100% update)</text>
 <text x="78" y="430" fill="#777777">NOT PUBLISHABLE — sync mode is none, not durable: writes are neither ordered nor durable. A configuration that does not survive power loss may be measured and may not be published as a durability number</text>
 </svg>

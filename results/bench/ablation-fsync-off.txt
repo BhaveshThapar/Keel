@@ -1,7 +1,7 @@
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, kernel 25.2.0, aarch64
-commit: c6d7208
-date:   2026-08-25T06:07:34Z
-data:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-ablation-mD3Qb1 on apfs
+commit: 34bb3f2
+date:   2026-08-25T08:04:26Z
+data:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-ablation-qVe77p on apfs
 tier:   NOT PUBLISHABLE
 why:    sync mode is none, not durable: writes are neither ordered nor durable. A configuration that does not survive power loss may be measured and may not be published as a durability number
 recorded because: the fsync-off arm of the durability ablation: the same cluster with writes neither ordered nor made durable
@@ -13,7 +13,7 @@ recorded because: the fsync-off arm of the durability ablation: the same cluster
 mix          writes (100% update)
 value        128 B
 key space    10000
-clients      24
+clients      64
 nodes        3
 tick         10 ms
 seconds      6 per run
@@ -21,12 +21,18 @@ repetitions  3 per rate, median reported
 
 offered   achieved      acked       p50       p99      p999       max   late
   ops/s      ops/s  /attempt        ms        ms        ms        ms
-    200        195    100.0%   132.645   135.266   136.315   135.584      0
-    400        387    100.0%    70.255    72.876    73.400    73.008      0
-    800        794    100.0%    67.633    71.303    71.303    71.338     12
-   1600       1585    100.0%    64.750    67.633    68.157    68.214    188
-   3200       3192    100.0%   100.663   108.528   111.673   123.915    540
-   6400       6378    100.0%    46.399    79.692   102.760   109.226   1416
+    800        776    100.0%    91.750    99.615   107.479   107.069      4
+   1600       1606    100.0%    89.653   130.548   130.548   130.644    220
+   3200       3202    100.0%   100.663   109.052   116.392   119.556    518
+   6400       6399    100.0%    93.323   123.732   124.781   124.926   1199
+  12800      12792    100.0%   115.343   117.441   119.538   120.956   2209
+  25600      25541    100.0%    78.643   122.683   145.752   168.926  32703  *
+
+*  the senders could not keep to this rate's schedule. The offered
+             *  column is a request rather than a fact on those rows, and the
+             *  achieved throughput says as much about the load generator as about
+             *  the cluster. They are printed rather than dropped because where a
+             *  harness stops keeping up is itself worth knowing.
 
 Percentiles are the upper edge of the histogram bucket a sample fell in,
          so they are never optimistic — and so a p99 can read slightly above the
