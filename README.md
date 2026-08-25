@@ -305,6 +305,27 @@ hardware and no commit behind it. Both run in CI.
   depend on yet — but a manifest with no description is a manifest nobody has
   read, whether or not it is ever uploaded.
 
+## Compatibility
+
+**v2.0.0 breaks the client wire, and a v1.0.0 client cannot talk to a v2.0.0
+node.** Every request and every answer is now wrapped in an envelope carrying a
+label, because a connection can hold many requests at once and the answers come
+back in whatever order they become true (ADR-033). There is no negotiation and
+no version byte: the two builds do not interoperate, and a mixed cluster would
+be a mixed cluster of clients rather than of nodes, since the peer protocol is
+unchanged.
+
+The Rust API breaks with it — `Endpoint::round_trip` takes a label,
+`Server::turn` reports whether it did anything, `StateMachine` grew
+`apply_batch` and the reads behind it. Nothing depends on these crates: they are
+not on a registry (see the last entry above), which is why a break here costs a
+version number and nothing else.
+
+What did **not** break: the on-disk log format, the state machine's store
+layout, and the peer protocol. A v1.0.0 node's data directory opens under
+v2.0.0 — the state machine gains one internal key for the expiry cursor, whose
+absence reads as "start at the beginning".
+
 ## Design
 
 [DESIGN.md](DESIGN.md) records the decisions and what each one costs. The

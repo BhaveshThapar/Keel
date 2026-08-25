@@ -24,3 +24,5 @@ under test.
 --- profile=snapshot-hunt nodes=5
 500 seeds x 60000 steps, 5 nodes, snapshot-hunt profile: 500 passed, 0 failed (mean 183 entries committed per run)
 --- profile=lease-drift nodes=3
+500 seeds x 60000 steps, 3 nodes, lease-drift profile: 500 passed, 0 failed (mean 4661 entries committed per run)
+--- profile=lease-drift nodes=5
