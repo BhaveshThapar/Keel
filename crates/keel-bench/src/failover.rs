@@ -63,6 +63,10 @@ impl Failover {
         Duration::from_nanos(self.latency.quantile(0.99))
     }
 
+    pub fn quantile(&self, q: f64) -> Duration {
+        Duration::from_nanos(self.latency.quantile(q))
+    }
+
     /// The median of the first half of the trials and of the second half.
     ///
     /// Two independent samples of the same distribution, which is the cheapest
@@ -117,12 +121,19 @@ impl Failover {
             "trials       {}\nrecovered    {}\nnot healthy  {} (discarded: the cluster was \
              not serving writes when the trial began)\ntimed out    {}\n\n\
              time to the first acknowledged write after the leader was killed\n\
-             median  {:.1} ms\np99     {:.1} ms\nmax     {:.1} ms\n{}",
+             p10     {:.1} ms\np50     {:.1} ms\np90     {:.1} ms\np99     {:.1} ms\n\
+             max     {:.1} ms\n\n\
+             The spread is the measurement, not noise around one. Failover here is\n\
+             bimodal — which node campaigns first decides which mode a trial lands\n\
+             in — so p10 and p90 say more about what a client sees than p50 does,\n\
+             and p50 is the one statistic that sits between the modes.\n{}",
             self.trials,
             self.recovered,
             self.not_healthy,
             self.timed_out,
+            self.quantile(0.10).as_secs_f64() * 1000.0,
             self.median().as_secs_f64() * 1000.0,
+            self.quantile(0.90).as_secs_f64() * 1000.0,
             self.p99().as_secs_f64() * 1000.0,
             self.latency.max() as f64 / 1_000_000.0,
             self.caveat(),
