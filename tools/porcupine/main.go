@@ -275,6 +275,7 @@ func main() {
 	doMutate := flag.Bool("mutate", false, "corrupt one read's result before checking; the checker must then reject")
 	out := flag.String("out", "", "with -mutate, where to write the corrupted history")
 	timeout := flag.Duration("timeout", 60*time.Second, "give up after this long")
+	limit := flag.Int("limit", 0, "check only the first N operations; 0 means all")
 	flag.Parse()
 
 	if *historyPath == "" {
@@ -287,6 +288,24 @@ func main() {
 		os.Exit(2)
 	}
 	fmt.Printf("history:   %s, %d entries\n", *historyPath, len(entries))
+
+	// A bounded prefix, for the control arm.
+	//
+	// Refuting a history and accepting one are not the same problem. To accept,
+	// the checker finds one linearization and stops. To refute, it must exhaust
+	// the space and show there is none — and on a history recorded at depth
+	// eight, exhausting it took more memory than the machine had. The control
+	// was killed by the kernel partway through the first key, which reports
+	// neither a pass nor a failure, and an arm that reports nothing cannot make
+	// the other arm evidence.
+	//
+	// So the control checks a prefix and says how long it is. The experiment
+	// arm still checks everything: accepting is the cheap direction, and it is
+	// the direction the real claim is in.
+	if *limit > 0 && *limit < len(entries) {
+		entries = entries[:*limit]
+		fmt.Printf("limited:   the first %d operations\n", len(entries))
+	}
 
 	mutatedAt := -1
 	if *doMutate {

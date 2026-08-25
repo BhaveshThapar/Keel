@@ -24,6 +24,8 @@ cd "$(dirname "$0")/.." || exit 1
 
 SEED="${1:-11}"
 SECS="${2:-40}"
+# How much of the history the control arm checks. See the note it prints.
+CONTROL_OPS="${3:-8000}"
 
 # Homebrew's Go is not on a login shell's PATH under every launcher.
 GO="$(command -v go || echo /opt/homebrew/bin/go)"
@@ -56,6 +58,7 @@ echo 0 >"$TALLY"
     echo "clients:    8, each with 8 requests outstanding — so operations overlap"
     echo "            within a client as well as between them, which is what gives"
     echo "            the checker something to reorder"
+    echo "control:    the first $CONTROL_OPS operations; see the note above that arm"
     echo "seed:       $SEED"
     echo "seconds:    $SECS of faults, plus 8 for the recovery the history has to cover"
     echo "sync mode:  durable"
@@ -83,8 +86,16 @@ echo 0 >"$TALLY"
 
         echo
         echo "--- control: one read's result replaced, and it must be rejected ---"
+        echo
+        echo "Over a prefix, and the reason is in tools/porcupine/main.go:"
+        echo "refuting a history costs what accepting one does not, because the"
+        echo "search has to be exhausted rather than satisfied. On the whole"
+        echo "depth-8 history the control ran the machine out of memory and was"
+        echo "killed partway through — which is neither a pass nor a failure, and"
+        echo "an arm that reports nothing cannot make the other arm evidence."
+        echo
         (cd tools/porcupine && "$GO" run . -history "$WORK/history.jsonl" \
-            -mutate -out "$WORK/mutated.jsonl" -timeout 900s) 2>&1
+            -mutate -out "$WORK/mutated.jsonl" -limit "$CONTROL_OPS" -timeout 900s) 2>&1
         mutated=$?
 
         echo
