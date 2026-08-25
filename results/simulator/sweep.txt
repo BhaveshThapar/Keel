@@ -18,3 +18,9 @@ under test.
 --- profile=read-hunt nodes=3
 500 seeds x 60000 steps, 3 nodes, read-hunt profile: 500 passed, 0 failed (mean 267 entries committed per run)
 --- profile=read-hunt nodes=5
+500 seeds x 60000 steps, 5 nodes, read-hunt profile: 500 passed, 0 failed (mean 240 entries committed per run)
+--- profile=snapshot-hunt nodes=3
+500 seeds x 60000 steps, 3 nodes, snapshot-hunt profile: 500 passed, 0 failed (mean 192 entries committed per run)
+--- profile=snapshot-hunt nodes=5
+500 seeds x 60000 steps, 5 nodes, snapshot-hunt profile: 500 passed, 0 failed (mean 183 entries committed per run)
+--- profile=lease-drift nodes=3

@@ -25,6 +25,26 @@ pub enum NodeError {
     /// would put this node's state machine out of step with its peers'.
     #[error("a committed entry is malformed at index {index}: {why}")]
     MalformedEntry { index: Index, why: String },
+    /// The core offered this host a snapshot to install, and this host does not
+    /// fetch snapshot bytes.
+    ///
+    /// `Advance::snapshot_installed` is a host telling the core "I have those
+    /// bytes now", and the core answers by moving the log's floor, commit index
+    /// and applied index to the snapshot's. A host that echoed the offer back
+    /// without fetching anything would mark entries applied that its state
+    /// machine never saw — silent loss, and of exactly the entries below the
+    /// floor that can no longer be replayed.
+    ///
+    /// Unreachable as this daemon stands, because it never compacts its log, so
+    /// no leader it runs ever offers a snapshot. It is an error rather than a
+    /// comment because the day compaction is turned on is the day the echo
+    /// becomes data loss, and a node that cannot serve correctly should stop.
+    #[error(
+        "the core offered a snapshot at index {index}, and this host does not fetch \
+         snapshot bytes. Acknowledging it would mark entries applied that were never \
+         applied"
+    )]
+    SnapshotUnsupported { index: Index },
 }
 
 /// What one turn of the loop did.
@@ -380,11 +400,19 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
 
         // 4. Report what got done. Watermarks, so a host that reordered its own
         //    work cannot desynchronise the core.
+        //
+        // Except a snapshot, which this host cannot report because it cannot
+        // fetch one. See `NodeError::SnapshotUnsupported`: acknowledging an
+        // install that did not happen is silent loss, and refusing is the only
+        // honest answer a host without the bytes can give.
+        if let Some(meta) = &ready.snapshot_to_install {
+            return Err(NodeError::SnapshotUnsupported { index: meta.index });
+        }
         self.core.advance(Advance {
             ready_number: ready.number,
             persisted,
             applied,
-            snapshot_installed: ready.snapshot_to_install,
+            snapshot_installed: None,
         });
         Ok(())
     }

@@ -3,13 +3,14 @@
 A Raft-replicated key-value store in Rust, built on an LSM storage engine, and
 verified by a deterministic simulator that replays any failure from a seed.
 
-> **Status: v1.0.0.** A three-node cluster of real processes serves traffic,
-> takes and streams snapshots, and survives being partitioned, paused, killed a
-> thousand times and clock-jumped — with the histories it produced checked by
-> Porcupine and by Knossos, and by control arms that prove those checkers reject
-> a corrupted one. Performance numbers exist and are **Exploratory tier**:
-> measured on a laptop, reproducible, and never headlined. What is *not* claimed
-> is listed below and is worth reading first.
+> **Status: v2.0.0.** A three-node cluster of real processes serves traffic and
+> survives being partitioned, paused, killed a thousand times and clock-jumped —
+> with the histories it produced checked by Porcupine and by Knossos, and by
+> control arms that prove those checkers reject a corrupted one. Performance
+> numbers exist and are **Exploratory tier**: measured on a laptop, reproducible,
+> and never headlined. What is *not* claimed is listed below and is worth reading
+> first — starting with snapshots, which the simulator drives end to end and the
+> daemon does not.
 
 ## What is here today
 
@@ -278,6 +279,18 @@ hardware and no commit behind it. Both run in CI.
   and Knossos check histories from real clusters. The simulator itself still
   checks only Raft's internal safety properties; it has no client and records no
   history.
+- **The daemon does not take or stream snapshots.** The machinery is real and
+  tested — `Outgoing`/`Incoming` chunk a checkpoint, resume from an interruption,
+  refuse a corrupt chunk and refuse to publish a partial transfer, and the
+  simulator drives the whole path under faults across 500 seeds a size. What is
+  missing is the wiring in [`keel-node`](crates/keel-node/)'s loop: it never
+  calls for a checkpoint, so its log is never compacted, so no leader it runs
+  ever offers a snapshot. A node that is nonetheless offered one now *stops*
+  rather than acknowledging an install it did not perform, because the core
+  answers such an acknowledgement by moving its applied index over entries the
+  state machine never saw. Until that wiring exists, a follower that falls
+  behind catches up by replication or not at all, and the 1 GB snapshot timing
+  BENCH.md calls "not measured" is not a measurement anybody can take.
 - **The Apptainer path in the container scripts has never been run.** The clock
   nemesis and the etcd baseline detect Docker, Podman or Apptainer, because a
   shared cluster gives users the third and not the first two. Docker is what the

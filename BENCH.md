@@ -256,12 +256,22 @@ only thing P26 is still missing, and it is not engineering.
   over HTTP/2; Keel stores in an LSM with group commit, where one fsync retires
   every batch queued behind it, and speaks length-prefixed frames over TCP.
   Different trades, not different amounts of effort.
-- **No flame graphs, and no fsync/RTT/apply breakdown** (PR-7). The harness has
-  no per-phase instrumentation, and adding it to the hot path to measure the hot
-  path is a decision that has not been taken.
-- **No 1 GB snapshot benchmark** (PR-6). Snapshot creation, streaming, interruption
-  and resumption are all exercised and asserted — see CORRECTNESS.md — but their
-  *timings* at that size have not been taken.
+- **No flame graphs, and no per-request fsync/RTT/apply breakdown** (PR-7). What
+  exists now is the batch: `keel_entries_appended_total ÷ keel_readies_total` says
+  how many operations one round of persist, replicate and apply served, and that
+  is the number that moved from 1.5 to 55 and took write throughput with it. What
+  is still missing is where the time inside a round goes, which needs timers in
+  the hot path — a decision that has not been taken, and one that is easier to
+  argue for now that the batch is large enough for the timers to be cheap per
+  operation.
+- **No 1 GB snapshot benchmark** (PR-6), and it is not a timing that is waiting
+  to be taken. Snapshot creation, streaming, interruption and resumption are all
+  exercised and asserted — see CORRECTNESS.md — but by the simulator and by
+  tests that drive the transfer types directly. The *daemon* never calls for a
+  checkpoint, so its log is never compacted, so no leader it runs ever offers a
+  snapshot: there is no cluster of real processes to time. Wiring that into
+  `keel-node`'s loop is a phase of work, not a measurement, and until it exists
+  this row is a missing feature rather than a missing number.
 - **No cross-node numbers.** Everything is localhost. Cross-node measurement is
   a different question and needs the same hardware the Reference tier does.
 - **The absolute throughput is low and the client is part of why.** A blocking
