@@ -14,3 +14,5 @@ under test.
 --- profile=chaos nodes=3
 500 seeds x 60000 steps, 3 nodes, chaos profile: 500 passed, 0 failed (mean 195 entries committed per run)
 --- profile=chaos nodes=5
+500 seeds x 60000 steps, 5 nodes, chaos profile: 500 passed, 0 failed (mean 197 entries committed per run)
+--- profile=read-hunt nodes=3

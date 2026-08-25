@@ -352,18 +352,46 @@ impl Pipeline {
     }
 
     /// Read one answer and decide what it means.
+    ///
+    /// The current endpoint first, and then any other that still holds a
+    /// connection. A redirect moves this pipeline to another node while answers
+    /// to requests already sent are still arriving on the one it left — and a
+    /// reader that only ever looked at the current endpoint would leave those to
+    /// time out, turning one leader change into a stall as long as the request
+    /// deadline.
+    ///
+    /// Only the current endpoint is *waited* on. The others are checked for
+    /// what has already arrived, because blocking on a node this pipeline is no
+    /// longer talking to would delay the one it is.
     fn read_one(&mut self, timeout: Duration) -> Result<Option<Completion>, ()> {
         if self.endpoints.is_empty() {
             return Err(());
         }
-        let index = self.next % self.endpoints.len();
-        let envelope = match self.endpoints[index].poll(timeout) {
-            Ok(Some(envelope)) => envelope,
-            Ok(None) => return Ok(None),
-            Err(_) => {
-                self.recover(None);
-                return Err(());
+        let start = self.next % self.endpoints.len();
+        let mut envelope = None;
+        for offset in 0..self.endpoints.len() {
+            let index = (start + offset) % self.endpoints.len();
+            if offset > 0 && !self.endpoints[index].is_connected() {
+                continue;
             }
+            let wait = if offset == 0 { timeout } else { Duration::ZERO };
+            match self.endpoints[index].poll(wait) {
+                Ok(Some(found)) => {
+                    envelope = Some(found);
+                    break;
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    if offset == 0 {
+                        self.recover(None);
+                        return Err(());
+                    }
+                    self.endpoints[index].disconnect();
+                }
+            }
+        }
+        let Some(envelope) = envelope else {
+            return Ok(None);
         };
         let id = envelope.id;
         match envelope.body {
