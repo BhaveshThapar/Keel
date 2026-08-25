@@ -19,13 +19,20 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 MIX="${1:-writes}"
-RATES="${2:-200,400,800,1600,3200,6400}"
+RATES="${2:-800,1600,3200,6400,12800,25600}"
 SECS="${3:-6}"
 # Senders, and it is a knob that has to be stated: this many threads offer load,
 # each with `DEPTH` requests outstanding, so the ceiling belonging to the load
 # generator is clients times depth divided by per-request latency. It is in the
 # result's header for that reason.
-CLIENTS="${4:-24}"
+#
+# Sized from a probe rather than guessed. At 24 senders and depth 16 the curve
+# flattened at about 6,000 a second and the generator was already falling behind
+# its schedule there — so that number was the harness. At 64 and 32 the same
+# cluster tracks the offered rate to 12,800 and knees above it, which is the
+# cluster. A campaign whose top row is flagged as late is measuring the wrong
+# thing, and the flag is the only reason anyone would know.
+CLIENTS="${4:-64}"
 # How many requests one sender keeps outstanding.
 #
 # The second half of the same knob. At depth 1 a sender cannot offer more than
@@ -33,7 +40,7 @@ CLIENTS="${4:-24}"
 # by per-request latency however fast the cluster is — and the number then says
 # as much about this harness as about the system (ADR-033). It is in the result's
 # header for the same reason `clients` is.
-DEPTH="${5:-16}"
+DEPTH="${5:-32}"
 
 echo "building" >&2
 cargo build --release -p keel-bench -p keel-server >&2 || exit 1

@@ -22,10 +22,10 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 MIX="${1:-writes}"
-RATES="${2:-200,400,800,1600,3200,6400}"
+RATES="${2:-800,1600,3200,6400,12800,25600}"
 SECS="${3:-6}"
-CLIENTS="${4:-24}"
-DEPTH="${5:-16}"
+CLIENTS="${4:-64}"
+DEPTH="${5:-32}"
 
 echo "building" >&2
 cargo build --quiet --release -p keel-bench -p keel-server >&2 || exit 1
