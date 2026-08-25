@@ -1,7 +1,7 @@
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, kernel 25.2.0, aarch64
-commit: d56ef42
-date:   2026-08-25T07:44:08Z
-data:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-failover-o96ku1 on apfs
+commit: 54caa25
+date:   2026-08-25T07:51:45Z
+data:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-failover-vzNg8y on apfs
 tier:   Exploratory — not a headline number; see BENCH.md for what that means
 sync:   durable (F_FULLSYNC or fdatasync, per platform)
 runs:   3
@@ -14,18 +14,25 @@ nodes        3
 tick         30 ms
 sync         durable
 
-trials       400
-recovered    398
-not healthy  2 (discarded: the cluster was not serving writes when the trial began)
+trials       600
+recovered    599
+not healthy  1 (discarded: the cluster was not serving writes when the trial began)
 timed out    0
 
 time to the first acknowledged write after the leader was killed
-median  796.9 ms
-p99     1249.9 ms
-max     1643.0 ms
+p10     411.0 ms
+p50     805.3 ms
+p90     1224.7 ms
+p99     1258.3 ms
+max     1642.2 ms
+
+The spread is the measurement, not noise around one. Failover here is
+bimodal — which node campaigns first decides which mode a trial lands
+in — so p10 and p90 say more about what a client sees than p50 does,
+and p50 is the one statistic that sits between the modes.
 
 ** the median is not stable at this trial count: the first half of
-** the trials says 807.2 ms and the second says 617.1 ms. Failover time
+** the trials says 622.3 ms and the second says 809.3 ms. Failover time
 ** here is bimodal, so a median between the modes moves with the draw.
 ** Run more trials; the number above is not one to quote.
 
