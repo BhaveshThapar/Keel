@@ -2,6 +2,17 @@
 #
 # How long the cluster takes to serve a write again after its leader dies.
 #
+# PR-5 asks for at least a hundred trials. A hundred is not enough, and finding
+# that out cost a published number: this distribution is *bimodal* — which of two
+# nodes campaigns first decides which mode a trial lands in — so a median between
+# the modes moves with the draw. The committed figure was 633 ms for two releases
+# on a hundred-odd trials; four hundred say 805 ms, and say it from the fortieth
+# trial onward. The same four hundred against the previous release say 817 ms, so
+# nothing regressed — the old number was simply the wrong side of the fence.
+#
+# The count is still checked, and the report now also checks the median against
+# itself: the first half of the trials against the second.
+#
 # PR-5 asks for at least a hundred trials, and the count is the requirement
 # rather than a suggestion: failover time is dominated by a *randomised* election
 # timeout — that is what stops two candidates splitting the vote forever — so ten
@@ -17,7 +28,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
-TRIALS="${1:-100}"
+TRIALS="${1:-400}"
 TICK_MS="${2:-30}"
 
 echo "building" >&2

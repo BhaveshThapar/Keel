@@ -47,6 +47,11 @@ pub struct Failover {
     pub not_healthy: usize,
     pub timed_out: usize,
     pub latency: Histogram,
+    /// Every recovery, in the order the trials ran.
+    ///
+    /// Kept as well as the histogram so the median can be checked against
+    /// itself. The histogram cannot answer "is this number stable"; a list can.
+    pub recoveries: Vec<Duration>,
 }
 
 impl Failover {
@@ -58,11 +63,51 @@ impl Failover {
         Duration::from_nanos(self.latency.quantile(0.99))
     }
 
+    /// The median of the first half of the trials and of the second half.
+    ///
+    /// Two independent samples of the same distribution, which is the cheapest
+    /// honest check on whether the median is a number or a coincidence.
+    pub fn median_halves(&self) -> Option<(Duration, Duration)> {
+        if self.recoveries.len() < 4 {
+            return None;
+        }
+        let mid = self.recoveries.len() / 2;
+        Some((
+            median_of(&self.recoveries[..mid]),
+            median_of(&self.recoveries[mid..]),
+        ))
+    }
+
+    /// Whether the two halves agree closely enough for the median to be worth
+    /// quoting.
+    ///
+    /// Ten percent, and the reason for a check at all rather than a trial count
+    /// is that a trial count was the check and it was the wrong one. Failover
+    /// time here is *bimodal* — which of two nodes campaigns first decides
+    /// which mode a trial lands in — so the median sits on the fence between
+    /// them and a hundred trials can put it on either side. The published
+    /// number was 633 ms for two releases on that basis; four hundred trials
+    /// say 805 ms, and say it from the fortieth trial onward.
+    pub fn median_is_stable(&self) -> bool {
+        match self.median_halves() {
+            Some((first, second)) => {
+                let (lo, hi) = if first <= second {
+                    (first, second)
+                } else {
+                    (second, first)
+                };
+                hi.as_secs_f64() <= lo.as_secs_f64() * 1.10
+            }
+            None => false,
+        }
+    }
+
     /// Whether enough trials produced a measurement for the percentiles to be
     /// worth quoting.
     ///
     /// A p99 over eleven usable trials is the maximum wearing a percentile's
-    /// clothes.
+    /// clothes. The count is necessary and — see `median_is_stable` — nothing
+    /// like sufficient.
     pub fn has_enough_trials(&self) -> bool {
         self.recovered >= 100
     }
@@ -80,15 +125,45 @@ impl Failover {
             self.median().as_secs_f64() * 1000.0,
             self.p99().as_secs_f64() * 1000.0,
             self.latency.max() as f64 / 1_000_000.0,
-            if self.has_enough_trials() {
-                ""
-            } else {
-                "\n** fewer than 100 usable trials: failover time is dominated by a\n\
-                 ** randomised election timeout, so these percentiles describe the\n\
-                 ** draw rather than the system.\n"
-            },
+            self.caveat(),
         )
     }
+
+    /// What is wrong with these numbers, if anything.
+    fn caveat(&self) -> String {
+        if !self.has_enough_trials() {
+            return "\n** fewer than 100 usable trials: failover time is dominated by a\n\
+                    ** randomised election timeout, so these percentiles describe the\n\
+                    ** draw rather than the system.\n"
+                .into();
+        }
+        match self.median_halves() {
+            Some((first, second)) if !self.median_is_stable() => format!(
+                "\n** the median is not stable at this trial count: the first half of\n\
+                 ** the trials says {:.1} ms and the second says {:.1} ms. Failover time\n\
+                 ** here is bimodal, so a median between the modes moves with the draw.\n\
+                 ** Run more trials; the number above is not one to quote.\n",
+                first.as_secs_f64() * 1000.0,
+                second.as_secs_f64() * 1000.0,
+            ),
+            Some((first, second)) => format!(
+                "\nthe median is stable: {:.1} ms over the first half of the trials and\n\
+                 {:.1} ms over the second. That check is here because the count alone was\n\
+                 not enough — this distribution is bimodal and a hundred trials put the\n\
+                 median on either side of the fence.\n",
+                first.as_secs_f64() * 1000.0,
+                second.as_secs_f64() * 1000.0,
+            ),
+            None => String::new(),
+        }
+    }
+}
+
+/// The median of a slice, without disturbing it.
+fn median_of(values: &[Duration]) -> Duration {
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    sorted[sorted.len() / 2]
 }
 
 /// Is the cluster serving writes right now?
@@ -150,6 +225,7 @@ pub fn trial(
 /// Fold trials into a report.
 pub fn summarise(trials: &[Trial]) -> Failover {
     let mut latency = Histogram::new();
+    let mut recoveries = Vec::new();
     let mut recovered = 0;
     let mut not_healthy = 0;
     let mut timed_out = 0;
@@ -157,6 +233,7 @@ pub fn summarise(trials: &[Trial]) -> Failover {
         match t {
             Trial::Recovered(d) => {
                 recovered += 1;
+                recoveries.push(*d);
                 latency.record(d.as_nanos() as u64);
             }
             Trial::NotHealthyBefore => not_healthy += 1,
@@ -169,12 +246,52 @@ pub fn summarise(trials: &[Trial]) -> Failover {
         not_healthy,
         timed_out,
         latency,
+        recoveries,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The check that replaced a trial count.
+    ///
+    /// A hundred trials of a bimodal distribution can put the median on either
+    /// side of the fence, and the count cannot tell. Two halves that disagree
+    /// can.
+    #[test]
+    fn a_median_that_moves_between_the_halves_is_reported_as_unstable() {
+        let bimodal: Vec<Trial> = (0..200)
+            .map(|i| {
+                // The first half mostly lands in the low mode, the second half
+                // mostly in the high one — which is what a draw that happens to
+                // favour one node early looks like.
+                let ms = if (i < 100) == (i % 3 != 0) { 600 } else { 900 };
+                Trial::Recovered(Duration::from_millis(ms))
+            })
+            .collect();
+        let summary = summarise(&bimodal);
+        assert!(summary.has_enough_trials(), "the count says it is fine");
+        assert!(
+            !summary.median_is_stable(),
+            "a median that moves between the halves was called stable"
+        );
+        assert!(summary.render().contains("not stable"));
+    }
+
+    /// And a distribution that is not bimodal reports stable, with both halves
+    /// printed so a reader can see the check happened rather than trust it.
+    #[test]
+    fn a_median_that_holds_across_the_halves_is_reported_as_stable() {
+        let steady: Vec<Trial> = (0..200)
+            .map(|i| Trial::Recovered(Duration::from_millis(800 + (i % 7) as u64)))
+            .collect();
+        let summary = summarise(&steady);
+        assert!(summary.median_is_stable());
+        let rendered = summary.render();
+        assert!(rendered.contains("the median is stable"));
+        assert!(!rendered.contains("not stable"));
+    }
 
     #[test]
     fn a_summary_counts_each_outcome_and_only_times_the_recoveries() {
