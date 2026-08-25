@@ -60,8 +60,17 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/keel-etcd-XXXXXX")"
 BENCH="$WORK/benchmark"
 trap 'docker rm -f keel-etcd-baseline >/dev/null 2>&1; rm -rf "$WORK"' EXIT
 
-echo "building etcd's benchmark tool" >&2
-GOBIN="$WORK" "$GO" install "go.etcd.io/etcd/v3/tools/benchmark@$ETCD_VERSION" >&2 || {
+# Built from a clone rather than with `go install`, and not by choice: etcd's
+# go.mod carries replace directives, so `go install <module>@<version>` refuses
+# outright. Cloning at the tag and building inside the tree is the supported
+# path, and it also pins the tool to exactly the etcd being measured — a
+# benchmark tool from a different version is a different benchmark.
+echo "building etcd's own benchmark tool at $ETCD_VERSION" >&2
+git clone -q --depth 1 --branch "$ETCD_VERSION" https://github.com/etcd-io/etcd "$WORK/etcd" >&2 || {
+    echo "could not clone etcd $ETCD_VERSION" >&2
+    exit 1
+}
+(cd "$WORK/etcd/tools/benchmark" && "$GO" build -o "$BENCH" .) >&2 || {
     echo "could not build etcd's benchmark tool" >&2
     exit 1
 }
@@ -114,8 +123,27 @@ done
     echo
     "$BENCH" --endpoints=http://127.0.0.1:2379 --conns=1 --clients="$CLIENTS" \
         put --key-size=16 --sequential-keys --total="$TOTAL" --val-size="$VALUE_BYTES" 2>&1 |
-        grep -vE '^\s*$' | tail -20
+        grep -vE '^\s*$'
     echo
+    echo "--- the asymmetry that dominates this comparison"
+    echo
+    echo "etcd here is fsyncing inside a Linux virtual machine on a macOS host."
+    echo "Keel is fsyncing natively with F_FULLFSYNC, which is the only primitive"
+    echo "on this platform that actually forces a drive cache flush — fdatasync on"
+    echo "Linux, and every fsync inside a Docker Desktop VM, may return once the"
+    echo "write reaches the host's page cache."
+    echo
+    echo "So the two sides are not making the same promise, and the gap below is"
+    echo "mostly that. A durability number compared against a number that may not"
+    echo "be durable is not a comparison of two systems; it is a comparison of two"
+    echo "definitions. The same script on Linux hardware, where both sides use the"
+    echo "same primitive against the same device, is the run that would settle it."
+    echo
+    echo "The honest internal control is Keel's own fsync-off arm:"
+    echo "results/bench/ablation-fsync-off.txt, where the same cluster with writes"
+    echo "neither ordered nor durable does four times the throughput at a quarter"
+    echo "of the latency. That is the cost of the promise, measured on one machine"
+    echo "with one variable changed."
 } | tee "$OUT"
 
 echo

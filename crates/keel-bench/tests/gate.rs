@@ -6,12 +6,32 @@
 use keel_bench::{Admitted, Environment, Publishable, Refusal, Tier, write_result};
 use keel_log::SyncMode;
 
+/// The real host, with the tree's cleanliness pinned.
+///
+/// Every other field is probed, because a gate tested against a fabricated host
+/// is a gate tested against nothing. The one field that is *not* taken from
+/// reality is `tree_modified`: it is true whenever somebody is part-way through
+/// a change, and a test suite that failed on a work-in-progress tree would be
+/// turned off long before it caught anything. That the field is populated at
+/// all is asserted separately, and the refusal itself is covered by a unit test
+/// against a fabricated environment.
+fn probed(dir: &std::path::Path) -> Environment {
+    let mut env = Environment::probe(dir).expect("this host can be probed");
+    assert!(
+        !env.commit.is_empty(),
+        "the commit was not determined, so a result could not name what ran"
+    );
+    assert!(!env.date.is_empty(), "the date was not determined");
+    env.tree_modified = false;
+    env
+}
+
 /// The gate, against the host this actually runs on rather than a fabricated
 /// one.
 #[test]
 fn this_host_can_produce_an_exploratory_result() {
     let dir = tempfile::tempdir().unwrap();
-    let env = Environment::probe(dir.path()).expect("this host can be probed");
+    let env = probed(dir.path());
     let exploratory =
         Publishable::check(&env, Tier::Exploratory, 3).expect("a stated durable host passes");
     assert!(!exploratory.tier().may_be_headlined());
@@ -27,7 +47,7 @@ fn this_host_can_produce_an_exploratory_result() {
 #[test]
 fn the_tier_is_a_claim_the_caller_makes_and_the_gate_records() {
     let dir = tempfile::tempdir().unwrap();
-    let env = Environment::probe(dir.path()).unwrap();
+    let env = probed(dir.path());
     assert!(Publishable::check(&env, Tier::Reference, 3).is_ok());
 }
 
@@ -35,7 +55,7 @@ fn the_tier_is_a_claim_the_caller_makes_and_the_gate_records() {
 #[test]
 fn tmpfs_and_zero_fsync_are_refused_and_their_controls_are_admitted() {
     let dir = tempfile::tempdir().unwrap();
-    let mut env = Environment::probe(dir.path()).expect("probe");
+    let mut env = probed(dir.path());
 
     // Zero fsync, on a real disk.
     let refusal = Publishable::check_with_sync(&env, Tier::Exploratory, SyncMode::None, 3)
@@ -77,7 +97,7 @@ fn tmpfs_and_zero_fsync_are_refused_and_their_controls_are_admitted() {
 #[test]
 fn a_result_cannot_be_written_outside_the_bench_directory() {
     let dir = tempfile::tempdir().unwrap();
-    let env = Environment::probe(dir.path()).unwrap();
+    let env = probed(dir.path());
     let p = Publishable::check(&env, Tier::Exploratory, 3).unwrap();
     for bad in ["../elsewhere.txt", "/tmp/anywhere.txt", "sub/dir.txt"] {
         assert!(

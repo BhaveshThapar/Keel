@@ -19,8 +19,14 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 MIX="${1:-writes}"
-RATES="${2:-200,500,1000,2000,4000,6000}"
+RATES="${2:-50,100,150,200,300,400}"
 SECS="${3:-6}"
+# Concurrency, and it is a knob that has to be stated. The client is blocking,
+# so this many requests are in flight at once and the achieved throughput can
+# never exceed clients divided by per-request latency — a ceiling that belongs
+# to the load generator, not the cluster. It is in the result's header for that
+# reason.
+CLIENTS="${4:-24}"
 
 echo "building" >&2
 cargo build --release -p keel-bench -p keel-server >&2 || exit 1
@@ -35,6 +41,7 @@ trap 'rm -rf "$WORK"' EXIT
     --mix "$MIX" \
     --rates "$RATES" \
     --secs "$SECS" \
+    --clients "$CLIENTS" \
     --dir "$WORK" \
     --server-bin "$(pwd)/target/release/keel-server" \
     --sync durable \

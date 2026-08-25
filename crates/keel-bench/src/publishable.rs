@@ -65,6 +65,14 @@ pub enum Refusal {
          without spread invites a comparison it cannot support"
     )]
     TooFewRuns(usize),
+    #[error(
+        "the working tree is modified, so the commit this names is not the code that \
+         ran. A number that cannot identify what produced it is not reproducible, which \
+         is the same failure as an unstated CPU"
+    )]
+    TreeModified,
+    #[error("the commit could not be determined, so nothing here can be attributed")]
+    CommitUnknown,
 }
 
 /// How many independent repetitions a published number needs.
@@ -122,6 +130,12 @@ impl Publishable {
             }
             crate::Filesystem::Unknown => return Err(Refusal::FilesystemUnknown),
             crate::Filesystem::Durable(_) => {}
+        }
+        if environment.commit.is_empty() {
+            return Err(Refusal::CommitUnknown);
+        }
+        if environment.tree_modified {
+            return Err(Refusal::TreeModified);
         }
         if sync_mode != SyncMode::Durable {
             let (name, why) = sync_mode_name(sync_mode);
@@ -226,6 +240,9 @@ mod tests {
             arch: "aarch64".into(),
             filesystem: Filesystem::Durable("apfs".into()),
             data_dir: "/data".into(),
+            commit: "abc1234".into(),
+            tree_modified: false,
+            date: "2026-01-01T00:00:00Z".into(),
         }
     }
 
@@ -260,6 +277,24 @@ mod tests {
                 "{mode:?} produced {outcome:?}"
             );
         }
+    }
+
+    /// A number that cannot say which code produced it is not reproducible.
+    #[test]
+    fn a_modified_tree_and_an_unknown_commit_are_both_refused() {
+        let mut env = durable_host();
+        env.tree_modified = true;
+        assert_eq!(
+            Publishable::check(&env, Tier::Exploratory, 3),
+            Err(Refusal::TreeModified)
+        );
+
+        let mut env = durable_host();
+        env.commit = String::new();
+        assert_eq!(
+            Publishable::check(&env, Tier::Exploratory, 3),
+            Err(Refusal::CommitUnknown)
+        );
     }
 
     #[test]

@@ -181,6 +181,7 @@ number: a gate added afterwards is a gate that has already been bypassed once.
 | A run with fsync off is refused | `publishable::tests::a_run_without_fsync_is_refused`, for both `barrier` and `none` | enforced |
 | A run on hardware nobody stated is refused | `publishable::tests::a_host_nobody_described_is_refused` | enforced |
 | Fewer than three repetitions is refused | `publishable::tests::one_run_is_refused_and_three_is_the_floor` | enforced |
+| A run from a modified tree, or one whose commit is unknown, is refused | `publishable::tests::a_modified_tree_and_an_unknown_commit_are_both_refused` — a number that cannot name the code that produced it is not reproducible, which is the same failure as an unstated CPU | enforced |
 | …and the ablations those refusals name are still recordable, with the reason stamped in | `publishable::tests::an_admitted_run_carries_the_reason_it_cannot_be_published`; `gate::tmpfs_and_zero_fsync_are_refused_and_their_controls_are_admitted` | enforced |
 | Nothing reaches `results/bench/` without evidence | `Evidence` is sealed to two types, so a third way to satisfy it will not compile; `gate::a_result_cannot_be_written_outside_the_bench_directory` covers the part the type system does not express | enforced |
 | An Exploratory result says so above its numbers, not only in its header | `record::tests::an_unheadlineable_result_repeats_the_qualifier_above_the_numbers` | enforced |

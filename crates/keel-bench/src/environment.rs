@@ -51,6 +51,56 @@ pub struct Environment {
     /// Where the run's data directory was, so the filesystem above is
     /// attributable to something.
     pub data_dir: String,
+    /// The commit this measured, and whether the tree it ran from matched it.
+    ///
+    /// A number that cannot name the code it measured is not reproducible, and
+    /// a number taken from a modified tree names a commit that is not what ran.
+    /// Both are the same failure as an unstated CPU, so they live here and are
+    /// checked in the same place.
+    pub commit: String,
+    pub tree_modified: bool,
+    /// When, in UTC.
+    pub date: String,
+}
+
+/// What `git` says about the tree a measurement ran from.
+fn git_provenance() -> (String, bool) {
+    let commit = run("git", &["rev-parse", "--short", "HEAD"]).unwrap_or_default();
+    // `results/` is excluded for the reason scripts/lib/provenance.sh gives: a
+    // run that writes several artifacts would otherwise have every file after
+    // the first report a modified tree, because the earlier ones had just been
+    // written.
+    let staged = run(
+        "git",
+        &[
+            "diff",
+            "--quiet",
+            "--cached",
+            "--",
+            ".",
+            ":(exclude)results",
+        ],
+    );
+    let unstaged = run("git", &["diff", "--quiet", "--", ".", ":(exclude)results"]);
+    let untracked = run(
+        "git",
+        &[
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "--",
+            ".",
+            ":(exclude)results",
+        ],
+    )
+    .unwrap_or_default();
+    let modified = staged.is_none() || unstaged.is_none() || !untracked.trim().is_empty();
+    (commit, modified)
+}
+
+/// UTC, to the second, without pulling in a date library.
+fn utc_now() -> String {
+    run("date", &["-u", "+%Y-%m-%dT%H:%M:%SZ"]).unwrap_or_default()
 }
 
 impl Environment {
@@ -69,6 +119,9 @@ impl Environment {
             arch: String::new(),
             filesystem: Filesystem::Unknown,
             data_dir: String::new(),
+            commit: String::new(),
+            tree_modified: false,
+            date: String::new(),
         }
     }
 
@@ -84,7 +137,11 @@ impl Environment {
     /// Read the host, and the filesystem under `data_dir`.
     pub fn probe(data_dir: impl AsRef<Path>) -> Option<Self> {
         let data_dir = data_dir.as_ref();
+        let (commit, tree_modified) = git_provenance();
         Some(Self {
+            commit,
+            tree_modified,
+            date: utc_now(),
             cpu: cpu_model()?,
             cores: std::thread::available_parallelism().ok()?.get(),
             memory_gib: memory_gib()?,
@@ -99,13 +156,23 @@ impl Environment {
     /// The header line a result file carries.
     pub fn render(&self) -> String {
         format!(
-            "host:   {}, {} cores, {} GiB, {}, kernel {}, {}\ndata:   {} on {}",
+            "host:   {}, {} cores, {} GiB, {}, kernel {}, {}\n\
+             commit: {}{}\n\
+             date:   {}\n\
+             data:   {} on {}",
             self.cpu,
             self.cores,
             self.memory_gib,
             self.os,
             self.kernel,
             self.arch,
+            self.commit,
+            if self.tree_modified {
+                " (working tree modified)"
+            } else {
+                ""
+            },
+            self.date,
             self.data_dir,
             self.filesystem.name(),
         )

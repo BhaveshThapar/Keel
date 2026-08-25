@@ -273,6 +273,26 @@ pub fn run(
                     let mut due = started;
                     while !stop.load(Ordering::Relaxed) && due < deadline {
                         let now = Instant::now();
+                        // The run ends on the wall clock, not on the schedule.
+                        //
+                        // A saturated sender falls behind its schedule without
+                        // bound, so a loop that insisted on issuing every
+                        // request would run for as long as the backlog took —
+                        // ten minutes for a six-second run, with a "duration"
+                        // that meant nothing. What is owed at that point is not
+                        // discarded: every request that was due and never
+                        // issued is counted as late, which is exactly the
+                        // coordinated omission the schedule exists to make
+                        // visible.
+                        if now >= deadline {
+                            let owed = (deadline.saturating_duration_since(due).as_nanos()
+                                / interval.as_nanos().max(1))
+                                as u64;
+                            if owed > 0 {
+                                late.fetch_add(owed, Ordering::Relaxed);
+                            }
+                            break;
+                        }
                         if now < due {
                             std::thread::sleep(due - now);
                         } else if now - due > interval {

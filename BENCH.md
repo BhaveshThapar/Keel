@@ -121,6 +121,88 @@ scripts/etcd-baseline.sh
 scripts/failover.sh
 ```
 
+## What was measured
+
+Every number here is **Exploratory tier**: an Apple M2 Pro laptop, macOS,
+`F_FULLFSYNC`, three nodes on one host over loopback. Reproducible, and not a
+claim about how fast Keel is.
+
+### Writes, 128-byte values, three nodes
+
+Full table in [`results/bench/campaign-writes.txt`](results/bench/campaign-writes.txt);
+curve in `campaign-writes.svg`.
+
+| offered | achieved | acknowledged | p50 | p99 |
+|---:|---:|---:|---:|---:|
+| 25 | 25 | 100% | 44 ms | 155 ms |
+| 50 | 48 | 100% | 42 ms | 161 ms |
+| 100 | 96 | 100% | 52 ms | 92 ms |
+| 200 | 140 | 100% | — | 1.8 s |
+| 400 | 130 | 100% | — | 4.1 s |
+
+The knee is between 100 and 200 offered: the cluster saturates at roughly
+**130–140 writes a second**. Rows past it are marked in the file because the
+senders could not hold the schedule, so their offered column is a request rather
+than a fact.
+
+### What that costs is durability, and here is the control
+
+[`results/bench/ablation-fsync-off.txt`](results/bench/ablation-fsync-off.txt) is
+the same cluster with `--sync none` — writes neither ordered nor durable. It is
+recorded as **NOT PUBLISHABLE**, with the reason stamped into its header, which
+is exactly what the admitted path is for.
+
+| | saturation | p99 at 400 offered |
+|---|---:|---:|
+| `durable` (`F_FULLFSYNC`) | ~135 ops/s | 4.1 s |
+| `none` (no fsync at all) | ~510 ops/s | 28 ms |
+
+Roughly **four and a half times the throughput** without the promise. That is
+the price of durability on this machine, measured with one variable changed.
+
+### Failover
+
+[`results/bench/failover.txt`](results/bench/failover.txt): 110 trials at a 30 ms
+tick, 109 usable.
+
+| | |
+|---|---:|
+| median time to the first acknowledged write after the leader was killed | **629 ms** |
+| p99 | 1,250 ms |
+| max | 1,449 ms |
+
+The clock starts at the kill and stops at an *acknowledgement*, not at an
+election — election is an internal event a client cannot observe, and it is
+strictly earlier, because the new leader must also commit its own term's no-op
+before it can serve.
+
+### etcd, and why the ratio is not the story
+
+[`results/bench/etcd-baseline.txt`](results/bench/etcd-baseline.txt): etcd
+v3.5.17, single node, in Docker, driven by etcd's own `tools/benchmark` built
+from a clone at the same tag. **8,948 requests/s, average 0.9 ms.**
+
+That is far faster than Keel here, and the honest reading of it is not "Keel is
+eighty times slower":
+
+- **The two sides are not making the same promise.** etcd is fsyncing inside a
+  Linux virtual machine on a macOS host; Keel is using `F_FULLFSYNC` natively,
+  which is the only primitive on this platform that forces a drive cache flush.
+  A durability number compared against a number that may not be durable is a
+  comparison of two definitions.
+- **Keel's own fsync-off arm still only reaches ~510 ops/s**, so durability does
+  not explain all of the gap. The rest is the client model: Keel's client is
+  blocking with one request in flight per thread and eight threads, against a
+  gRPC benchmark that pipelines. That is a real difference and it is a
+  limitation of Keel's client rather than a mystery.
+- **The storage mechanisms differ as designed**: bbolt is a B+tree with a
+  per-transaction fsync, Keel is an LSM with group commit where one fsync retires
+  every batch queued behind it. Different trades.
+
+The run that would settle any of this is the same script on Linux hardware,
+where both sides use the same primitive against the same device. That is the
+only thing P26 is still missing, and it is not engineering.
+
 ## What is measured
 
 | Requirement | Where |
@@ -150,3 +232,9 @@ scripts/failover.sh
   *timings* at that size have not been taken.
 - **No cross-node numbers.** Everything is localhost. Cross-node measurement is
   a different question and needs the same hardware the Reference tier does.
+- **The absolute throughput is low and the client is part of why.** A blocking
+  client with one request in flight per thread caps achievable throughput at
+  threads divided by per-request latency, whatever the cluster could do. The
+  fsync-off arm reaching only ~510 ops/s is that ceiling as much as anything
+  else. An async or pipelining client would answer a question this harness
+  cannot.

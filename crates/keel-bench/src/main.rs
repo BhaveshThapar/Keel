@@ -89,6 +89,15 @@ enum Verb {
         runs: usize,
         #[arg(long, default_value_t = 3)]
         cluster_nodes: usize,
+        /// Milliseconds per tick of the consensus clock.
+        ///
+        /// Not a detail. The daemon's loop turns on this granularity, and a
+        /// parked client request needs several turns to be answered — propose,
+        /// commit, apply — so the tick is an upper bound on write throughput
+        /// that has nothing to do with the disk. The fsync-off ablation is what
+        /// showed that: it reads the same number.
+        #[arg(long, default_value_t = 10)]
+        tick_ms: u64,
         /// Where the cluster's data lives, which is also the filesystem the
         /// gate probes.
         #[arg(long)]
@@ -168,6 +177,7 @@ fn main() -> ExitCode {
             keys,
             runs,
             cluster_nodes,
+            tick_ms,
             dir,
             server_bin,
             sync,
@@ -184,6 +194,7 @@ fn main() -> ExitCode {
             keys,
             runs,
             cluster_nodes,
+            tick_ms,
             dir,
             server_bin,
             sync,
@@ -309,6 +320,25 @@ fn shape_for(rate: u64, clients: usize) -> Loop {
     }
 }
 
+/// A session nonce nothing else in this process will use.
+///
+/// Not hygiene — correctness, and getting it wrong cost an afternoon and a
+/// wrong conclusion about the system. The same nonce reopens the *same
+/// session*, and a fresh `Client` starts its sequence numbers at one. So a
+/// client built with a nonce some earlier run used replays sequence numbers
+/// below that session's floor, and the state machine refuses every one of them
+/// as stale — correctly.
+///
+/// The benchmark then reports a cluster that fails half its requests, which is
+/// a statement about the harness wearing the clothes of a statement about the
+/// system. It is [KEEL-9](../../../BUGS.md)'s shape seen from the client side,
+/// and the acknowledged-fraction column is what made it visible.
+fn fresh_nonce() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(900_000);
+    NEXT.fetch_add(1, Ordering::SeqCst)
+}
+
 /// One run against a real cluster.
 fn measure(
     addrs: &[SocketAddr],
@@ -327,7 +357,7 @@ fn measure(
         keys,
         value_len,
         Duration::from_secs(secs),
-        move |client, op, seq| {
+        move |_client, op, seq| {
             // One client per thread, with a nonce per thread. Two threads
             // sharing a nonce share a session, and the second one's sequence
             // numbers replay the first one's — so its writes are answered from
@@ -340,9 +370,7 @@ fn measure(
             }
             CLIENT.with(|slot| {
                 let mut slot = slot.borrow_mut();
-                let handle = slot.get_or_insert_with(|| {
-                    Client::new(&addrs, 900_000 + client as u64 + seed * 1_000)
-                });
+                let handle = slot.get_or_insert_with(|| Client::new(&addrs, fresh_nonce()));
                 match op {
                     Op::Read { key } => handle.get(&key_bytes(key)).is_ok(),
                     Op::Write { key } => handle
@@ -431,6 +459,7 @@ struct CampaignArgs {
     keys: u64,
     runs: usize,
     cluster_nodes: usize,
+    tick_ms: u64,
     dir: String,
     server_bin: String,
     sync: String,
@@ -477,6 +506,7 @@ fn campaign(args: CampaignArgs) -> ExitCode {
 
     let mut cfg = ClusterConfig::new(args.cluster_nodes, &args.dir, &server_bin);
     cfg.sync = args.sync.clone();
+    cfg.tick_ms = args.tick_ms;
     let cluster = match Cluster::start(cfg) {
         Ok(c) => c,
         Err(e) => {
@@ -489,19 +519,21 @@ fn campaign(args: CampaignArgs) -> ExitCode {
 
     let mut body = format!(
         "mix          {}\nvalue        {} B\nkey space    {}\nclients      {}\n\
-         nodes        {}\nseconds      {} per run\nrepetitions  {} per rate, median reported\n\n",
+         nodes        {}\ntick         {} ms\nseconds      {} per run\n\
+         repetitions  {} per rate, median reported\n\n",
         mix.name(),
         args.value_len,
         args.keys,
         args.clients,
         args.cluster_nodes,
+        args.tick_ms,
         args.secs,
         args.runs,
     );
-    body.push_str(
-        "offered    achieved       p50       p99      p999       max   late\n\
-         ops/s        ops/s        ms        ms        ms        ms\n",
-    );
+    body.push_str(concat!(
+        "offered   achieved      acked       p50       p99      p999       max   late\n",
+        "  ops/s      ops/s  /attempt        ms        ms        ms        ms\n",
+    ));
     let mut any_late = false;
 
     let mut points = Vec::new();
@@ -513,6 +545,7 @@ fn campaign(args: CampaignArgs) -> ExitCode {
             (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut late = 0;
         let mut attempted = 0;
+        let mut acknowledged = 0;
         for run_index in 0..args.runs.max(1) {
             let run = measure(
                 &addrs,
@@ -530,6 +563,7 @@ fn campaign(args: CampaignArgs) -> ExitCode {
             top.push(run.latency.max());
             late += run.late;
             attempted += run.attempted;
+            acknowledged += run.acknowledged;
         }
         let achieved = median(&mut tp);
         let tail = median(&mut p99);
@@ -542,10 +576,21 @@ fn campaign(args: CampaignArgs) -> ExitCode {
         if behind {
             any_late = true;
         }
+        // The acknowledged fraction, because a row that achieved half its
+        // offered rate looks like saturation and may be nothing of the kind: a
+        // cluster refusing half the requests and a cluster serving all of them
+        // slowly produce the same "achieved" number, and only this column tells
+        // them apart.
+        let acked_pct = if attempted == 0 {
+            0.0
+        } else {
+            100.0 * acknowledged as f64 / attempted as f64
+        };
         body.push_str(&format!(
-            "{:>7}  {:>10}  {:>8.3}  {:>8.3}  {:>8.3}  {:>8.3}  {:>5}{}\n",
+            "{:>7}  {:>9}  {:>7.1}%  {:>8.3}  {:>8.3}  {:>8.3}  {:>8.3}  {:>5}{}\n",
             rate,
             achieved,
+            acked_pct,
             ms(median(&mut p50)),
             ms(tail),
             ms(median(&mut p999)),

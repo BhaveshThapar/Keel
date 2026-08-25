@@ -111,10 +111,11 @@ pub fn write_result(
         // Repeated below the header on purpose. A reader who skims to the table
         // has skipped the tier line, and this is the sentence that stops the
         // number being quoted out of context.
-        out.push_str(
-            "\n** Every number below is from this host and this configuration. It is\n\
-             ** reproducible, and it is not a claim about how fast Keel is in general.\n",
-        );
+        out.push_str(concat!(
+            "\n** Every number below is from this host and this configuration.\n",
+            "** It is reproducible, and it is not a claim about how fast Keel\n",
+            "** is in general.\n",
+        ));
     }
     out.push('\n');
     out.push_str(body);
@@ -140,6 +141,9 @@ mod tests {
             arch: "aarch64".into(),
             filesystem: Filesystem::Durable("apfs".into()),
             data_dir: "/data".into(),
+            commit: "abc1234".into(),
+            tree_modified: false,
+            date: "2026-01-01T00:00:00Z".into(),
         }
     }
 
@@ -169,7 +173,7 @@ mod tests {
         let path = write_result(dir.path(), "a.txt", &p, "x").unwrap();
         let written = std::fs::read_to_string(path).unwrap();
         assert!(
-            written.contains("not a claim about how fast Keel is"),
+            written.contains("not a claim about how fast Keel"),
             "{written}"
         );
     }
