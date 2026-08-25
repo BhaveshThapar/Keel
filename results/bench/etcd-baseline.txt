@@ -1,9 +1,10 @@
 === etcd baseline, and Keel measured the same way ===
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
-commit: ea002a1
-date:   2026-08-25T01:08:56Z
+commit: c6d7208
+date:   2026-08-25T06:11:28Z
 
-etcd version:  v3.5.17, single node, in Docker
+etcd version:  v3.5.17, single node, in a container
+runtime:         docker Docker version 28.3.2, build 578ccf6
 value bytes:   128
 clients:       8
 total ops:     20000
@@ -25,29 +26,31 @@ What this comparison is measuring, and what it is not:
 
 --- etcd, by its own benchmark tool
 
- 0 / 20000    0.00%2026/08/24 21:08:56 INFO: [core] [Channel #1 SubChannel #2] Subchannel Connectivity change to READY
-2026/08/24 21:08:56 INFO: [roundrobin] roundrobinPicker: Build called with info: {map[SubConn(id:2):{{Addr: "127.0.0.1:2379", ServerName: "127.0.0.1:2379", }}]}
-2026/08/24 21:08:56 INFO: [core] [Channel #1] Channel Connectivity change to READY
- 1434 / 20000    7.17% 00m02s 3016 / 20000   15.08% 00m02s 4566 / 20000   22.83% 00m02s 6041 / 20000   30.20% 00m01s 7552 / 20000   37.76% 00m01s 9126 / 20000   45.63% 00m01s 10754 / 20000   53.77% 00m01s 12368 / 20000   61.84% 13977 / 20000   69.89% 15559 / 20000   77.80% 17158 / 20000   85.79% 18745 / 20000   93.72% 20000 / 20000  100.00% 2s
+ 0 / 20000    0.00%2026/08/25 02:11:28 INFO: [core] [Channel #1 SubChannel #2] Subchannel Connectivity change to CONNECTING
+2026/08/25 02:11:28 INFO: [core] [Channel #1 SubChannel #2] Subchannel picks a new address "127.0.0.1:2379" to connect
+2026/08/25 02:11:28 INFO: [core] [Channel #1 SubChannel #2] Subchannel Connectivity change to READY
+2026/08/25 02:11:28 INFO: [roundrobin] roundrobinPicker: Build called with info: {map[SubConn(id:2):{{Addr: "127.0.0.1:2379", ServerName: "127.0.0.1:2379", }}]}
+2026/08/25 02:11:28 INFO: [core] [Channel #1] Channel Connectivity change to READY
+ 1518 / 20000    7.59% 00m02s 3096 / 20000   15.48% 00m02s 4631 / 20000   23.16% 00m01s 6210 / 20000   31.05% 00m01s 7858 / 20000   39.29% 00m01s 9500 / 20000   47.50% 00m01s 10795 / 20000   53.98% 00m01s 12397 / 20000   61.98% 14086 / 20000   70.43% 15689 / 20000   78.44% 17312 / 20000   86.56% 18889 / 20000   94.44% 20000 / 20000  100.00% 2s
 Summary:
-  Total:	2.5610 secs.
-  Slowest:	0.0081 secs.
+  Total:	2.5453 secs.
+  Slowest:	0.0068 secs.
   Fastest:	0.0004 secs.
   Average:	0.0010 secs.
   Stddev:	0.0004 secs.
-  Requests/sec:	7809.5783
+  Requests/sec:	7857.6219
 Response time histogram:
   0.0004 [1]	|
-  0.0011 [14155]	|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎
-  0.0019 [5323]	|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎
-  0.0027 [436]	|∎
-  0.0035 [40]	|
-  0.0042 [24]	|
-  0.0050 [8]	|
-  0.0058 [5]	|
-  0.0065 [0]	|
-  0.0073 [6]	|
-  0.0081 [2]	|
+  0.0010 [11753]	|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎
+  0.0017 [7161]	|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎
+  0.0023 [833]	|∎∎
+  0.0029 [184]	|
+  0.0036 [31]	|
+  0.0042 [22]	|
+  0.0049 [7]	|
+  0.0055 [1]	|
+  0.0061 [0]	|
+  0.0068 [7]	|
 Latency distribution:
   10% in 0.0007 secs.
   25% in 0.0008 secs.
@@ -55,8 +58,8 @@ Latency distribution:
   75% in 0.0012 secs.
   90% in 0.0014 secs.
   95% in 0.0017 secs.
-  99% in 0.0023 secs.
-  99.9% in 0.0044 secs.
+  99% in 0.0025 secs.
+  99.9% in 0.0041 secs.
 
 --- the asymmetry that dominates this comparison
 

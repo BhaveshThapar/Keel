@@ -195,10 +195,30 @@ func operations(entries []entry) (map[string][]porcupine.Operation, int, int) {
 // Change one read's returned value to something no write in the history ever
 // produced, so a checker that is doing its job has to reject it.
 //
-// The read chosen is the *last* one that returned a value, on the key with the
-// most operations. A mutation on a busy key is the hardest one to detect —
-// there are more orderings for a broken result to hide in — so a checker that
-// catches this one is not catching an easy case.
+// The key chosen is the one with the most operations, because a mutation on a
+// busy key is the hardest to detect: there are more orderings for a broken
+// result to hide in.
+//
+// The *position* on that key used to be the last such read, on the same
+// reasoning, and it stopped working the day the recorded history gained real
+// concurrency. Refuting a history is not the same problem as accepting one: to
+// accept, a checker finds one linearization and stops; to refute, it must
+// exhaust the search space and show there is none. With the mutation at the end
+// of a thirteen-thousand-operation partition, exhausting it meant linearizing
+// everything before it, and the control timed out with "the search did not
+// finish".
+//
+// A control that cannot finish is not a control. It reports neither a pass nor
+// a failure, and an arm that reports nothing cannot make the other arm evidence.
+// So the mutation goes a quarter of the way into the busy key instead: still
+// surrounded by the full concurrency of the run — every client has its whole
+// pipeline in flight there — and reachable within a bounded search.
+//
+// What this arm claims is therefore precise, and narrower than it was: this
+// checker, on this data, tells a corrupted read from a real one. It does not
+// claim the checker would catch a corruption anywhere in a history of any size.
+const mutateAt = 4 // one part in four
+
 func mutate(entries []entry) (int, error) {
 	counts := make(map[string]int)
 	for _, e := range entries {
@@ -210,19 +230,41 @@ func mutate(entries []entry) (int, error) {
 			best, bestCount = key, n
 		}
 	}
-	for i := len(entries) - 1; i >= 0; i-- {
-		e := &entries[i]
+
+	eligible := func(e *entry) bool {
 		if e.Key != best || e.Op != "get" || e.Outcome != "ok" {
+			return false
+		}
+		_, ok := unquote(e.Result)
+		return ok
+	}
+
+	// Which eligible read to take: a quarter of the way through the ones this
+	// key has, rather than the first, so there is a real prefix of writes for
+	// the corrupted value to contradict.
+	total := 0
+	for i := range entries {
+		if eligible(&entries[i]) {
+			total++
+		}
+	}
+	if total == 0 {
+		return 0, fmt.Errorf("no completed read with a value to mutate; the history is not usable as a control")
+	}
+	target, seen := total/mutateAt, 0
+	for i := range entries {
+		if !eligible(&entries[i]) {
 			continue
 		}
-		if _, ok := unquote(e.Result); !ok {
+		if seen < target {
+			seen++
 			continue
 		}
 		// Deliberately not any value in the history: a value that was written
 		// somewhere might linearize, and then the mutated history would be
 		// accepted for a legitimate reason and the demonstration would prove
 		// the opposite of what it claims.
-		e.Result = json.RawMessage(`"deadbeefdeadbeef"`)
+		entries[i].Result = json.RawMessage(`"deadbeefdeadbeef"`)
 		return i, nil
 	}
 	return 0, fmt.Errorf("no completed read with a value to mutate; the history is not usable as a control")

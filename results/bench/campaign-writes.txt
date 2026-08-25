@@ -1,7 +1,7 @@
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, kernel 25.2.0, aarch64
-commit: ea002a1
-date:   2026-08-25T01:03:48Z
-data:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-campaign-E8A4pZ on apfs
+commit: c6d7208
+date:   2026-08-25T06:05:44Z
+data:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-campaign-do89Vd on apfs
 tier:   Exploratory — not a headline number; see BENCH.md for what that means
 sync:   durable (F_FULLSYNC or fdatasync, per platform)
 runs:   3
@@ -13,7 +13,7 @@ runs:   3
 mix          writes (100% update)
 value        128 B
 key space    10000
-clients      8
+clients      24
 nodes        3
 tick         10 ms
 seconds      6 per run
@@ -21,12 +21,12 @@ repetitions  3 per rate, median reported
 
 offered   achieved      acked       p50       p99      p999       max   late
   ops/s      ops/s  /attempt        ms        ms        ms        ms
-     25         25    100.0%    46.662   140.509   140.509   140.240      0
-     50         48    100.0%    46.662   140.509   140.509   140.391      0
-    100         96    100.0%    73.925   139.461   139.461   138.834    232  *
-    200        110    100.0%  1400.898  2734.686  2751.463  2747.653   3576  *
-    400        109    100.0%  2021.655  4395.631  4429.185  4404.974   7176  *
-    800         99    100.0%  2617.246  5268.046  5301.600  5281.908  14376  *
+    200        194    100.0%   132.645   136.315   136.315   135.652      0
+    400        384    100.0%   132.121   136.315   136.315   135.884     29
+    800        790    100.0%   128.451   131.596   132.121   132.818    111
+   1600       1574    100.0%   123.732   127.926   131.596   134.992    270
+   3200       3170    100.0%   115.343   116.392   126.878   127.275    849
+   6400       6057    100.0%   227.541   549.454   612.368   633.254  100275  *
 
 *  the senders could not keep to this rate's schedule. The offered
              *  column is a request rather than a fact on those rows, and the

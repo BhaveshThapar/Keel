@@ -3,49 +3,48 @@ Maelstrom lin-kv, no nemesis
   3 nodes, 60s at 30 ops/s, Maelstrom v0.2.4
 ==============================================================
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
-commit: 7a88aa1
-date:   2026-08-24T13:52:11Z
+commit: c6d7208
+date:   2026-08-25T06:21:04Z
 
 The checker is Knossos, inside Maelstrom. It applies a definition of
 linearizability nobody here chose to a history it recorded itself.
 
 No nemesis in this run: no partitions, no crashes, no clock skew.
 That is deliberate and it is a floor rather than a result — a system
-that cannot pass without faults will not pass with them. The nemesis
-run is M2's.
+that cannot pass without faults will not pass with them.
 
+                                                              :value [2
                                                                       0],
-                                                              :index 3193,
-                                                              :time 58582687958}]}
-                                                  {:model #knossos.model.CASRegister{:value 4},
+                                                              :index 3051,
+                                                              :time 58728420667}
+                                                             {:process 334,
+                                                              :type :invoke,
+                                                              :f :cas,
+                                                              :value [1
+                                                                      4],
+                                                              :index 3105,
+                                                              :time 59734835500}]}
+                                                  {:model #knossos.model.CASRegister{:value 3},
                                                    :last-op {:process 5,
                                                              :type :ok,
-                                                             :f :cas,
-                                                             :value [0
-                                                                     4],
-                                                             :index 3259,
-                                                             :time 59738289875},
-                                                   :pending [{:process 321,
+                                                             :f :write,
+                                                             :value 3,
+                                                             :index 3121,
+                                                             :time 59997115417},
+                                                   :pending [{:process 322,
                                                               :type :invoke,
                                                               :f :cas,
                                                               :value [4
                                                                       0],
-                                                              :index 3161,
-                                                              :time 58026767250}
-                                                             {:process 327,
+                                                              :index 2985,
+                                                              :time 57649365500}
+                                                             {:process 334,
                                                               :type :invoke,
                                                               :f :cas,
                                                               :value [1
-                                                                      1],
-                                                              :index 3223,
-                                                              :time 59053416125}
-                                                             {:process 328,
-                                                              :type :invoke,
-                                                              :f :cas,
-                                                              :value [2
-                                                                      0],
-                                                              :index 3193,
-                                                              :time 58582687958}]}),
+                                                                      4],
+                                                              :index 3105,
+                                                              :time 59734835500}]}),
                                         :final-paths ()},
                          :timeline {:valid? true},
                          :valid? true}},

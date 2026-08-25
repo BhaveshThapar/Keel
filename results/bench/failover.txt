@@ -1,7 +1,7 @@
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, kernel 25.2.0, aarch64
-commit: ea002a1
-date:   2026-08-25T01:06:59Z
-data:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-failover-A1v2q9 on apfs
+commit: c6d7208
+date:   2026-08-25T06:09:22Z
+data:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-failover-Zt9Og2 on apfs
 tier:   Exploratory — not a headline number; see BENCH.md for what that means
 sync:   durable (F_FULLSYNC or fdatasync, per platform)
 runs:   3
@@ -14,15 +14,19 @@ nodes        3
 tick         30 ms
 sync         durable
 
-trials       110
-recovered    108
+trials       100
+recovered    98
 not healthy  2 (discarded: the cluster was not serving writes when the trial began)
 timed out    0
 
 time to the first acknowledged write after the leader was killed
-median  633.3 ms
-p99     1249.9 ms
-max     1256.4 ms
+median  620.8 ms
+p99     1635.8 ms
+max     1634.6 ms
+
+** fewer than 100 usable trials: failover time is dominated by a
+** randomised election timeout, so these percentiles describe the
+** draw rather than the system.
 
 The clock starts when the kill signal is sent and stops when a client's
 write is acknowledged — not when a new leader is elected. Election is an

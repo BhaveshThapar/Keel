@@ -1,7 +1,7 @@
 host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, kernel 25.2.0, aarch64
-commit: ea002a1
-date:   2026-08-25T01:03:48Z
-data:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-campaign-E8A4pZ on apfs
+commit: c6d7208
+date:   2026-08-25T06:05:44Z
+data:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-campaign-do89Vd on apfs
 tier:   Exploratory — not a headline number; see BENCH.md for what that means
 sync:   durable (F_FULLSYNC or fdatasync, per platform)
 runs:   3
@@ -16,38 +16,38 @@ runs:   3
 <line x1="78" y1="384.00" x2="696" y2="384.00" stroke="#e4e4e4"/>
 <text x="70" y="387.50" text-anchor="end" fill="#555555">0.00</text>
 <line x1="78" y1="312.80" x2="696" y2="312.80" stroke="#e4e4e4"/>
-<text x="70" y="316.30" text-anchor="end" fill="#555555">2000.00</text>
+<text x="70" y="316.30" text-anchor="end" fill="#555555">200.00</text>
 <line x1="78" y1="241.60" x2="696" y2="241.60" stroke="#e4e4e4"/>
-<text x="70" y="245.10" text-anchor="end" fill="#555555">4000.00</text>
+<text x="70" y="245.10" text-anchor="end" fill="#555555">400.00</text>
 <line x1="78" y1="170.40" x2="696" y2="170.40" stroke="#e4e4e4"/>
-<text x="70" y="173.90" text-anchor="end" fill="#555555">6000.00</text>
+<text x="70" y="173.90" text-anchor="end" fill="#555555">600.00</text>
 <line x1="78" y1="99.20" x2="696" y2="99.20" stroke="#e4e4e4"/>
-<text x="70" y="102.70" text-anchor="end" fill="#555555">8000.00</text>
+<text x="70" y="102.70" text-anchor="end" fill="#555555">800.00</text>
 <line x1="78" y1="28.00" x2="696" y2="28.00" stroke="#e4e4e4"/>
-<text x="70" y="31.50" text-anchor="end" fill="#555555">10000.00</text>
+<text x="70" y="31.50" text-anchor="end" fill="#555555">1000.00</text>
 <line x1="78.00" y1="28" x2="78.00" y2="384" stroke="#e4e4e4"/>
 <text x="78.00" y="400" text-anchor="middle" fill="#555555">0</text>
 <line x1="201.60" y1="28" x2="201.60" y2="384" stroke="#e4e4e4"/>
-<text x="201.60" y="400" text-anchor="middle" fill="#555555">40</text>
+<text x="201.60" y="400" text-anchor="middle" fill="#555555">2 000</text>
 <line x1="325.20" y1="28" x2="325.20" y2="384" stroke="#e4e4e4"/>
-<text x="325.20" y="400" text-anchor="middle" fill="#555555">80</text>
+<text x="325.20" y="400" text-anchor="middle" fill="#555555">4 000</text>
 <line x1="448.80" y1="28" x2="448.80" y2="384" stroke="#e4e4e4"/>
-<text x="448.80" y="400" text-anchor="middle" fill="#555555">120</text>
+<text x="448.80" y="400" text-anchor="middle" fill="#555555">6 000</text>
 <line x1="572.40" y1="28" x2="572.40" y2="384" stroke="#e4e4e4"/>
-<text x="572.40" y="400" text-anchor="middle" fill="#555555">160</text>
+<text x="572.40" y="400" text-anchor="middle" fill="#555555">8 000</text>
 <line x1="696.00" y1="28" x2="696.00" y2="384" stroke="#e4e4e4"/>
-<text x="696.00" y="400" text-anchor="middle" fill="#555555">200</text>
+<text x="696.00" y="400" text-anchor="middle" fill="#555555">10 000</text>
 <line x1="78" y1="384" x2="696" y2="384" stroke="#111111"/>
 <line x1="78" y1="28" x2="78" y2="384" stroke="#111111"/>
 <text x="387" y="418" text-anchor="middle" fill="#111111">throughput (ops/s)</text>
 <text x="14" y="206" text-anchor="middle" transform="rotate(-90 14 206)" fill="#111111">latency (ms)</text>
-<polyline fill="none" stroke="#1b6ca8" stroke-width="2" points="155.25,379.00 226.32,379.00 374.64,379.04 383.91,196.46 414.81,227.52 417.90,286.65"/>
-<circle cx="155.25" cy="379.00" r="3" fill="#1b6ca8"/>
-<circle cx="226.32" cy="379.00" r="3" fill="#1b6ca8"/>
-<circle cx="374.64" cy="379.04" r="3" fill="#1b6ca8"/>
-<circle cx="383.91" cy="196.46" r="3" fill="#1b6ca8"/>
-<circle cx="414.81" cy="227.52" r="3" fill="#1b6ca8"/>
-<circle cx="417.90" cy="286.65" r="3" fill="#1b6ca8"/>
+<polyline fill="none" stroke="#1b6ca8" stroke-width="2" points="89.99,335.47 101.73,335.47 126.82,337.15 175.27,338.46 273.91,342.56 452.32,188.39"/>
+<circle cx="89.99" cy="335.47" r="3" fill="#1b6ca8"/>
+<circle cx="101.73" cy="335.47" r="3" fill="#1b6ca8"/>
+<circle cx="126.82" cy="337.15" r="3" fill="#1b6ca8"/>
+<circle cx="175.27" cy="338.46" r="3" fill="#1b6ca8"/>
+<circle cx="273.91" cy="342.56" r="3" fill="#1b6ca8"/>
+<circle cx="452.32" cy="188.39" r="3" fill="#1b6ca8"/>
 <text x="556" y="42" fill="#1b6ca8">3 nodes, writes (100% update)</text>
 <text x="78" y="430" fill="#777777">Exploratory tier — Apple M2 Pro, apfs — not a claim about how fast Keel is in general</text>
 </svg>

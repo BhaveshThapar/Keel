@@ -78,13 +78,13 @@ echo 0 >"$TALLY"
     else
         echo
         echo "--- experiment: the real history must be accepted ---"
-        (cd tools/porcupine && "$GO" run . -history "$WORK/history.jsonl" -timeout 300s) 2>&1
+        (cd tools/porcupine && "$GO" run . -history "$WORK/history.jsonl" -timeout 900s) 2>&1
         real=$?
 
         echo
         echo "--- control: one read's result replaced, and it must be rejected ---"
         (cd tools/porcupine && "$GO" run . -history "$WORK/history.jsonl" \
-            -mutate -out "$WORK/mutated.jsonl" -timeout 300s) 2>&1
+            -mutate -out "$WORK/mutated.jsonl" -timeout 900s) 2>&1
         mutated=$?
 
         echo
