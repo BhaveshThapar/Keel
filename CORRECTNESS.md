@@ -99,6 +99,7 @@ the committed output, side by side.
 | Acknowledged writes survive the leader being killed | `cluster::writes_survive_a_leader_being_killed` | enforced |
 | A history is recorded in the shape a checker wants | `cluster::a_client_records_a_history_a_checker_can_read`; `history::tests::a_lost_answer_is_unknown_rather_than_refused` | enforced |
 | A misconfigured node refuses to start rather than serving alone | `cluster::a_misconfigured_node_refuses_to_start` | enforced |
+| A peer may be named rather than addressed, and a name that is not up yet is waited for | `--peer id=host:port` resolves at startup with a 30-second budget; every node in a cluster starts at once, so the first one up finds its peers unresolvable | enforced |
 | A node says whether its fsyncs survive power loss, in its ready file | `cluster::a_three_node_cluster_serves_traffic` checks every node's | enforced |
 
 ## What a client observes

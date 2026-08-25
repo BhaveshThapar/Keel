@@ -158,6 +158,41 @@ jobs:
           name: maelstrom-partition
           path: results/maelstrom/lin-kv-partition.txt
 
+  # The benchmark harness, run for its own sake rather than for its numbers.
+  # A runner is a shared virtual machine and its throughput figures are noise;
+  # what this job checks is that the gate still refuses what it should, the
+  # campaign still produces a curve, and the failover harness still finds a
+  # leader to kill. A benchmark harness that has quietly stopped working looks
+  # exactly like one that is working until somebody needs a number.
+  bench-harness:
+    name: the benchmark harness still runs
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: what this runner may publish
+        run: cargo run --release -p keel-bench -- gate --dir .
+      - name: a short campaign, admitted rather than published
+        run: |
+          cargo build --release -p keel-bench -p keel-server
+          WORK="$(mktemp -d)"
+          ./target/release/keel-bench campaign \
+            --mix writes --rates 50,100,200 --secs 4 --runs 3 \
+            --dir "$WORK" --server-bin ./target/release/keel-server \
+            --sync durable --root "$WORK" \
+            --out campaign.txt --svg campaign.svg \
+            --admit "a CI smoke run on a shared runner; its numbers are noise"
+      - name: failover, enough trials to be a shape rather than a draw
+        run: |
+          WORK="$(mktemp -d)"
+          ./target/release/keel-bench failover \
+            --trials 110 --tick-ms 30 \
+            --dir "$WORK" --server-bin ./target/release/keel-server \
+            --sync durable --root "$WORK" --out failover.txt \
+            --admit "a CI smoke run on a shared runner"
+
   determinism-at-length:
     name: a long run still replays identically
     runs-on: ubuntu-latest

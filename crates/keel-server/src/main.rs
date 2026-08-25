@@ -4,7 +4,7 @@
 //! itself with a ready file, and turns until it is killed.
 
 use std::collections::BTreeMap;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -39,8 +39,13 @@ struct Cli {
     #[arg(long)]
     client: SocketAddr,
     /// A peer, as `id=host:port`. Repeat for each, including this node.
+    ///
+    /// `host` may be a name. It is resolved at startup rather than parsed as a
+    /// literal address, because every real deployment names its peers — a
+    /// Compose service, a StatefulSet pod, a DNS record — and a flag that only
+    /// accepted dotted quads would make this daemon unusable in all three.
     #[arg(long = "peer", value_parser = parse_peer)]
-    peers: Vec<(u64, SocketAddr)>,
+    peers: Vec<(u64, String)>,
     /// How hard to fsync. `durable` is the only mode under which a durability
     /// claim may be made; `barrier` is ordering without power-loss durability,
     /// and `none` is neither.
@@ -51,13 +56,50 @@ struct Cli {
     tick_ms: u64,
 }
 
-fn parse_peer(raw: &str) -> Result<(u64, SocketAddr), String> {
+fn parse_peer(raw: &str) -> Result<(u64, String), String> {
     let (id, addr) = raw
         .split_once('=')
         .ok_or_else(|| format!("expected id=host:port, got {raw:?}"))?;
     let id: u64 = id.parse().map_err(|_| format!("bad peer id {id:?}"))?;
-    let addr: SocketAddr = addr.parse().map_err(|_| format!("bad address {addr:?}"))?;
-    Ok((id, addr))
+    if !addr.contains(':') {
+        return Err(format!("expected host:port, got {addr:?}"));
+    }
+    Ok((id, addr.to_string()))
+}
+
+/// How long to keep trying to resolve a peer's name.
+///
+/// Not zero, and not forever. Every node in a cluster is usually started at
+/// once, so the first one up will find that its peers' names do not resolve yet
+/// — a container that has not started has no DNS record. Failing immediately
+/// would make a three-node cluster a race that the first node loses; waiting
+/// forever would turn a genuine typo into a process that hangs and says nothing.
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Resolve every peer, waiting for names that are not up yet.
+fn resolve_peers(raw: &[(u64, String)]) -> Result<BTreeMap<u64, SocketAddr>, String> {
+    let deadline = std::time::Instant::now() + RESOLVE_TIMEOUT;
+    let mut resolved = BTreeMap::new();
+    for (id, name) in raw {
+        loop {
+            match name.to_socket_addrs().ok().and_then(|mut a| a.next()) {
+                Some(addr) => {
+                    resolved.insert(*id, addr);
+                    break;
+                }
+                None if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+                None => {
+                    return Err(format!(
+                        "could not resolve peer {id} at {name:?} within {}s",
+                        RESOLVE_TIMEOUT.as_secs()
+                    ));
+                }
+            }
+        }
+    }
+    Ok(resolved)
 }
 
 fn parse_sync(raw: &str) -> Option<SyncMode> {
@@ -83,7 +125,13 @@ fn main() -> ExitCode {
         eprintln!("a cluster needs at least one --peer, including this node");
         return ExitCode::FAILURE;
     }
-    let peers: BTreeMap<u64, SocketAddr> = cli.peers.iter().copied().collect();
+    let peers: BTreeMap<u64, SocketAddr> = match resolve_peers(&cli.peers) {
+        Ok(peers) => peers,
+        Err(why) => {
+            eprintln!("{why}");
+            return ExitCode::FAILURE;
+        }
+    };
     if !peers.contains_key(&cli.id) {
         eprintln!(
             "node {} is not in its own peer list, so no peer could reach it",
