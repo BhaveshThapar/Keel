@@ -432,19 +432,37 @@ impl Clients {
         let Some(parked) = self.parked.remove(&park) else {
             return;
         };
-        match &parked.waiting {
+        self.unindex(park, &parked.waiting);
+        self.reply(parked.slot, parked.id, response);
+    }
+
+    /// Drop this request's entry in whichever table finds it.
+    ///
+    /// Only if the entry still points at *this* request. Two parks can share a
+    /// key — a client retrying under the same `(client, seq)` on a second
+    /// connection, or re-registering under the same nonce — and the table keeps
+    /// the newer one. Removing by key alone would then unhook the live request
+    /// when the stale one was swept, and the client would wait out the park
+    /// timeout for an answer that had already been produced.
+    fn unindex(&mut self, park: u64, waiting: &Waiting) {
+        match waiting {
             Waiting::Write { client, seq } => {
-                self.by_session.remove(&(*client, *seq));
+                if self.by_session.get(&(*client, *seq)) == Some(&park) {
+                    self.by_session.remove(&(*client, *seq));
+                }
             }
             Waiting::Register { nonce } => {
-                self.by_nonce.remove(nonce);
+                if self.by_nonce.get(nonce) == Some(&park) {
+                    self.by_nonce.remove(nonce);
+                }
             }
             Waiting::Read { ctx, .. } => {
-                self.by_ctx.remove(ctx);
+                if self.by_ctx.get(ctx) == Some(&park) {
+                    self.by_ctx.remove(ctx);
+                }
             }
             Waiting::ReadConfirmed { .. } => {}
         }
-        self.reply(parked.slot, parked.id, response);
     }
 
     /// Write one answer, and drop the connection if it will not take it.
@@ -477,18 +495,7 @@ impl Clients {
             .collect();
         for park in orphaned {
             if let Some(parked) = self.parked.remove(&park) {
-                match &parked.waiting {
-                    Waiting::Write { client, seq } => {
-                        self.by_session.remove(&(*client, *seq));
-                    }
-                    Waiting::Register { nonce } => {
-                        self.by_nonce.remove(nonce);
-                    }
-                    Waiting::Read { ctx, .. } => {
-                        self.by_ctx.remove(ctx);
-                    }
-                    Waiting::ReadConfirmed { .. } => {}
-                }
+                self.unindex(park, &parked.waiting);
             }
         }
     }
@@ -765,6 +772,35 @@ mod tests {
         clients.answer_write(None, Some(42), &Response::Registered { client: 7 });
         assert_eq!(clients.conns[&0].inflight, 0);
         assert_eq!(clients.parked(), 0);
+    }
+
+    /// A stale park does not unhook the live one that displaced it.
+    ///
+    /// Two parks can share a session pair — a client retrying on a second
+    /// connection while the first is still held — and the table keeps the newer.
+    /// Sweeping the older must leave the newer findable, or the client waits out
+    /// the park timeout for an answer that was already produced.
+    #[test]
+    fn sweeping_a_displaced_request_leaves_the_one_that_displaced_it_findable() {
+        let mut clients = empty();
+        let (_first, first_server) = pair();
+        let (mut second, second_server) = pair();
+        attach(&mut clients, 0, first_server);
+        attach(&mut clients, 1, second_server);
+        park_write(&mut clients, 0, 1, 7, 3);
+        // The same session pair again, on another connection.
+        park_write(&mut clients, 1, 2, 7, 3);
+
+        // The older one times out.
+        let oldest = *clients.parked.keys().next().expect("two parked");
+        clients.finish(oldest, &Response::Error(ApiError::Unavailable));
+
+        clients.answer_write(Some((7, 3)), None, &Response::Applied);
+        assert_eq!(
+            read_response(&mut second),
+            Envelope::new(2, Response::Applied),
+            "the surviving request was unhooked by the one it displaced"
+        );
     }
 
     /// A connection that goes takes its parked requests with it, and leaves no
