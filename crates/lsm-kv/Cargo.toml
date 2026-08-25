@@ -6,6 +6,10 @@ description = "A log-structured merge-tree key/value storage engine"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+# Upstream's repository, not Keel's. This crate is a vendored copy and the
+# manifest should say where the code actually comes from — pointing it at Keel
+# would attribute somebody else's engine to this repository.
+repository = "https://github.com/BhaveshThapar/LSM-Tree-Key-Value-Storage-Engine"
 publish = false
 
 [[bin]]

@@ -10,7 +10,10 @@ outside.
 
 ## Changed on import
 
-- `Cargo.toml` rewritten to join the workspace: shared dependency versions,
+- `Cargo.toml` rewritten to join the workspace: shared dependency versions, a
+  `repository` field naming *upstream* rather than Keel — the manifest should say
+  where the code comes from, and pointing it here would attribute somebody
+  else's engine to this repository —
   `publish = false`, the workspace license.
 - Benchmarks and their `criterion`/`rocksdb`/`rand` dev-dependencies left
   upstream. Keel's benchmarks are its own (M4), and building RocksDB on every

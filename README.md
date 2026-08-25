@@ -3,13 +3,13 @@
 A Raft-replicated key-value store in Rust, built on an LSM storage engine, and
 verified by a deterministic simulator that replays any failure from a seed.
 
-> **Status: in development (M4).** A three-node cluster of real processes serves
-> traffic, takes and streams snapshots, and survives being partitioned, paused,
-> killed a thousand times and clock-jumped — with the histories it produced
-> checked by Porcupine and by Knossos, and by control arms that prove those
-> checkers reject a corrupted one. Performance numbers exist and are
-> **Exploratory tier**: measured on a laptop, reproducible, and never headlined.
-> See [Not claimed](#not-claimed) and [BENCH.md](BENCH.md).
+> **Status: v1.0.0.** A three-node cluster of real processes serves traffic,
+> takes and streams snapshots, and survives being partitioned, paused, killed a
+> thousand times and clock-jumped — with the histories it produced checked by
+> Porcupine and by Knossos, and by control arms that prove those checkers reject
+> a corrupted one. Performance numbers exist and are **Exploratory tier**:
+> measured on a laptop, reproducible, and never headlined. What is *not* claimed
+> is listed below and is worth reading first.
 
 ## What is here today
 
@@ -281,8 +281,19 @@ hardware and no commit behind it. Both run in CI.
 - **One snapshot profile is not claimed clean.** `snapshot-hunt` passes 59 of 60
   seeds and seed 14 is [KEEL-8](BUGS.md), open. It is out of the sweep and out of
   CI's matrix rather than quietly excluded.
+- **One simulator seed is still an open question.** `snapshot-hunt` passes 59 of
+  60 seeds; seed 14 is [KEEL-8](BUGS.md), open. Whether the oracle or the code is
+  wrong there has not been settled, so the profile is out of the sweep and out of
+  CI rather than quietly passing. Four of the ten entries in BUGS.md turned out to
+  be harness bugs, which is why that question stays open rather than being
+  resolved by assertion.
 - **Single Raft group.** No sharding, no cross-shard transactions, no
   geo-replication, no Byzantine fault tolerance, no TLS or authentication.
+- **The crates are not on crates.io**, and the release checklist checks their
+  metadata anyway. A workspace carrying a vendored copy of another repository is
+  not something to put on a registry, and the API is not one anybody should
+  depend on yet — but a manifest with no description is a manifest nobody has
+  read, whether or not it is ever uploaded.
 
 ## Design
 
