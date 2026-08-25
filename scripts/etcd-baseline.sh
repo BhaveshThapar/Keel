@@ -187,9 +187,12 @@ fi
     echo
     echo "The honest internal control is Keel's own fsync-off arm:"
     echo "results/bench/ablation-fsync-off.txt, where the same cluster with writes"
-    echo "neither ordered nor durable does four times the throughput at a quarter"
-    echo "of the latency. That is the cost of the promise, measured on one machine"
-    echo "with one variable changed."
+    echo "neither ordered nor durable meets the same offered rates within two"
+    echo "percent, at about half the tail latency, and keeps holding its schedule"
+    echo "past the rate at which the durable arm bends. That is the cost of the"
+    echo "promise, measured on one machine with one variable changed — and it is"
+    echo "latency and headroom rather than throughput, because one flush now"
+    echo "retires a batch of tens rather than a single entry."
 } | tee "$OUT"
 
 echo

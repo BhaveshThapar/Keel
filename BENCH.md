@@ -162,25 +162,41 @@ claim about how fast Keel is.
 Full table in [`results/bench/campaign-writes.txt`](results/bench/campaign-writes.txt);
 curve in `campaign-writes.svg`.
 
-| offered | achieved | acknowledged | p50 | p99 |
-|---:|---:|---:|---:|---:|
-| 25 | 25 | 100% | 44 ms | 141 ms |
-| 50 | 48 | 100% | 42 ms | 141 ms |
-| 100 | 96 | 100% | 65 ms | 139 ms |
-| 200 | 110 | 100% | 1.7 s | 2.7 s |
-| 400 | 109 | 100% | 3.4 s | 4.4 s |
+Sixty-four senders, each with 32 requests outstanding.
 
-The knee is between 100 and 200 offered: the cluster saturates at roughly
-**110 writes a second**, and holds around 100 ms at the tail up to that point.
-Rows past the knee are marked in the file because the senders could not hold the
-schedule, so their offered column is a request rather than a fact.
+| offered | achieved | acknowledged | p50 | p99 | |
+|---:|---:|---:|---:|---:|---|
+| 800 | 773 | 100% | 176 ms | 261 ms | |
+| 1,600 | 1,594 | 100% | 169 ms | 211 ms | |
+| 3,200 | 3,178 | 100% | 202 ms | 243 ms | |
+| 6,400 | 6,350 | 100% | 182 ms | 264 ms | |
+| 12,800 | 12,638 | 100% | 157 ms | 199 ms | * |
+| 25,600 | 15,235 | 100% | 1.34 s | 2.50 s | * |
 
-Every row acknowledges 100%. That column exists because an earlier version of
-this harness reported half its operations failing and it read as saturation — it
-was reusing session nonces, so each new client replayed sequence numbers below
-its session's floor and the cluster refused them, correctly. A cluster refusing
-half its requests and a cluster serving all of them slowly produce the same
-achieved number, and only that column tells them apart.
+The highest rate the cluster met *and* the generator held its schedule for is
+**6,400 writes a second at a p99 of 264 ms**. That is the number to quote.
+
+The starred rows are the ones the harness could not offer honestly: at 12,800 the
+senders were late on 22% of their schedule, so 12,638 is a lower bound on the
+cluster and a statement about the generator; at 25,600 the cluster is past its
+knee.
+
+**Saturation is not established, and the reason is worth stating.** The first
+version of this campaign ran 24 senders at depth 16 and flattened at about 6,000
+a second — which looked like a knee and was the generator running out of
+concurrency. Enlarging it to 64 × 32 moved the flat part to 12,800. Each time
+the generator grew, the cluster kept up. At 64 sender threads on ten cores the
+two are sharing the machine, so going further would measure the pair rather than
+the cluster, and that is where this stops on this hardware.
+
+Every row acknowledges 100%.
+
+That column exists because an earlier version of this harness reported half its
+operations failing and it read as saturation — it was reusing session nonces, so
+each new client replayed sequence numbers below its session's floor and the
+cluster refused them, correctly. A cluster refusing half its requests and a
+cluster serving all of them slowly produce the same achieved number, and only
+that column tells them apart.
 
 ### What that costs is durability, and here is the control
 
@@ -189,14 +205,27 @@ the same cluster with `--sync none` — writes neither ordered nor durable. It i
 recorded as **NOT PUBLISHABLE**, with the reason stamped into its header, which
 is exactly what the admitted path is for.
 
-| | saturation | p99 at 400 offered |
-|---|---:|---:|
-| `durable` (`F_FULLFSYNC`) | ~110 ops/s | 4.4 s |
-| `none` (no fsync at all) | ~400 ops/s | 24 ms |
+The same senders, the same rates, one variable changed.
 
-Roughly **four times the throughput** without the promise, and two orders of
-magnitude less tail latency at the same offered rate. That is
-the price of durability on this machine, measured with one variable changed.
+| offered | durable, p99 | fsync off, p99 |
+|---:|---:|---:|
+| 800 | 261 ms | 100 ms |
+| 1,600 | 211 ms | 131 ms |
+| 3,200 | 243 ms | 109 ms |
+| 6,400 | 264 ms | 124 ms |
+| 12,800 | 199 ms * | 117 ms |
+| 25,600 | 2.50 s * | 123 ms * |
+
+What durability costs here is **latency and headroom, not throughput at any rate
+the cluster actually meets**. Both arms achieve within 2% of each other at every
+rate up to 12,800. The durable arm's tail is about twice the fsync-off arm's
+throughout, and it knees near 15,000 a second where the fsync-off arm is still
+holding its schedule past 25,500.
+
+That is a different claim from the one this file used to make. The old figure —
+four times the throughput — was measured when a single fsync retired one entry.
+It now retires tens, so the flush is amortised, and what is left of its cost
+shows up in the tail and in where the curve bends rather than in the rate.
 
 ### Where the time goes
 
@@ -234,14 +263,29 @@ arm's throughput rather than a quarter of it.
 
 ### Failover
 
-[`results/bench/failover.txt`](results/bench/failover.txt): 110 trials at a 30 ms
-tick, 109 usable.
+[`results/bench/failover.txt`](results/bench/failover.txt): 600 trials at a 30 ms
+tick, 598 usable.
 
 | | |
 |---|---:|
-| median time to the first acknowledged write after the leader was killed | **633 ms** |
-| p99 | 1,250 ms |
-| max | 1,256 ms |
+| p10 | 411 ms |
+| p50 | 805 ms |
+| p90 | 1,225 ms |
+| p99 | 1,258 ms |
+| max | 1,642 ms |
+
+**The spread is the measurement, and the median is not a number to quote.**
+Failover time here is bimodal — which of two nodes campaigns first decides which
+mode a trial lands in — so a median that sits between the modes moves with the
+draw. Splitting 600 trials in half gives 622 ms and 809 ms.
+
+This file said **633 ms** for two releases. That figure was measured over about a
+hundred trials and it landed on the wrong side of the fence. It is not a
+regression: 400 trials against v1.0.0, built in a worktree and measured the same
+way, give 817 ms against this build's 805 ms. The guard that was supposed to
+catch it — "at least a hundred usable trials" — could not, because a count says
+nothing about which side of a fence a median landed on. The report now checks
+the median against itself, first half against second, and prints both.
 
 The clock starts at the kill and stops at an *acknowledgement*, not at an
 election — election is an internal event a client cannot observe, and it is
@@ -252,21 +296,22 @@ before it can serve.
 
 [`results/bench/etcd-baseline.txt`](results/bench/etcd-baseline.txt): etcd
 v3.5.17, single node, in Docker, driven by etcd's own `tools/benchmark` built
-from a clone at the same tag. **7,810 requests/s, average 1.0 ms.**
+from a clone at the same tag. **7,857 requests/s, average 1.0 ms.**
 
-That is far faster than Keel here, and the honest reading of it is not "Keel is
-seventy times slower":
+Keel's comparable figure is 6,350 a second held cleanly, and 12,638 with the
+generator straining. So the two are now the same order of magnitude, where this
+file previously recorded a ratio of about seventy to one. The honest reading is
+still not "Keel is nearly as fast as etcd":
 
 - **The two sides are not making the same promise.** etcd is fsyncing inside a
   Linux virtual machine on a macOS host; Keel is using `F_FULLFSYNC` natively,
   which is the only primitive on this platform that forces a drive cache flush.
   A durability number compared against a number that may not be durable is a
   comparison of two definitions.
-- **Keel's own fsync-off arm still only reaches ~400 ops/s**, so durability does
-  not explain all of the gap. The rest is the client model: Keel's client is
-  blocking with one request in flight per thread and eight threads, against a
-  gRPC benchmark that pipelines. That is a real difference and it is a
-  limitation of Keel's client rather than a mystery.
+- **Neither side was driven to saturation by this harness.** Keel's own knee is
+  above where its load generator can hold a schedule, and etcd's benchmark ran a
+  fixed operation count rather than a rate ladder. Two unsaturated numbers on
+  one laptop are not a ranking.
 - **The storage mechanisms differ as designed**: bbolt is a B+tree with a
   per-transaction fsync, Keel is an LSM with group commit where one fsync retires
   every batch queued behind it. Different trades.

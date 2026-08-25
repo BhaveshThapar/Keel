@@ -60,7 +60,8 @@ answered: a write until its entry is applied, a read until the core has confirme
 a read index and the state machine has reached it.
 
 **[`keel-client`](crates/keel-client/)** — leader discovery, sessions, retries
-under the same sequence number, and the `kv` CLI. It records a history in the
+under the same sequence number, a pipelined client that keeps many requests on
+one connection, and the `kv` CLI. It records a history in the
 shape an external checker wants, including the third outcome most recorders get
 wrong: a request whose answer was lost may or may not have applied, and saying
 "failed" would be claiming something the client cannot know.
@@ -72,9 +73,10 @@ well as `SIGKILL`, because a paused process holds its sockets open and answers
 nothing, which is the fault a crash does not produce; and a `CLOCK_MONOTONIC`
 jump with a probe that checks the jump was a discontinuity rather than elapsed
 time. A run that injects no fault, or gets no acknowledgement, fails rather than
-reporting a pass. Its kill loop — a thousand cycles, 7,311 acknowledged writes,
-none lost — found [KEEL-9](BUGS.md), a session-identity collision the simulator
-could not have found, because the simulator has no client connections to park.
+reporting a pass. Its kill loop — a thousand cycles, 11,605 acknowledged writes,
+none lost — found [KEEL-9](BUGS.md), a session-identity collision the
+simulator could not have found, because the simulator has no client connections
+to park.
 
 **[`keel-fuzz`](crates/keel-fuzz/)** — six fuzz targets, one per place a byte
 string arrives from somewhere this process does not control, plus a seeded smoke
@@ -110,16 +112,28 @@ fast Keel is. Full methodology and the caveats that matter are in
 
 | | |
 |---|---:|
-| writes, 128 B, 3 nodes, saturation | ~110 ops/s |
-| …p99 at 100 offered | 139 ms |
-| the same cluster with fsync off | ~400 ops/s, p99 24 ms |
-| failover: median to the first acknowledged write after the leader is killed | 633 ms |
-| …p99, over 109 usable trials | 1,250 ms |
+| writes, 128 B, 3 nodes, highest rate held cleanly | 6,350 ops/s at p99 264 ms |
+| …achieved at 12,800 offered, with the generator straining | 12,638 ops/s |
+| the same cluster with fsync off, same rates | within 2%, at about half the tail |
+| failover after the leader is killed, 598 usable trials | p10 411 ms, p90 1,225 ms |
+
+Two of those rows need reading rather than quoting.
+
+**Saturation was not established.** Every time the load generator was made
+bigger, the cluster kept up; at 64 sender threads on ten cores the two share the
+machine, so this is where it stops. 6,350 is the fastest rate the generator held
+its schedule for, not a ceiling.
+
+**Failover is bimodal and its median is not a number to quote** — which node
+campaigns first decides which mode a trial lands in. This file said 633 ms for
+two releases; that was about a hundred trials landing on the wrong side of the
+fence, and 400 trials against v1.0.0 measured the same way give 817 ms, so
+nothing regressed. The spread is the measurement.
 
 The fsync-off row is the control, not a result: it is recorded as **NOT
-PUBLISHABLE** with the reason stamped into its header, and it is there to say
-what durability costs on this machine — four times the throughput, and two orders
-of magnitude of tail latency.
+PUBLISHABLE** with the reason stamped into its header. What it says now is that
+durability costs latency and headroom rather than throughput — one flush retires
+a batch of tens, so the flush is amortised.
 
 ## Correctness
 
@@ -136,6 +150,8 @@ $ scripts/sweep.sh
 500 seeds x 60000 steps, 5 nodes, chaos           profile: 500 passed, 0 failed
 500 seeds x 60000 steps, 3 nodes, read-hunt       profile: 500 passed, 0 failed
 500 seeds x 60000 steps, 5 nodes, read-hunt       profile: 500 passed, 0 failed
+500 seeds x 60000 steps, 3 nodes, snapshot-hunt   profile: 500 passed, 0 failed
+500 seeds x 60000 steps, 5 nodes, snapshot-hunt   profile: 500 passed, 0 failed
 500 seeds x 60000 steps, 3 nodes, lease-drift     profile: 500 passed, 0 failed
 500 seeds x 60000 steps, 5 nodes, lease-drift     profile: 500 passed, 0 failed
 500 seeds x 60000 steps, 5 nodes, membership-hunt profile: 500 passed, 0 failed
@@ -153,6 +169,12 @@ log, and the real state machine. A committed entry is decoded, deduplicated
 against a session table and written into a store — so two nodes that have applied
 to the same index are compared on what applying produced, not only on which
 entries they applied.
+
+`snapshot-hunt` streams snapshots in 512-byte chunks with a third of them
+dropped, so every transfer is interrupted and resumed rather than arriving
+whole. It was out of this sweep at v1.0.0 with one seed unexplained; settling
+that took seven defects, four of them in the code, and they are
+[KEEL-11](BUGS.md) through [KEEL-18](BUGS.md).
 
 `read-hunt` additionally issues linearizable reads under a wandering clock and
 checks what a *client* observed, which is a different claim from what the nodes
@@ -276,9 +298,15 @@ hardware and no commit behind it. Both run in CI.
   change, so the admin verbs that would drive one are deferred until it does
   (ADR-024).
 - **Linearizability is checked outside the simulator, not inside it.** Porcupine
-  and Knossos check histories from real clusters. The simulator itself still
-  checks only Raft's internal safety properties; it has no client and records no
-  history.
+  and Knossos check histories from real clusters — the last run was 50,344
+  operations from eight clients, each with eight requests in flight, every key
+  linearizable. The simulator itself still checks only Raft's internal safety
+  properties; it has no client and records no history.
+- **The linearizability control runs on a shorter history than the experiment.**
+  Refuting costs what accepting does not: to accept, the checker finds one
+  linearization and stops; to refute, it must exhaust the space. On the full
+  depth-8 history the control ran the machine out of memory. It records a run of
+  its own instead, and the arm's claim is correspondingly narrower.
 - **The daemon does not take or stream snapshots.** The machinery is real and
   tested — `Outgoing`/`Incoming` chunk a checkpoint, resume from an interruption,
   refuse a corrupt chunk and refuse to publish a partial transfer, and the
