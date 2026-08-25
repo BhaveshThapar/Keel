@@ -165,8 +165,17 @@ if [ -n "$VERSION" ]; then
     else
         problem "the workspace says $actual and the tag says $expected"
     fi
-    if git rev-parse "$VERSION" >/dev/null 2>&1; then
-        problem "$VERSION already exists"
+    # A tag that already exists is only a problem if it names a *different*
+    # commit. This check read "the tag is free", which meant the checklist could
+    # never pass at the tagged commit — and passing there is the whole exit
+    # criterion, since the point is to verify what was actually tagged rather
+    # than what was about to be.
+    if existing="$(git rev-parse "$VERSION^{commit}" 2>/dev/null)"; then
+        if [ "$existing" = "$(git rev-parse HEAD)" ]; then
+            ok "$VERSION already points here"
+        else
+            problem "$VERSION exists and points at ${existing:0:7}, not at HEAD"
+        fi
     else
         ok "$VERSION is free"
     fi
