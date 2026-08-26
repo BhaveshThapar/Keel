@@ -1,0 +1,47 @@
+host:   cbcb06.umiacs.umd.edu (load generator); cbcb07-cbcb09.umiacs.umd.edu (servers)
+commit: deca0940479923d93aa733fdfea355d3d2d2b14b
+date:   2026-08-26T18:26:02Z
+data:   node-local /scratch0 on XFS; results persisted by Slurm job 7352800
+tier:   Reference — exclusive dedicated Linux nodes; see BENCH.md
+sync:   durable (fdatasync on Linux)
+runs:   3
+
+** Every number below is from these hosts and this configuration.
+** It is reproducible, and it is not a claim about how fast Keel
+** is on other hardware.
+
+load generator  cbcb06, AMD EPYC 7313, 32 physical cores
+servers         cbcb07, cbcb08, cbcb09; one process per host
+network         ConnectX-5 Ex, 100 GbE link rate
+storage         node-local XFS on MTFDDAK480TDS 480 GB SSD
+allocation      four exclusive nodes, one Slurm task per node
+mix             writes (100% update)
+value           128 B
+key space       10000
+clients         64
+depth           32
+tick            10 ms
+seconds         30 per run
+repetitions     3 per rate, median reported
+
+offered   achieved      acked       p50       p99      p999       max    late
+  ops/s      ops/s  /attempt        ms        ms        ms        ms
+    800        769    100.0%    83.886    83.886    83.886    84.436       0
+   1600       1601    100.0%    80.216    80.740    80.740    81.211      56
+   3200       3200    100.0%   100.139   100.663   100.663   100.686     132
+   6400       6399    100.0%   100.139   100.663   100.663   100.861     369
+  12800      12772    100.0%   155.189   156.238   165.675   184.208    1120
+  25600      20373    100.0%  3388.998  6106.907  6174.015  6266.517  750182  *
+
+* The senders could not keep to this rate's schedule. The offered column is a
+  request rather than a fact on this row, and achieved throughput says as much
+  about the load generator as about the cluster.
+
+Percentiles are the upper edge of the histogram bucket a sample fell in, so
+they are never optimistic. Achieved throughput, percentiles, maximum, and late
+counts are medians of the three independent fresh-cluster repetitions.
+
+Each server used a fresh database for every repetition because separate
+`keel-bench run` processes begin client nonces at the same reserved value. The
+full allocation manifest, per-host hardware records, per-run output, node logs,
+and initial/final status responses are retained in `results/bench/cross-node/`.
