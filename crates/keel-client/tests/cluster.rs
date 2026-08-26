@@ -13,9 +13,12 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use keel_client::{Client, Pipeline};
+
+static CLUSTER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 /// A port nobody is using, released before the server binds it.
 ///
@@ -53,6 +56,7 @@ struct Cluster {
     voters: Vec<u64>,
     binary: PathBuf,
     _dir: tempfile::TempDir,
+    _serial: MutexGuard<'static, ()>,
 }
 
 impl Drop for Cluster {
@@ -75,6 +79,12 @@ impl Cluster {
     }
 
     fn start_with_options(n: u64, checkpoint_entries: u64, voters: Vec<u64>) -> Cluster {
+        // Each test starts several real processes. Running all such tests in
+        // parallel makes startup depend on machine load and lets a fast
+        // snapshot test race a slow neighbour for its observation window.
+        let serial = CLUSTER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let binary = server_binary();
         assert!(
             binary.exists(),
@@ -96,6 +106,7 @@ impl Cluster {
             voters,
             binary,
             _dir: dir,
+            _serial: serial,
         };
         for index in 0..n as usize {
             let child = cluster.spawn_node(index);
@@ -123,10 +134,16 @@ impl Cluster {
     }
 
     fn restart(&mut self, index: usize) {
-        self.processes[index] = self.spawn_node(index);
+        self.restart_without_waiting(index);
         let ready = dir_of(self, index as u64 + 1).join("keel.ready");
         wait_for(Duration::from_secs(30), || ready.exists())
             .unwrap_or_else(|| panic!("node {} never became ready after restart", index + 1));
+    }
+
+    fn restart_without_waiting(&mut self, index: usize) {
+        let ready = dir_of(self, index as u64 + 1).join("keel.ready");
+        let _ = std::fs::remove_file(ready);
+        self.processes[index] = self.spawn_node(index);
     }
 
     fn spawn_node(&self, index: usize) -> Child {
@@ -433,8 +450,8 @@ fn a_real_follower_resumes_and_installs_a_snapshot_after_it_is_killed_mid_stream
 
     let mut client = cluster.client(71);
     client.register().expect("register");
-    let value = vec![b'x'; 256 * 1024];
     for i in 0..40u32 {
+        let value = snapshot_value(256 * 1024, u64::from(i) + 1);
         client
             .put(format!("snapshot-{i:03}").as_bytes(), &value)
             .unwrap_or_else(|error| panic!("write {i} failed: {error}"));
@@ -455,9 +472,12 @@ fn a_real_follower_resumes_and_installs_a_snapshot_after_it_is_killed_mid_stream
     })
     .expect("the leader never checkpointed");
 
-    cluster.restart(follower);
     let follower_snapshots = dir_of(&cluster, follower as u64 + 1).join("snapshots");
-    wait_for_fast(Duration::from_secs(20), || {
+    // Begin observing before the process publishes its ready file. Waiting for
+    // ready first left a race where a loopback transfer could finish and rename
+    // the staging directory before this test ever looked at it.
+    cluster.restart_without_waiting(follower);
+    let staged = wait_for_fast(Duration::from_secs(20), || {
         std::fs::read_dir(&follower_snapshots)
             .ok()
             .is_some_and(|entries| {
@@ -466,8 +486,28 @@ fn a_real_follower_resumes_and_installs_a_snapshot_after_it_is_killed_mid_stream
                         && directory_bytes(&entry.path()) > 0
                 })
             })
-    })
-    .expect("the follower never received enough snapshot bytes to interrupt");
+    });
+    if staged.is_none() {
+        let snapshots = std::fs::read_dir(&follower_snapshots)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| {
+                format!(
+                    "{}:{}",
+                    entry.file_name().to_string_lossy(),
+                    directory_bytes(&entry.path())
+                )
+            })
+            .collect::<Vec<_>>();
+        panic!(
+            "the follower never exposed staged snapshot bytes; follower={:?}, leader={:?}, snapshots={snapshots:?}, process={:?}",
+            cluster.status(follower),
+            cluster.status(leader),
+            cluster.processes[follower].try_wait()
+        );
+    }
     cluster.kill(follower);
     cluster.restart(follower);
 
@@ -508,6 +548,19 @@ fn a_real_follower_resumes_and_installs_a_snapshot_after_it_is_killed_mid_stream
             cluster.processes[follower].try_wait()
         );
     }
+}
+
+fn snapshot_value(size: usize, seed: u64) -> Vec<u8> {
+    let mut state = seed ^ 0x9e37_79b9_7f4a_7c15;
+    let mut bytes = Vec::with_capacity(size);
+    while bytes.len() < size {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let take = (size - bytes.len()).min(8);
+        bytes.extend_from_slice(&state.to_le_bytes()[..take]);
+    }
+    bytes
 }
 
 #[test]
