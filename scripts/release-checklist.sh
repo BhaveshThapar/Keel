@@ -52,7 +52,12 @@ step "formatting"
 if cargo fmt --all --check >/dev/null 2>&1; then ok "cargo fmt"; else problem "cargo fmt --all --check"; fi
 
 step "lints, both feature builds"
-if cargo clippy --workspace --all-targets --all-features -- -D warnings >/dev/null 2>&1; then
+ALL_FEATURES_TARGET="${CARGO_TARGET_DIR:-target}/clippy-all-features"
+# Keep the deliberately broken `negative-demos` binaries away from the normal
+# target directory. Cargo otherwise leaves `target/debug/keel-server` built with
+# those workspace-unified features, and real-cluster tests launch that path.
+if CARGO_TARGET_DIR="$ALL_FEATURES_TARGET" \
+    cargo clippy --workspace --all-targets --all-features -- -D warnings >/dev/null 2>&1; then
     ok "clippy --all-features"
 else
     problem "cargo clippy --workspace --all-targets --all-features"
@@ -91,8 +96,10 @@ done
 # asserts the harness catches the result, so a rule that stopped being
 # load-bearing shows up here.
 step "the deliberately broken builds still fail the way they should"
+NEGATIVE_TARGET="${CARGO_TARGET_DIR:-target}/negative-demos"
 for pkg in keel-raft keel-sm keel-fuzz; do
-    if cargo test -p "$pkg" --features negative-demos >/dev/null 2>&1; then
+    if CARGO_TARGET_DIR="$NEGATIVE_TARGET" \
+        cargo test -p "$pkg" --features negative-demos >/dev/null 2>&1; then
         ok "$pkg --features negative-demos"
     else
         problem "cargo test -p $pkg --features negative-demos"
