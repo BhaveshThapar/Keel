@@ -300,10 +300,30 @@ pub enum Peer {
     SnapshotChunk {
         index: Index,
         term: Term,
+        file: String,
         offset: u64,
+        crc: u32,
         last: bool,
         data: Bytes,
     },
+    /// Ask the snapshot holder for the next chunk after every byte the
+    /// receiver has already verified. One request per chunk is the flow-control
+    /// window: bulk transfer cannot grow the transport queue without bound.
+    SnapshotRequest {
+        index: Index,
+        term: Term,
+        position: Vec<(String, u64)>,
+    },
+    /// The receiver already has every file (possible after a process restart),
+    /// so there is no final data chunk on which to carry `last`.
+    SnapshotComplete {
+        index: Index,
+        term: Term,
+        digest: u64,
+    },
+    /// The follower installed the bytes, or abandoned the transfer. The leader
+    /// feeds this back into `ReportSnapshotStatus` so replication can resume.
+    SnapshotStatus { index: Index, term: Term, ok: bool },
 }
 
 // ---------------------------------------------------------------- encoding
@@ -492,9 +512,26 @@ mod tests {
             Peer::SnapshotChunk {
                 index: 900,
                 term: 4,
+                file: "000001.sst".into(),
                 offset: 4096,
+                crc: 0x1234_5678,
                 last: false,
                 data: b("chunk"),
+            },
+            Peer::SnapshotRequest {
+                index: 900,
+                term: 4,
+                position: vec![("000001.sst".into(), 4096)],
+            },
+            Peer::SnapshotComplete {
+                index: 900,
+                term: 4,
+                digest: 0x1234_5678_9abc_def0,
+            },
+            Peer::SnapshotStatus {
+                index: 900,
+                term: 4,
+                ok: true,
             },
         ]
     }

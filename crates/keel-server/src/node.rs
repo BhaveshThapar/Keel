@@ -14,14 +14,18 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use bytes::Bytes;
+use keel_api::Peer;
 use keel_log::{LogOptions, StdFs, StdLog, SyncMode};
 use keel_net::TcpTransport;
-use keel_node::Node;
-use keel_raft::{ConfState, Config, NodeId, Role};
-use keel_sm::{LsmStore, StateMachine};
+use keel_node::{Incoming as SnapshotIncoming, Node, Outgoing, SnapshotEvent, checkpoint_is_due};
+use keel_raft::{
+    ChangeKind, ConfChangeSingle, ConfChangeV2, ConfState, Config, NodeId, Role, SnapshotMeta,
+};
+use keel_sm::{Accepted, LsmStore, StateMachine};
 
-use crate::clients::{Clients, Incoming};
-use crate::{Admin, Kind, Metric, Observable, ServerError, Status, write_ready_file};
+use crate::clients::{Clients, Incoming as ClientIncoming};
+use crate::{Admin, Kind, Metric, Observable, Request, ServerError, Status, write_ready_file};
 
 /// Whether a turn found anything to do.
 ///
@@ -51,6 +55,29 @@ pub struct NodeConfig {
     pub sync_mode: SyncMode,
     /// How much wall-clock time one tick of the consensus clock represents.
     pub tick: Duration,
+    /// Applied entries between storage-engine checkpoints.
+    pub checkpoint_entries: u64,
+}
+
+struct Checkpoint {
+    meta: SnapshotMeta,
+    path: PathBuf,
+    digest: u64,
+}
+
+struct Transfer {
+    ready_number: u64,
+    incoming: SnapshotIncoming,
+    last_request: Instant,
+}
+
+#[derive(Clone, Copy, Default)]
+struct SnapshotProgress {
+    checkpoints: u64,
+    checkpoint_nanos: u64,
+    installed: u64,
+    bytes_sent: u64,
+    bytes_received: u64,
 }
 
 /// A running node.
@@ -65,6 +92,11 @@ pub struct Server {
     last_tick: Instant,
     /// Set once the ready file has been written, so it is written once.
     announced: bool,
+    checkpoint: Option<Checkpoint>,
+    transfer: Option<Transfer>,
+    snapshot_activity: BTreeMap<NodeId, Instant>,
+    force_checkpoint: bool,
+    snapshot_progress: SnapshotProgress,
 }
 
 impl Server {
@@ -128,7 +160,8 @@ impl Server {
         let admin = Admin::bind(cfg.admin_addr)?;
         let clients = Clients::bind(cfg.client_addr)?;
 
-        Ok(Self {
+        let checkpoint = Self::recover_checkpoint(&cfg, &node)?;
+        let mut server = Self {
             node,
             admin,
             clients,
@@ -136,7 +169,14 @@ impl Server {
             cfg,
             last_tick: Instant::now(),
             announced: false,
-        })
+            checkpoint,
+            transfer: None,
+            snapshot_activity: BTreeMap::new(),
+            force_checkpoint: false,
+            snapshot_progress: SnapshotProgress::default(),
+        };
+        server.resume_incoming_offer()?;
+        Ok(server)
     }
 
     pub fn admin_addr(&self) -> Result<SocketAddr, ServerError> {
@@ -190,12 +230,13 @@ impl Server {
         busy |= !incoming.is_empty();
         for item in incoming {
             match item {
-                Incoming::Propose { request, .. } | Incoming::Register { request, .. } => {
+                ClientIncoming::Propose { request, .. }
+                | ClientIncoming::Register { request, .. } => {
                     if let Some(proposal) = proposal_of(request, Self::now_ms()) {
                         self.node.propose(proposal);
                     }
                 }
-                Incoming::Read { ctx } => self.node.read_index(ctx),
+                ClientIncoming::Read { ctx } => self.node.read_index(ctx),
             }
         }
 
@@ -204,6 +245,8 @@ impl Server {
             .turn()
             .map_err(|e| ServerError::Io(std::io::Error::other(e.to_string())))?;
         busy |= turn.did_something();
+
+        busy |= self.handle_snapshot_events()?;
 
         let answers = self.node.take_answers();
         busy |= !answers.is_empty();
@@ -232,10 +275,20 @@ impl Server {
         // The engine spawns no threads here, so its deferred work happens on
         // this turn or not at all. One unit, so a merge cannot stall the timer.
         let _ = self.node.state_machine().store().maintain();
+        busy |= self.maybe_checkpoint()?;
+        busy |= self.retry_snapshot_request()?;
+        busy |= self.expire_snapshot_senders();
 
         let reported = self.status();
-        self.admin
-            .poll(&Reported(reported.clone(), self.node.progress()))?;
+        let (_, commands) = self.admin.poll_with_commands(&Reported(
+            reported.clone(),
+            self.node.progress(),
+            self.snapshot_progress,
+        ))?;
+        busy |= !commands.is_empty();
+        for command in commands {
+            self.execute_admin(command);
+        }
         let status = reported;
 
         if !self.announced {
@@ -292,9 +345,453 @@ impl Server {
         self.node.status().role == Role::Leader
     }
 
+    fn snapshot_root(cfg: &NodeConfig) -> PathBuf {
+        cfg.dir.join("snapshots")
+    }
+
+    fn checkpoint_path(cfg: &NodeConfig, meta: &SnapshotMeta) -> PathBuf {
+        Self::snapshot_root(cfg).join(format!("{}-{}", meta.index, meta.term))
+    }
+
+    fn staging_path(cfg: &NodeConfig, meta: &SnapshotMeta) -> PathBuf {
+        Self::snapshot_root(cfg).join(format!("incoming-{}-{}", meta.index, meta.term))
+    }
+
+    fn transfer_manifest(cfg: &NodeConfig) -> PathBuf {
+        Self::snapshot_root(cfg).join("incoming.meta")
+    }
+
+    fn persist_incoming_offer(&self, from: NodeId, meta: &SnapshotMeta) -> Result<(), ServerError> {
+        let root = Self::snapshot_root(&self.cfg);
+        std::fs::create_dir_all(&root)?;
+        let path = Self::transfer_manifest(&self.cfg);
+        let pending = path.with_extension("pending");
+        let mut bytes = from.to_le_bytes().to_vec();
+        bytes.extend(
+            keel_api::encode(meta)
+                .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?,
+        );
+        {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&pending)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+        }
+        std::fs::rename(pending, path)?;
+        std::fs::File::open(root)?.sync_all()?;
+        Ok(())
+    }
+
+    fn resume_incoming_offer(&mut self) -> Result<(), ServerError> {
+        let path = Self::transfer_manifest(&self.cfg);
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        if bytes.len() < 8 {
+            return Err(ServerError::Recovery {
+                what: "an incoming snapshot manifest",
+                why: "the file is shorter than its sender id".into(),
+            });
+        }
+        let mut sender = [0u8; 8];
+        sender.copy_from_slice(&bytes[..8]);
+        let from = NodeId::from_le_bytes(sender);
+        let meta = keel_api::decode::<SnapshotMeta>(&bytes[8..]).map_err(|error| {
+            ServerError::Recovery {
+                what: "an incoming snapshot manifest",
+                why: error.to_string(),
+            }
+        })?;
+        if Self::staging_path(&self.cfg, &meta).exists() {
+            self.node.resume_snapshot_offer(from, meta);
+        } else {
+            std::fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
+    fn recover_checkpoint(
+        cfg: &NodeConfig,
+        node: &Node<StdFs, LsmStore, TcpTransport>,
+    ) -> Result<Option<Checkpoint>, ServerError> {
+        let Some(meta) = node.log().snapshot().cloned() else {
+            return Ok(None);
+        };
+        if node.applied() < meta.index {
+            return Ok(None);
+        }
+        let path = Self::checkpoint_path(cfg, &meta);
+        if !path.exists() && node.applied() == meta.index {
+            std::fs::create_dir_all(Self::snapshot_root(cfg))?;
+            node.state_machine()
+                .store()
+                .checkpoint(&path)
+                .map_err(sm_error)?;
+        }
+        if !path.exists() {
+            return Ok(None);
+        }
+        let digest = digest_at(&path).map_err(sm_error)?;
+        Ok(Some(Checkpoint { meta, path, digest }))
+    }
+
+    fn handle_snapshot_events(&mut self) -> Result<bool, ServerError> {
+        let events = self.node.take_snapshot_events();
+        let busy = !events.is_empty();
+        for event in events {
+            match event {
+                SnapshotEvent::InstallOffered {
+                    ready_number,
+                    from,
+                    meta,
+                } => {
+                    self.persist_incoming_offer(from, &meta)?;
+                    let staging = Self::staging_path(&self.cfg, &meta);
+                    let incoming = if staging.exists() {
+                        SnapshotIncoming::resume(from, meta, &staging)
+                    } else {
+                        SnapshotIncoming::new(from, meta, &staging)
+                    }
+                    .map_err(sm_error)?;
+                    self.transfer = Some(Transfer {
+                        ready_number,
+                        incoming,
+                        last_request: Instant::now(),
+                    });
+                    self.send_snapshot_request()?;
+                }
+                SnapshotEvent::Request {
+                    from,
+                    index,
+                    term,
+                    position,
+                } => self.serve_snapshot_request(from, index, term, position)?,
+                SnapshotEvent::Chunk {
+                    from,
+                    index,
+                    term,
+                    chunk,
+                } => {
+                    let Some(transfer) = self.transfer.as_mut() else {
+                        continue;
+                    };
+                    if transfer.incoming.from != from
+                        || transfer.incoming.meta.index != index
+                        || transfer.incoming.meta.term != term
+                    {
+                        continue;
+                    }
+                    let bytes = chunk.bytes.len() as u64;
+                    let accepted = transfer.incoming.accept(&chunk).map_err(sm_error)?;
+                    if matches!(accepted, Accepted::Written | Accepted::Complete) {
+                        self.snapshot_progress.bytes_received += bytes;
+                    }
+                    self.send_snapshot_request()?;
+                }
+                SnapshotEvent::Complete {
+                    from,
+                    index,
+                    term,
+                    digest,
+                } => self.finish_snapshot(from, index, term, digest)?,
+                SnapshotEvent::Status {
+                    from,
+                    index,
+                    term,
+                    ok,
+                } => {
+                    if self.checkpoint.as_ref().is_some_and(|checkpoint| {
+                        checkpoint.meta.index == index && checkpoint.meta.term == term
+                    }) {
+                        self.node.report_snapshot(from, ok);
+                        self.snapshot_activity.remove(&from);
+                    }
+                }
+            }
+        }
+        Ok(busy)
+    }
+
+    fn send_snapshot_request(&mut self) -> Result<(), ServerError> {
+        let Some(transfer) = self.transfer.as_mut() else {
+            return Ok(());
+        };
+        let position = transfer.incoming.position().into_iter().collect();
+        let peer = transfer.incoming.from;
+        let meta = &transfer.incoming.meta;
+        self.node
+            .send_peer(
+                peer,
+                Peer::SnapshotRequest {
+                    index: meta.index,
+                    term: meta.term,
+                    position,
+                },
+            )
+            .map_err(node_error)?;
+        transfer.last_request = Instant::now();
+        Ok(())
+    }
+
+    fn retry_snapshot_request(&mut self) -> Result<bool, ServerError> {
+        let due = self
+            .transfer
+            .as_ref()
+            .is_some_and(|transfer| transfer.last_request.elapsed() >= Duration::from_millis(250));
+        if due {
+            self.send_snapshot_request()?;
+        }
+        Ok(due)
+    }
+
+    fn serve_snapshot_request(
+        &mut self,
+        peer: NodeId,
+        index: u64,
+        term: u64,
+        position: BTreeMap<String, u64>,
+    ) -> Result<(), ServerError> {
+        self.snapshot_activity.insert(peer, Instant::now());
+        let Some(checkpoint) = self
+            .checkpoint
+            .as_ref()
+            .filter(|checkpoint| checkpoint.meta.index == index && checkpoint.meta.term == term)
+        else {
+            self.node.report_snapshot(peer, false);
+            return Ok(());
+        };
+        let mut outgoing =
+            Outgoing::new(peer, checkpoint.meta.clone(), &checkpoint.path).map_err(sm_error)?;
+        outgoing.resume_from(position);
+        match outgoing.next_chunk().map_err(sm_error)? {
+            Some(chunk) => {
+                self.snapshot_progress.bytes_sent += chunk.bytes.len() as u64;
+                self.node
+                    .send_peer(
+                        peer,
+                        Peer::SnapshotChunk {
+                            index,
+                            term,
+                            file: chunk.file,
+                            offset: chunk.offset,
+                            crc: chunk.crc,
+                            last: chunk.last,
+                            data: Bytes::from(chunk.bytes),
+                        },
+                    )
+                    .map_err(node_error)
+            }
+            None => self
+                .node
+                .send_peer(
+                    peer,
+                    Peer::SnapshotComplete {
+                        index,
+                        term,
+                        digest: checkpoint.digest,
+                    },
+                )
+                .map_err(node_error),
+        }
+    }
+
+    fn expire_snapshot_senders(&mut self) -> bool {
+        let expired: Vec<NodeId> = self
+            .snapshot_activity
+            .iter()
+            .filter(|(_, seen)| seen.elapsed() >= Duration::from_millis(500))
+            .map(|(peer, _)| *peer)
+            .collect();
+        for peer in &expired {
+            self.snapshot_activity.remove(peer);
+            self.node.report_snapshot(*peer, false);
+        }
+        !expired.is_empty()
+    }
+
+    fn finish_snapshot(
+        &mut self,
+        from: NodeId,
+        index: u64,
+        term: u64,
+        digest: u64,
+    ) -> Result<(), ServerError> {
+        let Some(mut transfer) = self.transfer.take() else {
+            return Ok(());
+        };
+        if transfer.incoming.from != from
+            || transfer.incoming.meta.index != index
+            || transfer.incoming.meta.term != term
+        {
+            self.transfer = Some(transfer);
+            return Ok(());
+        }
+        transfer.incoming.finish();
+        let meta = transfer.incoming.meta.clone();
+
+        // KEEL-12's ordering: floor durable first, state adoption second.
+        self.node
+            .persist_snapshot_floor(&meta)
+            .map_err(node_error)?;
+        self.node
+            .state_machine_mut()
+            .store_mut()
+            .replace_from_checkpoint(|destination| {
+                transfer.incoming.publish(destination, digest, digest_at)
+            })
+            .map_err(sm_error)?;
+        if self.node.applied() != meta.index {
+            return Err(ServerError::Recovery {
+                what: "an installed snapshot",
+                why: format!(
+                    "checkpoint says applied={} but the offer says {}",
+                    self.node.applied(),
+                    meta.index
+                ),
+            });
+        }
+        let checkpoint = self.write_checkpoint(meta.clone(), digest)?;
+        self.node
+            .snapshot_installed(transfer.ready_number, meta.clone());
+        self.snapshot_progress.installed += 1;
+        self.node
+            .send_peer(
+                from,
+                Peer::SnapshotStatus {
+                    index,
+                    term,
+                    ok: true,
+                },
+            )
+            .map_err(node_error)?;
+        self.checkpoint = Some(checkpoint);
+        let manifest = Self::transfer_manifest(&self.cfg);
+        if manifest.exists() {
+            std::fs::remove_file(manifest)?;
+        }
+        Ok(())
+    }
+
+    fn maybe_checkpoint(&mut self) -> Result<bool, ServerError> {
+        if self.node.role() != Role::Leader {
+            return Ok(false);
+        }
+        let last = self.checkpoint.as_ref().map_or_else(
+            || self.node.log().snapshot().map_or(0, |meta| meta.index),
+            |c| c.meta.index,
+        );
+        let applied = self.node.applied();
+        let due = if self.cfg.checkpoint_entries == keel_node::ENTRIES_BETWEEN_CHECKPOINTS {
+            checkpoint_is_due(applied, last)
+        } else {
+            applied.saturating_sub(last) >= self.cfg.checkpoint_entries.max(1)
+        };
+        if !due && !self.force_checkpoint {
+            return Ok(false);
+        }
+        self.force_checkpoint = false;
+        let Some(meta) = self.node.checkpoint_meta() else {
+            return Ok(false);
+        };
+        let started = Instant::now();
+        let digest = self.node.state_machine().state_digest().map_err(sm_error)?;
+        let checkpoint = self.write_checkpoint(meta.clone(), digest)?;
+        self.node.checkpoint_taken(meta).map_err(node_error)?;
+        self.snapshot_progress.checkpoints += 1;
+        self.snapshot_progress.checkpoint_nanos += started.elapsed().as_nanos() as u64;
+        self.checkpoint = Some(checkpoint);
+        self.remove_old_checkpoints()?;
+        Ok(true)
+    }
+
+    fn write_checkpoint(&self, meta: SnapshotMeta, digest: u64) -> Result<Checkpoint, ServerError> {
+        let root = Self::snapshot_root(&self.cfg);
+        std::fs::create_dir_all(&root)?;
+        let path = Self::checkpoint_path(&self.cfg, &meta);
+        let pending = path.with_extension("pending");
+        if pending.exists() {
+            std::fs::remove_dir_all(&pending)?;
+        }
+        if path.exists() {
+            std::fs::remove_dir_all(&path)?;
+        }
+        self.node
+            .state_machine()
+            .store()
+            .checkpoint(&pending)
+            .map_err(sm_error)?;
+        std::fs::rename(&pending, &path)?;
+        std::fs::File::open(&root)?.sync_all()?;
+        Ok(Checkpoint { meta, path, digest })
+    }
+
+    fn remove_old_checkpoints(&self) -> Result<(), ServerError> {
+        let Some(current) = &self.checkpoint else {
+            return Ok(());
+        };
+        for entry in std::fs::read_dir(Self::snapshot_root(&self.cfg))? {
+            let path = entry?.path();
+            if path != current.path
+                && path.is_dir()
+                && !path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("incoming-"))
+            {
+                std::fs::remove_dir_all(path)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn execute_admin(&mut self, request: Request) {
+        let change = |kind, node| ConfChangeV2 {
+            changes: vec![ConfChangeSingle { kind, node }],
+        };
+        match request {
+            Request::TransferLeader { to } => self.node.transfer_leader(to),
+            Request::AddLearner { node } if self.cfg.peers.contains_key(&node) => {
+                let _ = self
+                    .node
+                    .propose_conf_change(change(ChangeKind::AddLearner, node));
+            }
+            Request::Promote { node }
+                if self.cfg.peers.contains_key(&node) && self.node.learner_caught_up(node) =>
+            {
+                let _ = self
+                    .node
+                    .propose_conf_change(change(ChangeKind::AddVoter, node));
+            }
+            Request::Remove { node } => {
+                let _ = self
+                    .node
+                    .propose_conf_change(change(ChangeKind::RemoveNode, node));
+            }
+            Request::Snapshot => self.force_checkpoint = true,
+            Request::Status
+            | Request::Metrics
+            | Request::Unknown
+            | Request::AddLearner { .. }
+            | Request::Promote { .. } => {}
+        }
+    }
+
     pub fn ready_file(dir: &Path) -> PathBuf {
         dir.join("keel.ready")
     }
+}
+
+fn sm_error(error: keel_sm::StateMachineError) -> ServerError {
+    ServerError::Io(std::io::Error::other(error.to_string()))
+}
+
+fn node_error(error: keel_node::NodeError) -> ServerError {
+    ServerError::Io(std::io::Error::other(error.to_string()))
+}
+
+fn digest_at(path: &Path) -> Result<u64, keel_sm::StateMachineError> {
+    StateMachine::new(LsmStore::open(path)?).state_digest()
 }
 
 /// Turn a client request into the proposal that goes in the log.
@@ -354,7 +851,7 @@ fn resolve(sm: &StateMachine<LsmStore>, query: &keel_api::Query) -> keel_api::Re
 /// The admin surface needs an [`Observable`], and the node is already borrowed
 /// mutably by the turn that is answering. A snapshot of the status and the
 /// counters is enough: a scrape is a point in time by definition.
-struct Reported(Status, keel_node::Progress);
+struct Reported(Status, keel_node::Progress, SnapshotProgress);
 
 impl Observable for Reported {
     fn status(&self) -> Status {
@@ -364,6 +861,7 @@ impl Observable for Reported {
     fn metrics(&self) -> Vec<Metric> {
         let s = &self.0;
         let p = &self.1;
+        let snapshots = &self.2;
         vec![
             Metric {
                 name: "keel_term",
@@ -488,6 +986,36 @@ impl Observable for Reported {
                 help: "Time spent applying committed entries to the state machine",
                 kind: Kind::Counter,
                 value: p.apply_nanos as f64 / 1e9,
+            },
+            Metric {
+                name: "keel_snapshots_taken_total",
+                help: "Storage-engine checkpoints published by this node",
+                kind: Kind::Counter,
+                value: snapshots.checkpoints as f64,
+            },
+            Metric {
+                name: "keel_snapshot_checkpoint_seconds_total",
+                help: "Time spent creating and publishing local checkpoints",
+                kind: Kind::Counter,
+                value: snapshots.checkpoint_nanos as f64 / 1e9,
+            },
+            Metric {
+                name: "keel_snapshots_installed_total",
+                help: "Received snapshots durably installed by this node",
+                kind: Kind::Counter,
+                value: snapshots.installed as f64,
+            },
+            Metric {
+                name: "keel_snapshot_bytes_sent_total",
+                help: "Checkpoint payload bytes sent to followers",
+                kind: Kind::Counter,
+                value: snapshots.bytes_sent as f64,
+            },
+            Metric {
+                name: "keel_snapshot_bytes_received_total",
+                help: "Checkpoint payload bytes verified from leaders",
+                kind: Kind::Counter,
+                value: snapshots.bytes_received as f64,
             },
         ]
     }

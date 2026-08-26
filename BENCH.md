@@ -26,8 +26,12 @@ came from, and a screenshot with no caption is how a laptop measurement becomes
 a claim.
 
 The harness for the Reference tier is built and works. What is missing is the
-hardware, and that is the whole of what is missing: `scripts/campaign.sh` and
-`scripts/etcd-baseline.sh` run unchanged on a Linux box.
+hardware, and that is the whole of what is missing: `scripts/campaign.sh`,
+`scripts/etcd-baseline.sh`, `scripts/snapshot-bench.sh` and
+`scripts/breakdown.sh` run unchanged on a Linux box.
+
+`scripts/umiacs-reference.sh` runs the complete same-host set with Reference
+headers. Its allocation and transfer contract is in [`UMIACS.md`](UMIACS.md).
 
 ## The gate
 
@@ -54,6 +58,9 @@ number that bypassed it is the one everybody quotes.
 **What the gate cannot do**, stated rather than pretended past: the tier is a
 label the caller chooses. Nothing in a type can tell a dedicated Linux box from
 a laptop. What stops a laptop number being headlined is that somebody has to
+pass `--tier reference` explicitly. The UMIACS runner does that only after its
+tag, tree, operating-system, tool, and filesystem preflight and records the
+scheduler allocation beside the artifacts. Somebody could still
 write `Tier::Reference` down, in a commit, where a reviewer can see it.
 
 ## Methodology
@@ -149,6 +156,9 @@ scripts/ablation-fsync.sh
 
 # Where the time in a write goes: persist, send, apply, both arms.
 scripts/breakdown.sh
+
+# 1 GiB logical state: checkpoint stall and resumable real-process transfer.
+scripts/snapshot-bench.sh
 ```
 
 ## What was measured
@@ -328,6 +338,7 @@ only thing P26 is still missing, and it is not engineering.
 | PR-2 throughput-vs-p99 curves, three runs, median | `scripts/campaign.sh`, `results/bench/` |
 | PR-4 etcd baseline on identical hardware | `scripts/etcd-baseline.sh` |
 | PR-5 failover across ≥ 100 trials | `scripts/failover.sh` |
+| PR-6 checkpoint stall and lagging-follower snapshot transfer | `scripts/snapshot-bench.sh` (harness smoke-tested; Reference result pending) |
 
 ## What is not measured, and is not claimed
 
@@ -344,19 +355,15 @@ only thing P26 is still missing, and it is not engineering.
 - **No flame graphs.** The phase breakdown PR-7 asked for *is* measured now —
   see "Where the time goes" above — but it says where the time went between
   three named boundaries, not which function spent it.
-- **No 1 GB snapshot benchmark** (PR-6), and it is not a timing that is waiting
-  to be taken. Snapshot creation, streaming, interruption and resumption are all
-  exercised and asserted — see CORRECTNESS.md — but by the simulator and by
-  tests that drive the transfer types directly. The *daemon* never calls for a
-  checkpoint, so its log is never compacted, so no leader it runs ever offers a
-  snapshot: there is no cluster of real processes to time. Wiring that into
-  `keel-node`'s loop is a phase of work, not a measurement, and until it exists
-  this row is a missing feature rather than a missing number.
+- **No committed 1 GiB snapshot result yet** (PR-6). This is now only a
+  measurement waiting to be taken: `keel-bench snapshot` creates incompressible
+  logical state, forces a real leader checkpoint, restarts a follower below the
+  compacted floor, and times publication of the received checkpoint. A 1 MiB
+  admitted smoke run completes locally; `scripts/snapshot-bench.sh` is the
+  three-run Reference-tier command for UMIACS.
 - **No cross-node numbers.** Everything is localhost. Cross-node measurement is
   a different question and needs the same hardware the Reference tier does.
-- **The absolute throughput is low and the client is part of why.** A blocking
-  client with one request in flight per thread caps achievable throughput at
-  threads divided by per-request latency, whatever the cluster could do. The
-  fsync-off arm reaching only ~510 ops/s is that ceiling as much as anything
-  else. An async or pipelining client would answer a question this harness
-  cannot.
+- **Saturation is not established on the laptop.** The pipelined generator held
+  every offered rate until it shared ten cores with 64 sender threads; the
+  cluster kept up each time the generator grew. Dedicated hardware is needed to
+  separate the generator's ceiling from the cluster's.

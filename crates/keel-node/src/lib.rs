@@ -27,5 +27,5 @@
 mod loop_;
 pub mod snapshots;
 
-pub use loop_::{Answer, Node, NodeError, Progress, Turn};
+pub use loop_::{Answer, Node, NodeError, Progress, SnapshotEvent, Turn};
 pub use snapshots::{ENTRIES_BETWEEN_CHECKPOINTS, Incoming, Outgoing, checkpoint_is_due};

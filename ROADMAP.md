@@ -7,7 +7,8 @@ Milestones and their exit criteria come from [plan.md](plan.md), which is the
 PRD and does not change. This file is the ordering, the constraints that made
 one phase depend on another, and the decisions each phase was waiting on.
 
-**All twenty-seven phases are done, and `v1.0.0` is tagged.** This file is kept
+**All thirty phases are done; `v1.0.0`, `v2.0.0`, and `v3.0.0` are tagged.**
+This file is kept
 as the record of what was sequenced and why, because the reasoning about
 *ordering* is the part that does not survive in a commit log — which phase had to
 come before which, and what it cost when the answer was got wrong.
@@ -147,7 +148,7 @@ unchanged. That is checkable because the disk is inside `World::fingerprint`, so
 |---|---|---|
 | ~~P24~~ | ~~The benchmark gate, **before any number exists**~~ | **Done.** `Evidence` is a sealed trait with two implementations, so there is no third way to write under `results/bench/`; tmpfs and fsync-off are refused and their ablations admitted with the reason stamped in. The path is not the caller's to choose either — it names a file, not a location ([ADR-031](DESIGN.md)) |
 | ~~P25~~ | ~~Workload, loops, campaigns, curves, plots~~ | **Done.** Open-loop with the latency measured from when each request was *due*, so a stall is charged to every request it delayed ([ADR-032](DESIGN.md)); curves rather than points, three runs a rate, median reported; SVG by integer arithmetic with no plotting library, so it regenerates byte for byte |
-| ~~P26~~ | ~~etcd baseline, failover, snapshot bench, latency breakdown~~ | **Partly done.** Failover: 110 trials, median 633 ms to the first acknowledged write. etcd v3.5.17 by its own benchmark tool built from a clone at the same tag: 7,810 req/s against Keel's ~110 — and the artifact says at length why that ratio is not the story, since etcd is fsyncing inside a Linux VM while Keel uses `F_FULLFSYNC` natively. **Not claimed:** the fsync/RTT/apply breakdown, which needs timers in the hot path; and the 1 GB snapshot bench, which is not a timing waiting to be taken — the daemon never calls for a checkpoint, so there is no cluster of real processes to time. That was recorded here as a missing number when it is a missing feature. The Linux hardware remains the other gap, and it is not engineering |
+| ~~P26~~ | ~~etcd baseline, failover, snapshot bench, latency breakdown~~ | **Done except for Reference hardware.** Failover is now reported as a distribution (p10 411 ms, p90 1,225 ms) because its median is unstable across halves. Persist/send/apply are measured. The daemon snapshot feature and the 1 GiB benchmark harness landed in P29; its Reference result, like the cross-node curve and fair etcd comparison, waits on Linux hardware |
 | ~~P27~~ | ~~Compose, dashboard, `BENCH.md`, results-first README~~ | **Done.** A three-node Compose stack with Prometheus at a five-second scrape — not the default fifteen, at which an election falls between two samples — and a Grafana dashboard whose every panel is *described*, because a dashboard that needs explaining out loud gets screenshotted and misread. BENCH.md, OPERATIONS.md, and a README that leads with the numbers and with what they are not |
 | ~~P28~~ | ~~Run the campaigns, release checklist, `v1.0.0`~~ | **Done.** `scripts/release-checklist.sh` runs nine groups of checks and exits 0 on a clean tree. Decisions taken: **no crates.io publish** — a workspace carrying a vendored copy of another repository does not belong on a registry, and the metadata check stays as hygiene; and **the nightly is enough** rather than a multi-day soak, with that gap in README's "Not claimed" |
 
@@ -156,20 +157,18 @@ measurement impossible to publish is built *before* the code that can produce a
 number, because a gate added afterwards is a gate that has already been
 bypassed once.
 
-### Decisions still owed, and where they bind
+### M5 — close the production gaps after v2.0.0
 
-Deferred here because none of them blocks Phase 2, listed so they are taken at
-the right phase rather than at the last moment:
+| # | Phase | Exit criterion |
+|---|---|---|
+| ~~P29~~ | ~~Snapshots between real daemon processes~~ | **Done.** Leaders checkpoint by applied entries and compact; followers request one verified chunk at a time, persist the pending offer, resume from staged per-file positions after `SIGKILL`, verify the whole-state digest and publish only after the log floor is durable. The real-process test kills the receiver mid-stream and requires the restarted process to finish. It found [KEEL-19](BUGS.md) |
+| ~~P30~~ | ~~Operator surface and the missing snapshot benchmark~~ | **Done.** `keel-admin` drives add-learner, caught-up promotion, remove, leader transfer and manual snapshot through the single-threaded host loop. A four-process test covers learner → voter → removed. `keel-bench snapshot` and `scripts/snapshot-bench.sh` measure checkpoint stall and real-process transfer; a 1 MiB admitted smoke run is green, while the 1 GiB Reference result waits on UMIACS |
+
+### The one external decision still owed
 
 | Decision | Binds at |
 |---|---|
-| Linux hardware: bare metal, or cloud in one placement group (which yields Exploratory tier only, and therefore no headline number) | P26 |
-| Snapshots in the daemon: whether `keel-node`'s loop learns to checkpoint, offer and stream, or whether the feature stays where it is — real, tested, and reachable only from the simulator and the transfer tests | a phase of its own |
-| TR-3's "≥ 2,000 seeds": distinct seeds (P19 required) or seed-runs (already met) | P19 |
-| Commit the fuzz corpus and `.hlog` interval logs, or CI-cache them | P22 / P25 |
-| A nightly toolchain for `cargo-fuzz`, or drop coverage guidance and ASan | P22 |
-| Publish the crates to crates.io at the tag, or keep the dry-run as a hygiene check | P28 |
-| `v1.0.0` waits on a multi-day soak, or the 4-hour nightly is enough and the gap goes in "Not claimed" | P28 |
+| UMIACS allocation and filesystem: dedicated bare metal is Reference tier; a shared node or cloud placement group remains Exploratory | Reference throughput, etcd, breakdown, cross-node and 1 GiB snapshot runs |
 
 Two were taken in M1 Phase 2 and are recorded here so they are not re-opened.
 The log frame gains no self-identifying `(seq, offset)`, so the format stays at

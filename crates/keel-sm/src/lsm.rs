@@ -9,7 +9,7 @@
 use bytes::Bytes;
 use keel_raft::Index;
 use lsm_kv::{Db, Maintenance, Options, StdFs, SyncMode, WriteBatch};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::StateMachineError;
 use crate::store::{Batch, Mutation, Space, Store, tagged, untagged};
@@ -23,7 +23,9 @@ fn store_err(e: lsm_kv::Error) -> StateMachineError {
 
 /// A [`Store`] over an LSM database.
 pub struct LsmStore {
-    db: Db<StdFs>,
+    db: Option<Db<StdFs>>,
+    dir: PathBuf,
+    opts: Options,
     applied: Index,
 }
 
@@ -49,13 +51,25 @@ impl LsmStore {
     }
 
     pub fn open_with(dir: impl AsRef<Path>, opts: Options) -> Result<Self, StateMachineError> {
-        let db = Db::open_with(dir, opts).map_err(store_err)?;
+        let dir = dir.as_ref().to_path_buf();
+        let db = Db::open_with(&dir, opts.clone()).map_err(store_err)?;
         let applied = db
             .get(&tagged(Space::Internal, APPLIED_KEY))
             .map_err(store_err)?
             .and_then(|b| b.as_slice().try_into().ok().map(Index::from_le_bytes))
             .unwrap_or(0);
-        Ok(Self { db, applied })
+        Ok(Self {
+            db: Some(db),
+            dir,
+            opts,
+            applied,
+        })
+    }
+
+    fn db(&self) -> Result<&Db<StdFs>, StateMachineError> {
+        self.db
+            .as_ref()
+            .ok_or_else(|| StateMachineError::Store("the state store is being replaced".into()))
     }
 
     /// Do one unit of the engine's deferred work, and say whether more remains.
@@ -63,11 +77,11 @@ impl LsmStore {
     /// The host calls this on its own turn. Nothing else will: the engine spawns
     /// no threads here.
     pub fn maintain(&self) -> Result<bool, StateMachineError> {
-        self.db.maintain().map_err(store_err)
+        self.db()?.maintain().map_err(store_err)
     }
 
     pub fn pending_work(&self) -> bool {
-        self.db.pending_work()
+        self.db.as_ref().is_some_and(Db::pending_work)
     }
 
     /// Write a checkpoint of this store into `dir`.
@@ -82,20 +96,44 @@ impl LsmStore {
     /// and not the sessions would be a snapshot a client's retries could apply
     /// twice on top of.
     pub fn checkpoint(&self, dir: impl AsRef<Path>) -> Result<(), StateMachineError> {
-        self.db.checkpoint(dir).map_err(store_err)
+        self.db()?.checkpoint(dir).map_err(store_err)
     }
 
     /// `Err` once the engine has latched a failure. A node that sees this must
     /// step down: it can no longer make an entry durable.
     pub fn health(&self) -> Result<(), StateMachineError> {
-        self.db.health().map_err(store_err)
+        self.db()?.health().map_err(store_err)
+    }
+
+    /// Close the live database, atomically publish a received checkpoint over
+    /// it, and reopen it with the same durability options.
+    ///
+    /// The Raft log's snapshot floor must be durable before this is called. A
+    /// crash in the opposite order can splice the old log onto the new state.
+    pub fn replace_from_checkpoint(
+        &mut self,
+        publish: impl FnOnce(&Path) -> Result<(), StateMachineError>,
+    ) -> Result<(), StateMachineError> {
+        drop(self.db.take());
+        if let Err(error) = publish(&self.dir) {
+            self.db = Some(Db::open_with(&self.dir, self.opts.clone()).map_err(store_err)?);
+            return Err(error);
+        }
+        let db = Db::open_with(&self.dir, self.opts.clone()).map_err(store_err)?;
+        self.applied = db
+            .get(&tagged(Space::Internal, APPLIED_KEY))
+            .map_err(store_err)?
+            .and_then(|b| b.as_slice().try_into().ok().map(Index::from_le_bytes))
+            .unwrap_or(0);
+        self.db = Some(db);
+        Ok(())
     }
 }
 
 impl Store for LsmStore {
     fn get(&self, space: Space, key: &[u8]) -> Result<Option<Bytes>, StateMachineError> {
         Ok(self
-            .db
+            .db()?
             .get(&tagged(space, key))
             .map_err(store_err)?
             .map(Bytes::from))
@@ -116,7 +154,7 @@ impl Store for LsmStore {
             None => vec![space as u8 + 1],
         };
         Ok(self
-            .db
+            .db()?
             .scan(Some(&low), Some(&high), limit)
             .map_err(store_err)?
             .into_iter()
@@ -139,7 +177,7 @@ impl Store for LsmStore {
         #[cfg(not(feature = "negative-demos"))]
         {
             write.put(&tagged(Space::Internal, APPLIED_KEY), &index.to_le_bytes());
-            self.db.write_batch(&write).map_err(store_err)?;
+            self.db()?.write_batch(&write).map_err(store_err)?;
         }
 
         // The rule removed: the data first, then the index, as two writes. Both
@@ -156,7 +194,7 @@ impl Store for LsmStore {
         #[cfg(feature = "negative-demos")]
         {
             use std::io::Write;
-            self.db.write_batch(&write).map_err(store_err)?;
+            self.db()?.write_batch(&write).map_err(store_err)?;
             let mut out = std::io::stdout().lock();
             let _ = writeln!(out, "SPLIT {index}");
             let _ = out.flush();
@@ -165,7 +203,7 @@ impl Store for LsmStore {
 
             let mut index_only = WriteBatch::new();
             index_only.put(&tagged(Space::Internal, APPLIED_KEY), &index.to_le_bytes());
-            self.db.write_batch(&index_only).map_err(store_err)?;
+            self.db()?.write_batch(&index_only).map_err(store_err)?;
         }
 
         self.applied = self.applied.max(index);

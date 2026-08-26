@@ -51,6 +51,7 @@ pub struct ClusterConfig {
     /// to depend on it.
     pub sync: String,
     pub tick_ms: u64,
+    pub checkpoint_entries: u64,
     /// Environment every node is started with — where the clock nemesis's
     /// preload goes.
     pub env: Vec<(String, String)>,
@@ -64,6 +65,7 @@ impl ClusterConfig {
             server_bin: server_bin.into(),
             sync: "durable".into(),
             tick_ms: 10,
+            checkpoint_entries: 10_000,
             env: Vec::new(),
         }
     }
@@ -140,6 +142,8 @@ impl Cluster {
                 cfg.sync.clone(),
                 "--tick-ms".into(),
                 cfg.tick_ms.to_string(),
+                "--checkpoint-entries".into(),
+                cfg.checkpoint_entries.to_string(),
             ];
             for j in 0..n {
                 // Its own entry is its real address: a node that reached itself

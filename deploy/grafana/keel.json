@@ -325,6 +325,81 @@
       ],
       "title": "Proposals refused",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "description": "Payload bytes per second in the resumable snapshot stream. A receiver line returning after a process restart is the transfer resuming rather than beginning again.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 30
+      },
+      "id": 11,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PROM"
+          },
+          "expr": "rate(keel_snapshot_bytes_sent_total[1m])",
+          "legendFormat": "sent, {{instance}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PROM"
+          },
+          "expr": "rate(keel_snapshot_bytes_received_total[1m])",
+          "legendFormat": "received, {{instance}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Snapshot transfer",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "description": "Mean time to checkpoint and durably move the log floor. This is the synchronous stall PR-6 limits; a rising line says checkpoint creation, not network transfer, is holding the node loop.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 30
+      },
+      "id": 12,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PROM"
+          },
+          "expr": "rate(keel_snapshot_checkpoint_seconds_total[5m]) / clamp_min(rate(keel_snapshots_taken_total[5m]), 0.0001)",
+          "legendFormat": "checkpoint, {{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Checkpoint stall",
+      "type": "timeseries"
     }
   ],
   "refresh": "5s",

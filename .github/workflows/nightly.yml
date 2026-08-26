@@ -201,6 +201,15 @@ jobs:
             --dir "$WORK" --server-bin ./target/release/keel-server \
             --sync durable --root "$WORK" --out failover.txt \
             --admit "a CI smoke run on a shared runner"
+      - name: a small snapshot follows the production transfer path
+        run: |
+          WORK="$(mktemp -d)"
+          ./target/release/keel-bench snapshot \
+            --state-bytes 1048576 --value-bytes 65536 \
+            --depth 8 --runs 1 \
+            --dir "$WORK" --server-bin ./target/release/keel-server \
+            --sync durable --root "$WORK" --out snapshot.txt \
+            --admit "a CI smoke run on a shared runner"
 
   determinism-at-length:
     name: a long run still replays identically

@@ -1340,6 +1340,12 @@ impl RaftCore {
             pr.matched = pr.matched.max(pr.pending_snapshot);
         }
         pr.become_probe();
+        // A status is the event that unpauses this follower. Do not wait for an
+        // unrelated proposal or heartbeat response to discover that it may
+        // replicate again: after a receiver process dies there may be no client
+        // traffic at all, and the replacement still has to be offered the
+        // snapshot anew.
+        self.maybe_send_append(peer, true);
     }
 
     // ------------------------------------------------------------------ ready

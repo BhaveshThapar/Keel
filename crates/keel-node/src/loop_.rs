@@ -1,6 +1,6 @@
 //! The Ready loop.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::time::Instant;
 
 use bytes::Bytes;
@@ -8,10 +8,10 @@ use keel_api::{ClientId, Peer, Proposal, Response, Seq, decode, encode};
 use keel_log::{Fs, Log};
 use keel_net::Transport;
 use keel_raft::{
-    Advance, ConfState, Config, DropReason, Entry, EntryPayload, Index, Input, NodeId, RaftCore,
-    Restored, Role, Status,
+    Advance, ConfChangeV2, ConfState, Config, DropReason, Entry, EntryPayload, Index, Input,
+    Message, MessageBody, NodeId, RaftCore, Restored, Role, SnapshotMeta, Status, Term,
 };
-use keel_sm::{StateMachine, Store};
+use keel_sm::{Chunk, StateMachine, Store};
 
 #[derive(Debug, thiserror::Error)]
 pub enum NodeError {
@@ -26,26 +26,41 @@ pub enum NodeError {
     /// would put this node's state machine out of step with its peers'.
     #[error("a committed entry is malformed at index {index}: {why}")]
     MalformedEntry { index: Index, why: String },
-    /// The core offered this host a snapshot to install, and this host does not
-    /// fetch snapshot bytes.
-    ///
-    /// `Advance::snapshot_installed` is a host telling the core "I have those
-    /// bytes now", and the core answers by moving the log's floor, commit index
-    /// and applied index to the snapshot's. A host that echoed the offer back
-    /// without fetching anything would mark entries applied that its state
-    /// machine never saw — silent loss, and of exactly the entries below the
-    /// floor that can no longer be replayed.
-    ///
-    /// Unreachable as this daemon stands, because it never compacts its log, so
-    /// no leader it runs ever offers a snapshot. It is an error rather than a
-    /// comment because the day compaction is turned on is the day the echo
-    /// becomes data loss, and a node that cannot serve correctly should stop.
-    #[error(
-        "the core offered a snapshot at index {index}, and this host does not fetch \
-         snapshot bytes. Acknowledging it would mark entries applied that were never \
-         applied"
-    )]
-    SnapshotUnsupported { index: Index },
+}
+
+/// Bulk-transfer work handed to the concrete host. Consensus traffic stays in
+/// the core; files, paths, and checkpoint publication stay out of it.
+#[derive(Debug)]
+pub enum SnapshotEvent {
+    InstallOffered {
+        ready_number: u64,
+        from: NodeId,
+        meta: SnapshotMeta,
+    },
+    Request {
+        from: NodeId,
+        index: Index,
+        term: Term,
+        position: BTreeMap<String, u64>,
+    },
+    Chunk {
+        from: NodeId,
+        index: Index,
+        term: Term,
+        chunk: Chunk,
+    },
+    Complete {
+        from: NodeId,
+        index: Index,
+        term: Term,
+        digest: u64,
+    },
+    Status {
+        from: NodeId,
+        index: Index,
+        term: Term,
+        ok: bool,
+    },
 }
 
 /// What one turn of the loop did.
@@ -177,6 +192,7 @@ pub struct Node<F: Fs, S: Store, T: Transport> {
     /// Next context number for a proposal that came in without one.
     next_ctx: u64,
     progress: Progress,
+    snapshot_events: Vec<SnapshotEvent>,
 }
 
 impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
@@ -215,6 +231,7 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
             reads: Vec::new(),
             next_ctx: 1,
             progress: Progress::default(),
+            snapshot_events: Vec::new(),
         }
     }
 
@@ -240,6 +257,77 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
 
     pub fn state_machine(&self) -> &StateMachine<S> {
         &self.sm
+    }
+
+    pub fn state_machine_mut(&mut self) -> &mut StateMachine<S> {
+        &mut self.sm
+    }
+
+    pub fn take_snapshot_events(&mut self) -> Vec<SnapshotEvent> {
+        std::mem::take(&mut self.snapshot_events)
+    }
+
+    /// Metadata for a checkpoint of exactly what the state machine has applied.
+    pub fn checkpoint_meta(&self) -> Option<SnapshotMeta> {
+        let index = self.sm.applied();
+        let term = self.core.log().term(index)?;
+        Some(SnapshotMeta {
+            index,
+            term,
+            conf: self.core.conf().clone(),
+        })
+    }
+
+    /// The checkpoint bytes already exist. Durably move the log floor, then
+    /// tell the core it may release the covered in-memory prefix.
+    pub fn checkpoint_taken(&mut self, meta: SnapshotMeta) -> Result<(), NodeError> {
+        self.log.install_snapshot(&meta)?;
+        self.log.sync()?;
+        self.log.compact_to(meta.index)?;
+        let _ = self.core.step(Input::SnapshotTaken { meta });
+        Ok(())
+    }
+
+    /// First half of an install. This must precede replacing the state store;
+    /// a crash between the two is recoverable in this direction (KEEL-12).
+    pub fn persist_snapshot_floor(&mut self, meta: &SnapshotMeta) -> Result<(), NodeError> {
+        self.log.install_snapshot(meta)?;
+        self.log.sync()?;
+        Ok(())
+    }
+
+    /// The state store now contains the snapshot and the log floor is durable.
+    pub fn snapshot_installed(&mut self, ready_number: u64, meta: SnapshotMeta) {
+        self.core.advance(Advance {
+            ready_number,
+            persisted: None,
+            applied: None,
+            snapshot_installed: Some(meta),
+        });
+    }
+
+    pub fn report_snapshot(&mut self, peer: NodeId, ok: bool) {
+        let _ = self.core.step(Input::ReportSnapshotStatus { peer, ok });
+    }
+
+    /// Recreate an out-of-band offer whose transfer manifest survived this
+    /// process. The next turn emits a fresh `InstallOffered` with a valid Ready
+    /// number, while the receiver resumes from the staged byte positions.
+    pub fn resume_snapshot_offer(&mut self, from: NodeId, meta: SnapshotMeta) {
+        let message = Message::new(
+            from,
+            self.id(),
+            self.core.term(),
+            MessageBody::SnapshotOffer { meta },
+        );
+        let _ = self.core.step(Input::Message(message));
+    }
+
+    pub fn send_peer(&mut self, peer: NodeId, message: Peer) -> Result<(), NodeError> {
+        let frame = encode(&message).map_err(|e| NodeError::Transport(e.to_string()))?;
+        self.transport
+            .send(peer, &frame)
+            .map_err(|e| NodeError::Transport(e.to_string()))
     }
 
     /// Accept a client proposal. Returns the context it will be answered under.
@@ -272,6 +360,29 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
     /// why a read is not simply a lookup.
     pub fn read_index(&mut self, ctx: u64) {
         let _ = self.core.step(Input::ReadIndex { ctx });
+    }
+
+    /// Propose one operator-requested membership change.
+    pub fn propose_conf_change(&mut self, change: ConfChangeV2) -> bool {
+        let ctx = self.next_ctx;
+        self.next_ctx += 1;
+        self.core
+            .step(Input::ProposeConfChange { ctx, cc: change })
+            .is_ok()
+    }
+
+    pub fn transfer_leader(&mut self, to: NodeId) {
+        let _ = self.core.step(Input::TransferLeader { to });
+    }
+
+    pub fn learner_caught_up(&self, node: NodeId) -> bool {
+        let status = self.core.status();
+        status.conf.learners.contains(&node)
+            && status
+                .progress
+                .iter()
+                .find(|(id, _, _)| *id == node)
+                .is_some_and(|(_, matched, _)| *matched >= status.commit)
     }
 
     /// Reads the core has confirmed since the last call: the context the caller
@@ -345,9 +456,55 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
                 Ok(Peer::Raft(message)) => {
                     let _ = self.core.step(Input::Message(message));
                 }
-                // Snapshot chunks are M2's; a node that receives one before then
-                // is talking to a build from the future.
-                Ok(Peer::SnapshotChunk { .. }) | Err(_) => {}
+                Ok(Peer::SnapshotRequest {
+                    index,
+                    term,
+                    position,
+                }) => self.snapshot_events.push(SnapshotEvent::Request {
+                    from: received.from,
+                    index,
+                    term,
+                    position: position.into_iter().collect(),
+                }),
+                Ok(Peer::SnapshotChunk {
+                    index,
+                    term,
+                    file,
+                    offset,
+                    crc,
+                    last,
+                    data,
+                }) => self.snapshot_events.push(SnapshotEvent::Chunk {
+                    from: received.from,
+                    index,
+                    term,
+                    chunk: Chunk {
+                        file,
+                        offset,
+                        bytes: data.to_vec(),
+                        crc,
+                        last,
+                    },
+                }),
+                Ok(Peer::SnapshotComplete {
+                    index,
+                    term,
+                    digest,
+                }) => self.snapshot_events.push(SnapshotEvent::Complete {
+                    from: received.from,
+                    index,
+                    term,
+                    digest,
+                }),
+                Ok(Peer::SnapshotStatus { index, term, ok }) => {
+                    self.snapshot_events.push(SnapshotEvent::Status {
+                        from: received.from,
+                        index,
+                        term,
+                        ok,
+                    })
+                }
+                Err(_) => {}
             }
         }
     }
@@ -432,12 +589,14 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
         // 4. Report what got done. Watermarks, so a host that reordered its own
         //    work cannot desynchronise the core.
         //
-        // Except a snapshot, which this host cannot report because it cannot
-        // fetch one. See `NodeError::SnapshotUnsupported`: acknowledging an
-        // install that did not happen is silent loss, and refusing is the only
-        // honest answer a host without the bytes can give.
         if let Some(meta) = &ready.snapshot_to_install {
-            return Err(NodeError::SnapshotUnsupported { index: meta.index });
+            if let Some(from) = self.core.leader() {
+                self.snapshot_events.push(SnapshotEvent::InstallOffered {
+                    ready_number: ready.number,
+                    from,
+                    meta: meta.clone(),
+                });
+            }
         }
         self.core.advance(Advance {
             ready_number: ready.number,

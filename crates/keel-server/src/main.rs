@@ -46,6 +46,10 @@ struct Cli {
     /// accepted dotted quads would make this daemon unusable in all three.
     #[arg(long = "peer", value_parser = parse_peer)]
     peers: Vec<(u64, String)>,
+    /// Initial voter id. Repeat to start routed peers as learners/non-voters.
+    /// When omitted, every `--peer` is a voter for backward compatibility.
+    #[arg(long = "voter")]
+    voters: Vec<u64>,
     /// How hard to fsync. `durable` is the only mode under which a durability
     /// claim may be made; `barrier` is ordering without power-loss durability,
     /// and `none` is neither.
@@ -54,6 +58,10 @@ struct Cli {
     /// Milliseconds per tick of the consensus clock.
     #[arg(long, default_value_t = 10)]
     tick_ms: u64,
+    /// Applied entries between checkpoints. Lower values are useful for tests;
+    /// production defaults to the policy in `keel-node`.
+    #[arg(long, default_value_t = keel_node::ENTRIES_BETWEEN_CHECKPOINTS)]
+    checkpoint_entries: u64,
 }
 
 fn parse_peer(raw: &str) -> Result<(u64, String), String> {
@@ -139,6 +147,15 @@ fn main() -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
+    let voters = if cli.voters.is_empty() {
+        peers.keys().copied().collect()
+    } else {
+        if let Some(unknown) = cli.voters.iter().find(|id| !peers.contains_key(id)) {
+            eprintln!("initial voter {unknown} has no --peer route");
+            return ExitCode::FAILURE;
+        }
+        cli.voters.clone()
+    };
 
     let cfg = NodeConfig {
         id: cli.id,
@@ -146,10 +163,11 @@ fn main() -> ExitCode {
         peer_addr: cli.listen,
         admin_addr: cli.admin,
         client_addr: cli.client,
-        voters: peers.keys().copied().collect(),
+        voters,
         peers,
         sync_mode,
         tick: Duration::from_millis(cli.tick_ms),
+        checkpoint_entries: cli.checkpoint_entries.max(1),
     };
 
     let mut server = match Server::start(cfg) {

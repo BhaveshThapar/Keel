@@ -1,23 +1,25 @@
 //! `keel-bench` — measure a running cluster, and refuse to publish what should
 //! not be published.
 //!
-//! Four subcommands. `gate` says what this host is allowed to produce and why,
+//! Five subcommands. `gate` says what this host is allowed to produce and why,
 //! measuring nothing, so the answer is knowable before an hour is spent on a
 //! number that cannot be used. `run` is one measurement at one offered rate.
 //! `campaign` sweeps a range of rates and writes the curve — PR-2, because a
 //! single throughput figure is a claim about a saturation point whose latency
 //! nobody quoted. `failover` kills the leader repeatedly and times the recovery.
 //!
-//! `campaign` and `failover` start their own cluster, so a measurement is one
-//! command rather than a procedure. That matters more than it sounds: a
-//! benchmark that needs three terminals is a benchmark that gets run once.
+//! `campaign`, `failover`, and `snapshot` start their own cluster, so a
+//! measurement is one command rather than a procedure. That matters more than
+//! it sounds: a benchmark that needs three terminals is a benchmark that gets
+//! run once.
 
-use std::net::SocketAddr;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use keel_api::{Command, Query};
 use keel_bench::failover::Trial;
 use keel_bench::plot::{Point, Series, throughput_vs_latency};
@@ -41,12 +43,29 @@ struct Cli {
     command: Verb,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum TierArg {
+    Exploratory,
+    Reference,
+}
+
+impl From<TierArg> for Tier {
+    fn from(value: TierArg) -> Self {
+        match value {
+            TierArg::Exploratory => Self::Exploratory,
+            TierArg::Reference => Self::Reference,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Verb {
     /// Say what this host may publish, and measure nothing.
     Gate {
         #[arg(long, default_value = ".")]
         dir: String,
+        #[arg(long, value_enum, default_value_t = TierArg::Exploratory)]
+        tier: TierArg,
     },
     /// One measurement at one offered rate, against a cluster somebody else is
     /// running.
@@ -136,6 +155,8 @@ enum Verb {
         /// Record even though the gate refuses, saying what the run is for.
         #[arg(long)]
         admit: Option<String>,
+        #[arg(long, value_enum, default_value_t = TierArg::Exploratory)]
+        tier: TierArg,
     },
     /// Kill the leader at steady state, repeatedly, and time the recovery.
     Failover {
@@ -162,12 +183,42 @@ enum Verb {
         root: String,
         #[arg(long)]
         admit: Option<String>,
+        #[arg(long, value_enum, default_value_t = TierArg::Exploratory)]
+        tier: TierArg,
+    },
+    /// Build a checkpointed state, then time creation and transfer to a
+    /// follower whose log is behind the compacted floor.
+    Snapshot {
+        #[arg(long, default_value_t = 1 << 30)]
+        state_bytes: usize,
+        #[arg(long, default_value_t = 1 << 20)]
+        value_bytes: usize,
+        #[arg(long, default_value_t = 32)]
+        depth: usize,
+        #[arg(long, default_value_t = 3)]
+        runs: usize,
+        #[arg(long)]
+        dir: String,
+        #[arg(long)]
+        server_bin: String,
+        #[arg(long, default_value = "durable")]
+        sync: String,
+        #[arg(long, default_value_t = 10)]
+        tick_ms: u64,
+        #[arg(long, default_value = "snapshot.txt")]
+        out: String,
+        #[arg(long, default_value = ".")]
+        root: String,
+        #[arg(long)]
+        admit: Option<String>,
+        #[arg(long, value_enum, default_value_t = TierArg::Exploratory)]
+        tier: TierArg,
     },
 }
 
 fn main() -> ExitCode {
     match Cli::parse().command {
-        Verb::Gate { dir } => gate(&dir),
+        Verb::Gate { dir, tier } => gate(&dir, tier.into()),
         Verb::Run {
             nodes,
             mix,
@@ -207,6 +258,7 @@ fn main() -> ExitCode {
             svg,
             root,
             admit,
+            tier,
         } => campaign(CampaignArgs {
             mix,
             rates,
@@ -225,6 +277,7 @@ fn main() -> ExitCode {
             svg,
             root,
             admit,
+            tier: tier.into(),
         }),
         Verb::Failover {
             trials,
@@ -236,6 +289,7 @@ fn main() -> ExitCode {
             out,
             root,
             admit,
+            tier,
         } => failover_campaign(FailoverArgs {
             trials,
             cluster_nodes,
@@ -246,19 +300,47 @@ fn main() -> ExitCode {
             out,
             root,
             admit,
+            tier: tier.into(),
+        }),
+        Verb::Snapshot {
+            state_bytes,
+            value_bytes,
+            depth,
+            runs,
+            dir,
+            server_bin,
+            sync,
+            tick_ms,
+            out,
+            root,
+            admit,
+            tier,
+        } => snapshot_campaign(SnapshotArgs {
+            state_bytes,
+            value_bytes,
+            depth,
+            runs,
+            dir,
+            server_bin,
+            sync,
+            tick_ms,
+            out,
+            root,
+            admit,
+            tier: tier.into(),
         }),
     }
 }
 
-fn gate(dir: &str) -> ExitCode {
+fn gate(dir: &str, tier: Tier) -> ExitCode {
     let Some(env) = Environment::probe(dir) else {
         eprintln!("this host could not be probed, so it can publish nothing");
         return ExitCode::FAILURE;
     };
     println!("{}", env.render());
     println!();
-    match Publishable::check(&env, Tier::Exploratory, 3) {
-        Ok(p) => println!("publishable at Exploratory tier:\n{}", p.header()),
+    match Publishable::check(&env, tier, 3) {
+        Ok(p) => println!("publishable at {} tier:\n{}", tier.name(), p.header()),
         Err(why) => println!("NOT publishable: {why}"),
     }
     ExitCode::SUCCESS
@@ -282,11 +364,12 @@ fn parse_sync(name: &str) -> Option<SyncMode> {
 /// even brought up.
 fn decide(
     env: &Environment,
+    tier: Tier,
     sync: SyncMode,
     runs: usize,
     admit: &Option<String>,
 ) -> Option<(Result<Publishable, keel_bench::Refusal>, Option<Admitted>)> {
-    let verdict = Publishable::check_with_sync(env, Tier::Exploratory, sync, runs);
+    let verdict = Publishable::check_with_sync(env, tier, sync, runs);
     match (&verdict, admit) {
         (Ok(_), _) => Some((verdict, None)),
         (Err(why), Some(purpose)) => {
@@ -575,6 +658,7 @@ struct CampaignArgs {
     svg: String,
     root: String,
     admit: Option<String>,
+    tier: Tier,
 }
 
 fn campaign(args: CampaignArgs) -> ExitCode {
@@ -608,7 +692,7 @@ fn campaign(args: CampaignArgs) -> ExitCode {
         eprintln!("could not probe {}", args.dir);
         return ExitCode::FAILURE;
     };
-    let Some((verdict, admitted)) = decide(&env, sync, args.runs, &args.admit) else {
+    let Some((verdict, admitted)) = decide(&env, args.tier, sync, args.runs, &args.admit) else {
         return ExitCode::FAILURE;
     };
 
@@ -772,6 +856,7 @@ struct FailoverArgs {
     out: String,
     root: String,
     admit: Option<String>,
+    tier: Tier,
 }
 
 fn failover_campaign(args: FailoverArgs) -> ExitCode {
@@ -794,7 +879,7 @@ fn failover_campaign(args: FailoverArgs) -> ExitCode {
     };
     // Three, because that is the gate's floor for repetitions, and a hundred
     // trials is far past it.
-    let Some((verdict, admitted)) = decide(&env, sync, 3, &args.admit) else {
+    let Some((verdict, admitted)) = decide(&env, args.tier, sync, 3, &args.admit) else {
         return ExitCode::FAILURE;
     };
 
@@ -886,6 +971,271 @@ fn failover_campaign(args: FailoverArgs) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+// ---------------------------------------------------------------- snapshots
+
+struct SnapshotArgs {
+    state_bytes: usize,
+    value_bytes: usize,
+    depth: usize,
+    runs: usize,
+    dir: String,
+    server_bin: String,
+    sync: String,
+    tick_ms: u64,
+    out: String,
+    root: String,
+    admit: Option<String>,
+    tier: Tier,
+}
+
+fn snapshot_campaign(args: SnapshotArgs) -> ExitCode {
+    let Some(sync) = parse_sync(&args.sync) else {
+        eprintln!("unknown sync mode {:?}", args.sync);
+        return ExitCode::FAILURE;
+    };
+    let server_bin = PathBuf::from(&args.server_bin);
+    if !server_bin.exists() || std::fs::create_dir_all(&args.dir).is_err() {
+        eprintln!("could not prepare the snapshot benchmark");
+        return ExitCode::FAILURE;
+    }
+    let Some(env) = Environment::probe(&args.dir) else {
+        eprintln!("could not probe {}", args.dir);
+        return ExitCode::FAILURE;
+    };
+    let Some((verdict, admitted)) = decide(&env, args.tier, sync, args.runs, &args.admit) else {
+        return ExitCode::FAILURE;
+    };
+    let value_len = args.value_bytes.clamp(16, 8 << 20);
+    let values = args.state_bytes.div_ceil(value_len).max(1);
+    let mut creation_ms = Vec::new();
+    let mut transfer_ms = Vec::new();
+    let mut snapshot_sizes = Vec::new();
+
+    for run in 0..args.runs.max(1) {
+        let run_dir = PathBuf::from(&args.dir).join(format!("snapshot-run-{run}"));
+        if run_dir.exists() && std::fs::remove_dir_all(&run_dir).is_err() {
+            eprintln!("could not clear {}", run_dir.display());
+            return ExitCode::FAILURE;
+        }
+        let mut cfg = ClusterConfig::new(3, &run_dir, &server_bin);
+        cfg.sync = args.sync.clone();
+        cfg.tick_ms = args.tick_ms;
+        cfg.checkpoint_entries = values as u64 + 10_000;
+        let mut cluster = match Cluster::start(cfg) {
+            Ok(cluster) => cluster,
+            Err(error) => {
+                eprintln!("could not start run {run}: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let Some(leader) = wait_for_value(Duration::from_secs(30), || {
+            leader_index(&cluster.admin_addrs)
+        }) else {
+            eprintln!("run {run}: no leader");
+            return ExitCode::FAILURE;
+        };
+        let laggard = (0..3).find(|node| *node != leader).unwrap_or(0);
+        if cluster
+            .process(laggard)
+            .and_then(|process| process.kill())
+            .is_err()
+        {
+            eprintln!("run {run}: could not stop lagging follower");
+            return ExitCode::FAILURE;
+        }
+        let addrs: Vec<SocketAddr> = cluster
+            .client_addrs
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != laggard)
+            .map(|(_, addr)| *addr)
+            .collect();
+        if fill_state(&addrs, run as u64 + 1, values, value_len, args.depth).is_err() {
+            eprintln!("run {run}: the state could not be filled");
+            return ExitCode::FAILURE;
+        }
+
+        let checkpoint_started = Instant::now();
+        if post_admin(cluster.admin_addrs[leader], "/snapshot").is_err() {
+            eprintln!("run {run}: the leader refused the checkpoint");
+            return ExitCode::FAILURE;
+        }
+        let leader_root = run_dir.join(format!("n{leader}/snapshots"));
+        let Some(leader_checkpoint) = wait_for_value(Duration::from_secs(600), || {
+            published_checkpoint(&leader_root)
+        }) else {
+            eprintln!("run {run}: checkpoint creation did not finish");
+            return ExitCode::FAILURE;
+        };
+        creation_ms.push(checkpoint_started.elapsed().as_millis() as u64);
+        snapshot_sizes.push(directory_size(&leader_checkpoint));
+
+        let transfer_started = Instant::now();
+        if cluster.start_node(laggard).is_err() {
+            eprintln!("run {run}: the lagging follower did not restart");
+            return ExitCode::FAILURE;
+        }
+        let follower_root = run_dir.join(format!("n{laggard}/snapshots"));
+        if wait_for_value(Duration::from_secs(600), || {
+            published_checkpoint(&follower_root)
+        })
+        .is_none()
+        {
+            eprintln!("run {run}: snapshot transfer did not finish");
+            return ExitCode::FAILURE;
+        }
+        transfer_ms.push(transfer_started.elapsed().as_millis() as u64);
+        println!(
+            "run {}: checkpoint {} ms, transfer {} ms, {} bytes",
+            run + 1,
+            creation_ms[run],
+            transfer_ms[run],
+            snapshot_sizes[run]
+        );
+    }
+
+    let create = median(&mut creation_ms);
+    let transfer = median(&mut transfer_ms);
+    let size = median(&mut snapshot_sizes);
+    let mib_per_second = if transfer == 0 {
+        0.0
+    } else {
+        size as f64 / (1024.0 * 1024.0) / (transfer as f64 / 1000.0)
+    };
+    let body = format!(
+        "requested state  {} bytes\nvalue            {} bytes\nvalues           {}\n\
+         nodes            3\nsync             {}\nruns             {}, median reported\n\n\
+         checkpoint       {} ms\ncheckpoint bytes {}\ntransfer         {} ms\ntransfer rate    {:.2} MiB/s\n\n\
+         The transfer clock starts immediately before the compacted follower is\n\
+         restarted and stops only after that real process publishes the received\n\
+         checkpoint. The receiver uses the same resumable TCP path as production.\n",
+        args.state_bytes,
+        value_len,
+        values,
+        args.sync,
+        args.runs,
+        create,
+        size,
+        transfer,
+        mib_per_second,
+    );
+    match record(&args.root, &args.out, &verdict, &admitted, &body) {
+        Ok(path) => {
+            println!("wrote {}", path.display());
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn fill_state(
+    nodes: &[SocketAddr],
+    nonce: u64,
+    total: usize,
+    value_len: usize,
+    depth: usize,
+) -> Result<(), String> {
+    let mut pipeline = Pipeline::open(nodes, 8_000_000 + nonce * 10_000, depth.max(1))
+        .map_err(|error| error.to_string())?;
+    let mut submitted = 0usize;
+    let mut completed = 0usize;
+    let deadline = Instant::now() + Duration::from_secs(1_800);
+    while completed < total && Instant::now() < deadline {
+        while submitted < total && !pipeline.is_full() {
+            let seq = submitted as u64 + 1;
+            let command = Command::Put {
+                key: format!("snapshot-{submitted:010}").into_bytes().into(),
+                value: snapshot_value(value_len, seq).into(),
+            };
+            pipeline
+                .submit(command)
+                .map_err(|error| error.to_string())?;
+            submitted += 1;
+        }
+        for completion in pipeline.poll(Duration::from_millis(20)) {
+            completion.result.map_err(|error| error.to_string())?;
+            completed += 1;
+        }
+    }
+    if completed == total {
+        Ok(())
+    } else {
+        Err(format!("only {completed} of {total} writes completed"))
+    }
+}
+
+fn snapshot_value(size: usize, seed: u64) -> Vec<u8> {
+    let mut state = seed ^ 0x9e37_79b9_7f4a_7c15;
+    let mut bytes = Vec::with_capacity(size);
+    while bytes.len() < size {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let take = (size - bytes.len()).min(8);
+        bytes.extend_from_slice(&state.to_le_bytes()[..take]);
+    }
+    bytes
+}
+
+fn post_admin(addr: SocketAddr, path: &str) -> Result<(), String> {
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))
+        .map_err(|error| error.to_string())?;
+    write!(
+        stream,
+        "POST {path} HTTP/1.1\r\nHost: keel\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+    )
+    .map_err(|error| error.to_string())?;
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|error| error.to_string())?;
+    if response.starts_with("HTTP/1.1 202 Accepted") {
+        Ok(())
+    } else {
+        Err(response.lines().next().unwrap_or("no response").into())
+    }
+}
+
+fn published_checkpoint(root: &std::path::Path) -> Option<PathBuf> {
+    std::fs::read_dir(root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.is_dir()
+                && path.file_name().is_some_and(|name| {
+                    name.to_string_lossy()
+                        .starts_with(|c: char| c.is_ascii_digit())
+                })
+        })
+}
+
+fn directory_size(path: &std::path::Path) -> u64 {
+    std::fs::read_dir(path)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len())
+        .sum()
+}
+
+fn wait_for_value<T>(limit: Duration, mut get: impl FnMut() -> Option<T>) -> Option<T> {
+    let deadline = Instant::now() + limit;
+    while Instant::now() < deadline {
+        if let Some(value) = get() {
+            return Some(value);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    None
 }
 
 /// Ask each node who it thinks it is, and return the index of the one that says

@@ -20,6 +20,17 @@ own peer list refuses to start rather than serving alone, because a cluster of
 one that believes it is a cluster of three is the failure mode that loses data
 quietly.
 
+To route a node before it votes, keep it in every `--peer` list and name the
+initial voters explicitly on every process:
+
+```
+--voter 1 --voter 2 --voter 3
+```
+
+Node 4 may then start with the same routes as a non-member and be added as a
+learner. Omitting every `--voter` keeps the backward-compatible behaviour in
+which every routed peer is an initial voter.
+
 ### Wait for the ready file, not the port
 
 `--dir/keel.ready` appears once recovery is finished. The listener is bound
@@ -67,6 +78,27 @@ failing build rather than a silently empty dashboard.
 | `keel_readies_total` ÷ `keel_turns_total` | how often a turn had anything to do. Near zero on a busy node means the loop is spinning without progress; near one under no load means something is waking it |
 | `keel_messages_sent_total` | flat on a leader means replication has stopped; climbing with `keel_commit_index` flat means it is being rejected |
 | `keel_proposals_dropped_total` | climbing means the core is refusing proposals before they reach the log — not the leader, overloaded, or a configuration change already in flight. A client sees these as retries and a dashboard sees nothing else |
+| `keel_snapshot_bytes_sent_total`, `keel_snapshot_bytes_received_total` | transfer progress; after a receiver restart the counter continues from the recovered per-file positions rather than retransmitting verified bytes |
+| `keel_snapshot_checkpoint_seconds_total` ÷ `keel_snapshots_taken_total` | mean synchronous checkpoint stall |
+
+## Operating membership and snapshots
+
+Send commands to the current leader's admin address:
+
+```
+keel-admin --admin 127.0.0.1:7201 add-learner  --node 4
+# Wait until node 4's applied index reaches the leader's commit index.
+keel-admin --admin 127.0.0.1:7201 promote      --node 4
+keel-admin --admin 127.0.0.1:7201 transfer-leader --to 4
+keel-admin --admin 127.0.0.1:7204 remove       --node 1
+keel-admin --admin 127.0.0.1:7204 snapshot
+```
+
+`promote` is ignored until the leader's replication tracker says the learner is
+caught up. A `202 Accepted` means the leader accepted the operator request for
+processing; confirm the resulting configuration through `/status`. Checkpoints
+are otherwise automatic after 10,000 newly applied entries and can be tuned
+with `--checkpoint-entries`.
 
 ## A cluster on one machine
 

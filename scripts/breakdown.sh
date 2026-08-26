@@ -27,6 +27,7 @@ SECS="${1:-12}"
 CLIENTS="${2:-24}"
 DEPTH="${3:-16}"
 NODES=3
+TIER="${KEEL_BENCH_TIER:-exploratory}"
 
 # shellcheck source=scripts/lib/provenance.sh
 source "$(dirname "$0")/lib/provenance.sh"
@@ -151,7 +152,7 @@ PY
     echo "nodes:       $NODES on one host over loopback"
     echo "senders:     $CLIENTS, each with $DEPTH requests outstanding"
     echo "seconds:     $SECS per arm"
-    echo "tier:        Exploratory, and the fsync-off arm is not publishable at all"
+    echo "tier:        $TIER for the durable arm; the fsync-off arm is not publishable"
     echo
     echo "The three phases are the ones the Ready contract names, timed per"
     echo "round rather than per operation: persist covers the truncate, the"

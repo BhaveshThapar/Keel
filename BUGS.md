@@ -798,3 +798,29 @@ nothing, and a sweep that is killed reports nothing either — so this class of
 failure is invisible in exactly the way a violation is not. It was found because
 the profile was being brought *into* the sweep rather than left out of it, which
 is the argument for not leaving profiles out.
+
+---
+
+## KEEL-19 — a failed snapshot unpaused replication and then sent nothing
+
+**Found by**
+`cluster::a_real_follower_resumes_and_installs_a_snapshot_after_it_is_killed_mid_stream`,
+after the receiver was killed with verified bytes staged and restarted into an
+otherwise idle cluster.
+
+**Symptom.** The replacement process stayed healthy at its old applied index.
+The leader had timed the abandoned stream out and the follower's progress was no
+longer in `Snapshot`, but no new offer arrived unless unrelated client traffic
+happened to append another entry.
+
+**Root cause.** `report_snapshot(peer, false)` changed the progress tracker from
+`Snapshot` to `Probe` and returned. Unpausing is only permission to send; it is
+not a send. With no proposal and no useful append acknowledgement after it,
+nothing called `maybe_send_append` again.
+
+**Fix.** Reporting either snapshot outcome immediately calls
+`maybe_send_append(peer, true)` after moving the tracker to `Probe`. Failure
+therefore re-offers the current checkpoint; success immediately continues above
+the installed floor. The receiver also persists the pending offer beside its
+staging directory, so a process restart can request the exact verified position
+without waiting for failure detection.

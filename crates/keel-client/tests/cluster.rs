@@ -9,7 +9,8 @@
 //! instantaneous. This one talks over sockets, fsyncs to real files, and can be
 //! killed with a signal — which is what the phases after this one need.
 
-use std::net::{SocketAddr, TcpListener};
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -46,6 +47,11 @@ fn server_binary() -> PathBuf {
 struct Cluster {
     processes: Vec<Child>,
     client_addrs: Vec<SocketAddr>,
+    admin_addrs: Vec<SocketAddr>,
+    peer_ports: Vec<(u64, u16)>,
+    checkpoint_entries: u64,
+    voters: Vec<u64>,
+    binary: PathBuf,
     _dir: tempfile::TempDir,
 }
 
@@ -61,6 +67,14 @@ impl Drop for Cluster {
 impl Cluster {
     /// Start `n` nodes and wait until each has written its ready file.
     fn start(n: u64) -> Cluster {
+        Self::start_with_options(n, 10_000, (1..=n).collect())
+    }
+
+    fn start_with_checkpoint(n: u64, checkpoint_entries: u64) -> Cluster {
+        Self::start_with_options(n, checkpoint_entries, (1..=n).collect())
+    }
+
+    fn start_with_options(n: u64, checkpoint_entries: u64, voters: Vec<u64>) -> Cluster {
         let binary = server_binary();
         assert!(
             binary.exists(),
@@ -73,44 +87,20 @@ impl Cluster {
         let client_ports: Vec<u16> = (0..n).map(|_| free_port()).collect();
         let admin_ports: Vec<u16> = (0..n).map(|_| free_port()).collect();
 
-        let mut processes = Vec::new();
-        for (index, (id, peer_port)) in peers.iter().enumerate() {
-            let node_dir = dir.path().join(format!("node{id}"));
-            let mut command = Command::new(&binary);
-            command
-                .arg("--id")
-                .arg(id.to_string())
-                .arg("--dir")
-                .arg(&node_dir)
-                .arg("--listen")
-                .arg(addr(*peer_port).to_string())
-                .arg("--client")
-                .arg(addr(client_ports[index]).to_string())
-                .arg("--admin")
-                .arg(addr(admin_ports[index]).to_string())
-                // Nothing here is a durability measurement, and F_FULLFSYNC on
-                // a laptop would make the test a measurement of the laptop.
-                .arg("--sync")
-                .arg("none")
-                .arg("--tick-ms")
-                .arg("5");
-            for (peer, port) in &peers {
-                command.arg("--peer").arg(format!("{peer}={}", addr(*port)));
-            }
-            processes.push(
-                command
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .expect("spawn keel-server"),
-            );
-        }
-
-        let cluster = Cluster {
-            processes,
+        let mut cluster = Cluster {
+            processes: Vec::new(),
             client_addrs: client_ports.iter().map(|p| addr(*p)).collect(),
+            admin_addrs: admin_ports.iter().map(|p| addr(*p)).collect(),
+            peer_ports: peers,
+            checkpoint_entries,
+            voters,
+            binary,
             _dir: dir,
         };
+        for index in 0..n as usize {
+            let child = cluster.spawn_node(index);
+            cluster.processes.push(child);
+        }
 
         // The ready file is the point of the ready file: a supervisor that
         // waited for the port would learn only that a socket was bound.
@@ -131,6 +121,89 @@ impl Cluster {
         let _ = self.processes[index].kill();
         let _ = self.processes[index].wait();
     }
+
+    fn restart(&mut self, index: usize) {
+        self.processes[index] = self.spawn_node(index);
+        let ready = dir_of(self, index as u64 + 1).join("keel.ready");
+        wait_for(Duration::from_secs(30), || ready.exists())
+            .unwrap_or_else(|| panic!("node {} never became ready after restart", index + 1));
+    }
+
+    fn spawn_node(&self, index: usize) -> Child {
+        let (id, peer_port) = self.peer_ports[index];
+        let mut command = Command::new(&self.binary);
+        command
+            .arg("--id")
+            .arg(id.to_string())
+            .arg("--dir")
+            .arg(dir_of(self, id))
+            .arg("--listen")
+            .arg(addr(peer_port).to_string())
+            .arg("--client")
+            .arg(self.client_addrs[index].to_string())
+            .arg("--admin")
+            .arg(self.admin_addrs[index].to_string())
+            .arg("--sync")
+            .arg("none")
+            .arg("--tick-ms")
+            .arg("5")
+            .arg("--checkpoint-entries")
+            .arg(self.checkpoint_entries.to_string());
+        for (peer, port) in &self.peer_ports {
+            command.arg("--peer").arg(format!("{peer}={}", addr(*port)));
+        }
+        for voter in &self.voters {
+            command.arg("--voter").arg(voter.to_string());
+        }
+        command
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn keel-server")
+    }
+
+    fn status(&self, index: usize) -> Option<String> {
+        let mut stream =
+            TcpStream::connect_timeout(&self.admin_addrs[index], Duration::from_millis(250))
+                .ok()?;
+        stream
+            .write_all(b"GET /status HTTP/1.1\r\nHost: keel\r\n\r\n")
+            .ok()?;
+        let mut response = String::new();
+        stream.read_to_string(&mut response).ok()?;
+        response.split_once("\r\n\r\n").map(|(_, body)| body.into())
+    }
+
+    fn post_admin(&self, index: usize, path: &str) -> Option<String> {
+        let mut stream =
+            TcpStream::connect_timeout(&self.admin_addrs[index], Duration::from_millis(250))
+                .ok()?;
+        write!(
+            stream,
+            "POST {path} HTTP/1.1\r\nHost: keel\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+        )
+        .ok()?;
+        let mut response = String::new();
+        stream.read_to_string(&mut response).ok()?;
+        Some(response)
+    }
+
+    fn leader(&self) -> Option<usize> {
+        (0..self.admin_addrs.len()).find(|index| {
+            self.status(*index)
+                .is_some_and(|status| status.contains("\"role\":\"leader\""))
+        })
+    }
+
+    fn post_to_leader(&self, path: &str) -> Option<(usize, String)> {
+        wait_for_value(Duration::from_secs(10), || {
+            let leader = self.leader()?;
+            let response = self.post_admin(leader, path)?;
+            response
+                .starts_with("HTTP/1.1 202 Accepted")
+                .then_some((leader, response))
+        })
+    }
 }
 
 fn dir_of(cluster: &Cluster, id: u64) -> PathBuf {
@@ -142,6 +215,17 @@ fn wait_for(limit: Duration, mut done: impl FnMut() -> bool) -> Option<()> {
     while Instant::now() < deadline {
         if done() {
             return Some(());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    None
+}
+
+fn wait_for_value<T>(limit: Duration, mut get: impl FnMut() -> Option<T>) -> Option<T> {
+    let deadline = Instant::now() + limit;
+    while Instant::now() < deadline {
+        if let Some(value) = get() {
+            return Some(value);
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -328,6 +412,247 @@ fn a_pipeline_keeps_many_requests_in_flight_and_applies_each_once() {
             "key {key} was applied a number of times that is not once"
         );
     }
+}
+
+/// The daemon path the simulator cannot stand in for: a leader checkpoints,
+/// compacts past an offline follower, streams the checkpoint over TCP, and the
+/// receiver resumes after its process is killed with several chunks present.
+#[test]
+fn a_real_follower_resumes_and_installs_a_snapshot_after_it_is_killed_mid_stream() {
+    let mut cluster = Cluster::start_with_checkpoint(3, 32);
+    let leader = wait_for_value(Duration::from_secs(10), || {
+        (0..3).find(|index| {
+            cluster
+                .status(*index)
+                .is_some_and(|status| status.contains("\"role\":\"leader\""))
+        })
+    });
+    let leader = leader.expect("the cluster never elected a leader");
+    let follower = (0..3).find(|index| *index != leader).unwrap();
+    cluster.kill(follower);
+
+    let mut client = cluster.client(71);
+    client.register().expect("register");
+    let value = vec![b'x'; 256 * 1024];
+    for i in 0..40u32 {
+        client
+            .put(format!("snapshot-{i:03}").as_bytes(), &value)
+            .unwrap_or_else(|error| panic!("write {i} failed: {error}"));
+    }
+    let leader_snapshots = dir_of(&cluster, leader as u64 + 1).join("snapshots");
+    wait_for(Duration::from_secs(20), || {
+        std::fs::read_dir(&leader_snapshots)
+            .ok()
+            .is_some_and(|entries| {
+                entries.filter_map(Result::ok).any(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_digit())
+                })
+            })
+    })
+    .expect("the leader never checkpointed");
+
+    cluster.restart(follower);
+    let follower_snapshots = dir_of(&cluster, follower as u64 + 1).join("snapshots");
+    wait_for_fast(Duration::from_secs(20), || {
+        std::fs::read_dir(&follower_snapshots)
+            .ok()
+            .is_some_and(|entries| {
+                entries.filter_map(Result::ok).any(|entry| {
+                    entry.file_name().to_string_lossy().starts_with("incoming-")
+                        && directory_bytes(&entry.path()) > 0
+                })
+            })
+    })
+    .expect("the follower never received enough snapshot bytes to interrupt");
+    cluster.kill(follower);
+    cluster.restart(follower);
+
+    let installed = wait_for(Duration::from_secs(30), || {
+        cluster.status(follower).is_some_and(|status| {
+            status.contains("\"applied\":")
+                && std::fs::read_dir(&follower_snapshots)
+                    .ok()
+                    .is_some_and(|entries| {
+                        entries.filter_map(Result::ok).any(|entry| {
+                            entry
+                                .file_name()
+                                .to_string_lossy()
+                                .chars()
+                                .next()
+                                .is_some_and(|c| c.is_ascii_digit())
+                        })
+                    })
+        })
+    });
+    if installed.is_none() {
+        let names = std::fs::read_dir(&follower_snapshots)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| {
+                format!(
+                    "{}:{}",
+                    entry.file_name().to_string_lossy(),
+                    directory_bytes(&entry.path())
+                )
+            })
+            .collect::<Vec<_>>();
+        panic!(
+            "the restarted follower never installed the snapshot; status={:?}, snapshots={names:?}, process={:?}",
+            cluster.status(follower),
+            cluster.processes[follower].try_wait()
+        );
+    }
+}
+
+#[test]
+fn operator_commands_transfer_leadership_and_force_a_checkpoint() {
+    let cluster = Cluster::start(3);
+    let leader = wait_for_value(Duration::from_secs(10), || {
+        (0..3).find(|index| {
+            cluster
+                .status(*index)
+                .is_some_and(|status| status.contains("\"role\":\"leader\""))
+        })
+    })
+    .expect("the cluster never elected a leader");
+
+    let mut client = cluster.client(82);
+    client.register().expect("register");
+    client.put(b"before-admin", b"value").expect("write");
+    let target = (0..3).find(|index| *index != leader).unwrap();
+    let response = cluster
+        .post_admin(
+            leader,
+            &format!("/transfer-leader?to={}", target as u64 + 1),
+        )
+        .expect("transfer request");
+    assert!(response.starts_with("HTTP/1.1 202 Accepted"), "{response}");
+    wait_for(Duration::from_secs(10), || {
+        cluster
+            .status(target)
+            .is_some_and(|status| status.contains("\"role\":\"leader\""))
+    })
+    .expect("leadership did not transfer");
+
+    let response = cluster
+        .post_admin(target, "/snapshot")
+        .expect("snapshot request");
+    assert!(response.starts_with("HTTP/1.1 202 Accepted"), "{response}");
+    let snapshots = dir_of(&cluster, target as u64 + 1).join("snapshots");
+    wait_for(Duration::from_secs(10), || {
+        std::fs::read_dir(&snapshots).ok().is_some_and(|entries| {
+            entries.filter_map(Result::ok).any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_digit())
+            })
+        })
+    })
+    .expect("the manual checkpoint was not published");
+}
+
+#[test]
+fn an_operator_adds_promotes_and_removes_a_routed_learner() {
+    let cluster = Cluster::start_with_options(4, 10_000, vec![1, 2, 3]);
+    let (_, response) = cluster
+        .post_to_leader("/add-learner?node=4")
+        .expect("add learner request");
+    assert!(response.starts_with("HTTP/1.1 202 Accepted"), "{response}");
+    wait_for(Duration::from_secs(10), || {
+        (0..4).any(|index| {
+            cluster
+                .status(index)
+                .is_some_and(|status| status.contains("\"learners\":[4]"))
+        })
+    })
+    .expect("node 4 never became a learner");
+
+    let mut client = cluster.client(91);
+    client.register().expect("register");
+    for i in 0..20u32 {
+        client
+            .put(format!("membership-{i}").as_bytes(), b"value")
+            .expect("write while learner catches up");
+    }
+    wait_for(Duration::from_secs(10), || {
+        let leader_status = cluster.leader().and_then(|leader| cluster.status(leader));
+        let learner_status = cluster.status(3);
+        match (leader_status, learner_status) {
+            (Some(leader_status), Some(learner_status)) => {
+                applied_from(&leader_status) == applied_from(&learner_status)
+            }
+            _ => false,
+        }
+    })
+    .expect("the learner never caught up");
+
+    // The server independently checks the leader's replication progress before
+    // proposing this promotion.
+    let (_, response) = cluster
+        .post_to_leader("/promote?node=4")
+        .expect("promote request");
+    assert!(response.starts_with("HTTP/1.1 202 Accepted"), "{response}");
+    wait_for(Duration::from_secs(10), || {
+        (0..4).any(|index| {
+            cluster
+                .status(index)
+                .is_some_and(|status| status.contains("\"voters\":[1,2,3,4]"))
+        })
+    })
+    .expect("node 4 was not promoted");
+
+    let (_, response) = cluster
+        .post_to_leader("/remove?node=4")
+        .expect("remove request");
+    assert!(response.starts_with("HTTP/1.1 202 Accepted"), "{response}");
+    wait_for(Duration::from_secs(10), || {
+        (0..3).any(|index| {
+            cluster.status(index).is_some_and(|status| {
+                status.contains("\"voters\":[1,2,3]") && status.contains("\"learners\":[]")
+            })
+        })
+    })
+    .expect("node 4 was not removed");
+}
+
+fn applied_from(status: &str) -> Option<u64> {
+    let rest = status.split_once("\"applied\":")?.1;
+    rest.split(|character: char| !character.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
+}
+
+fn directory_bytes(path: &Path) -> u64 {
+    std::fs::read_dir(path)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(|meta| meta.is_file())
+        .map(|meta| meta.len())
+        .sum()
+}
+
+fn wait_for_fast(limit: Duration, mut done: impl FnMut() -> bool) -> Option<()> {
+    let deadline = Instant::now() + limit;
+    while Instant::now() < deadline {
+        if done() {
+            return Some(());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    None
 }
 
 /// A history is recorded in the shape an external checker wants: an invocation

@@ -30,6 +30,7 @@ cd "$(dirname "$0")/.." || exit 1
 
 TRIALS="${1:-400}"
 TICK_MS="${2:-30}"
+TIER="${KEEL_BENCH_TIER:-exploratory}"
 
 echo "building" >&2
 cargo build --release -p keel-bench -p keel-server >&2 || exit 1
@@ -43,4 +44,5 @@ trap 'rm -rf "$WORK"' EXIT
     --dir "$WORK" \
     --server-bin "$(pwd)/target/release/keel-server" \
     --sync durable \
+    --tier "$TIER" \
     --out failover.txt

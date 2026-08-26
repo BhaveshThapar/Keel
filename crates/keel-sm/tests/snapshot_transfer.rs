@@ -239,6 +239,30 @@ fn a_snapshot_whose_digest_disagrees_is_thrown_away_rather_than_published() {
     );
 }
 
+#[test]
+fn a_killed_receiver_recovers_its_verified_file_positions() {
+    let holder = tempfile::tempdir().unwrap();
+    let snapshot = holder.path().join("snapshot");
+    checkpoint(&snapshot);
+    let staging = holder.path().join("staging");
+    let mut sender = Sender::with_chunk_bytes(&snapshot, 64).unwrap();
+    let mut receiver = Receiver::new(&staging).unwrap();
+
+    for _ in 0..3 {
+        let chunk = sender.next_chunk().unwrap().unwrap();
+        receiver.accept(&chunk).unwrap();
+    }
+    let before = receiver.position().clone();
+    drop(receiver);
+
+    let resumed = Receiver::resume(&staging).unwrap();
+    assert_eq!(resumed.position(), &before);
+    let mut restarted_sender = Sender::with_chunk_bytes(&snapshot, 64).unwrap();
+    restarted_sender.resume_from(resumed.position());
+    let next = restarted_sender.next_chunk().unwrap().unwrap();
+    assert_eq!(next.offset, before[&next.file]);
+}
+
 /// An incomplete transfer cannot be published at all.
 #[test]
 fn an_incomplete_transfer_refuses_to_publish() {

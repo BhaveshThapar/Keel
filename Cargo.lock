@@ -288,7 +288,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "keel-api"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "bytes",
  "keel-raft",
@@ -299,7 +299,7 @@ dependencies = [
 
 [[package]]
 name = "keel-bench"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "clap",
  "keel-api",
@@ -314,7 +314,7 @@ dependencies = [
 
 [[package]]
 name = "keel-chaos"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "clap",
  "keel-client",
@@ -327,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "keel-client"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "bytes",
  "clap",
@@ -340,7 +340,7 @@ dependencies = [
 
 [[package]]
 name = "keel-fuzz"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "bytes",
  "keel-api",
@@ -354,7 +354,7 @@ dependencies = [
 
 [[package]]
 name = "keel-log"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "crc32c",
  "keel-log",
@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "keel-maelstrom"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "bytes",
  "keel-api",
@@ -380,7 +380,7 @@ dependencies = [
 
 [[package]]
 name = "keel-net"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "keel-api",
  "keel-net",
@@ -390,7 +390,7 @@ dependencies = [
 
 [[package]]
 name = "keel-node"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "bytes",
  "keel-api",
@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "keel-raft"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "bytes",
  "serde",
@@ -413,11 +413,11 @@ dependencies = [
 
 [[package]]
 name = "keel-rand"
-version = "2.0.0"
+version = "3.0.0"
 
 [[package]]
 name = "keel-server"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "bytes",
  "clap",
@@ -434,7 +434,7 @@ dependencies = [
 
 [[package]]
 name = "keel-sim"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "bytes",
  "clap",
@@ -447,7 +447,7 @@ dependencies = [
 
 [[package]]
 name = "keel-sm"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "bytes",
  "crc32c",

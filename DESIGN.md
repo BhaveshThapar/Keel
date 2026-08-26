@@ -249,6 +249,25 @@ reason ADR-003 defers splitting persist from send.
 
 ---
 
+## ADR-011 — Snapshots are storage-engine checkpoints
+
+A checkpoint flushes the memtable, hard-links immutable SSTables and writes a
+fresh manifest. It includes user data, the applied index and every session
+table, so installing one cannot make a retried command apply twice. Consensus
+sees only `SnapshotMeta`; the host moves files through the resumable chunk
+protocol described by ADR-036.
+
+## ADR-012 — Exactly-once sessions live in replicated state
+
+`(client_id, seq)` identifies a command and its cached response. Registration
+uses a nonce so the request that creates a session can itself be retried, and
+leader-stamped time makes expiry a function of the log rather than of each
+node's clock. The tables are in the same state-machine store and checkpoint as
+the user keys. ADR-021 records the expiry details that needed a separate
+decision.
+
+---
+
 ## ADR-013 — `fdatasync` on Linux, `F_FULLFSYNC` on macOS
 
 `SyncMode::Durable` maps to `fdatasync` on Linux and `F_FULLFSYNC` on macOS.
@@ -614,23 +633,24 @@ that stops leading refuses everything it parked rather than leaving it to expire
 
 ---
 
-## ADR-024 — The admin verbs wait for M3
+## ADR-024 — Admin verbs wait for simulator coverage
 
-`keel-server` answers `GET /status` and `GET /metrics` and refuses everything
-else. FR-13's other half — `transfer-leader`, `add-learner`, `promote`,
-`remove`, `snapshot` — is not here.
+The operator verbs were held back until membership and leader transfer ran under
+the simulator's fault schedule. P23 supplied that evidence; P30 then added
+`transfer-leader`, `add-learner`, `promote`, `remove`, and `snapshot` to the
+daemon's single-threaded host loop.
 
-**Why not now.** Every one of them proposes a configuration change or a leader
-transfer, and `keel-sim` issues neither: `Input::ProposeConfChange` and
-`Input::TransferLeader` exist in the core and appear nowhere in the simulator,
-so every membership property currently rests on an in-process cluster whose own
-doc comment admits FIFO messages and instantaneous persistence. P23 puts them
-under the fault schedule. Shipping an operator-facing verb for a code path the
-simulator has never exercised is shipping the confidence without the evidence.
+**Why they waited.** Every one proposes a configuration change or a leader
+transfer. Before P23, those inputs existed in the core but appeared nowhere in
+the simulator, so every membership property rested on an in-process cluster
+whose own doc comment admitted FIFO messages and instantaneous persistence.
+Shipping an operator-facing verb then would have shipped confidence without the
+evidence.
 
-**What that costs in the meantime.** An operator cannot change the membership of
-a running cluster. That is a real limitation and it is in README's "Not claimed"
-rather than discovered.
+**What landed.** The HTTP surface queues commands only on a leader and the host
+loop executes them in the same turn as consensus. Promotion is ignored until
+the leader's progress tracker says the learner is caught up. Real-process tests
+cover transfer and the complete learner → voter → removed lifecycle.
 
 ---
 
@@ -1057,16 +1077,39 @@ the batch amortises it to rather than one flush per operation.
 
 ---
 
-## Planned
+---
 
-These are decided but not yet built. They are recorded here so the shape is
-fixed before the code exists.
+## ADR-036 — Snapshot flow control belongs to the receiver
 
-- **ADR-011 — Snapshots are storage-engine checkpoints.** Flush the memtable,
-  hard-link the immutable SSTables, write a fresh manifest. The consensus layer
-  sees only a handshake; the bytes move over the transport with resumable chunks.
-- **ADR-012 — Exactly-once sessions.** `(client_id, seq)` dedup with a cached
-  response, held in the state machine so it survives failover and appears in
-  snapshots, expired deterministically by leader-stamped time in the log rather
-  than by any node's local clock. Built at P4; the parts that turned out to need
-  arguing about are ADR-021.
+The production daemon sends one checkpoint chunk for one
+`SnapshotRequest { position }`. The receiver replies with the per-file byte
+positions it has verified, so that map is simultaneously the resume protocol
+and a one-chunk flow-control window. A leader cannot queue a gigabyte behind a
+slow TCP socket, and a restarted receiver asks for the first byte after what its
+staging directory still holds.
+
+The pending offer is durable host state. Before accepting the first chunk the
+receiver publishes an `incoming.meta` manifest containing the sender and full
+snapshot metadata. On restart it recreates the core's out-of-band offer, obtains
+a fresh `Ready` number, scans the staged files for their positions, and resumes.
+The whole-state digest still gates publication; recovering file lengths does not
+turn partial bytes into trusted state.
+
+Install keeps KEEL-12's ordering: the Raft log's new floor is written and synced
+first, then the live LSM store is closed and atomically replaced, then the core
+is acknowledged. A crash between the first two steps is recoverable by another
+offer. Reversing them can splice the receiver's abandoned log onto the leader's
+state.
+
+## ADR-037 — Operator commands share the single-threaded host loop
+
+The admin listener parses and acknowledges a bounded command, then hands it
+back to `Server::turn` after the immutable status borrow ends. The same thread
+that pumps `Ready` therefore executes leader transfer, configuration changes and
+manual checkpoints; there is no lock and no second control-plane scheduler.
+
+Routes and votes are separate. `--peer` says where a process can be reached;
+repeated `--voter` flags say which routed nodes vote initially. That lets an
+operator start a routed non-member, add it as a learner, wait until the leader's
+replication tracker says it has caught up, and only then promote it. Omitting
+`--voter` keeps the original all-peers-vote bootstrap behaviour.

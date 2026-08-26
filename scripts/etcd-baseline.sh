@@ -39,6 +39,7 @@ VALUE_BYTES="${1:-128}"
 CLIENTS="${2:-8}"
 TOTAL="${3:-20000}"
 ETCD_VERSION=v3.5.17
+TIER="${KEEL_BENCH_TIER:-exploratory}"
 
 # shellcheck source=scripts/lib/container.sh
 source "$(dirname "$0")/lib/container.sh"
@@ -149,7 +150,7 @@ fi
     echo "value bytes:   $VALUE_BYTES"
     echo "clients:       $CLIENTS"
     echo "total ops:     $TOTAL"
-    echo "tier:          Exploratory — both sides. Neither is a headline number."
+    echo "tier:          $TIER for both durable sides"
     echo
     echo "What this comparison is measuring, and what it is not:"
     echo

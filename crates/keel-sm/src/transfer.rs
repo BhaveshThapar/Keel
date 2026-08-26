@@ -241,6 +241,38 @@ impl Receiver {
         })
     }
 
+    /// Resume a transfer after the receiving process was killed.
+    ///
+    /// A process crash leaves the page cache and the files it wrote intact. We
+    /// recover only the lengths of plain, safe file names; the sender resumes
+    /// at exactly those offsets and the whole-state digest still gates publish.
+    /// A power-loss model needs a durable progress record and is deliberately a
+    /// different claim.
+    pub fn resume(staging: impl AsRef<Path>) -> Result<Self, StateMachineError> {
+        let staging = staging.as_ref().to_path_buf();
+        std::fs::create_dir_all(&staging)
+            .map_err(|e| StateMachineError::Store(format!("{}: {e}", staging.display())))?;
+        let mut position = BTreeMap::new();
+        for entry in std::fs::read_dir(&staging)
+            .map_err(|e| StateMachineError::Store(format!("{}: {e}", staging.display())))?
+        {
+            let entry = entry
+                .map_err(|e| StateMachineError::Store(format!("{}: {e}", staging.display())))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let meta = entry
+                .metadata()
+                .map_err(|e| StateMachineError::Store(format!("{name}: {e}")))?;
+            if is_safe_name(&name) && meta.is_file() {
+                position.insert(name, meta.len());
+            }
+        }
+        Ok(Self {
+            staging,
+            position,
+            complete: false,
+        })
+    }
+
     /// Where the transfer has got to, per file. What a resume is asked from.
     pub fn position(&self) -> &BTreeMap<String, u64> {
         &self.position
@@ -248,6 +280,12 @@ impl Receiver {
 
     pub fn is_complete(&self) -> bool {
         self.complete
+    }
+
+    /// The sender confirmed that the recovered per-file positions describe the
+    /// complete checkpoint. The digest is still checked before publication.
+    pub fn finish(&mut self) {
+        self.complete = true;
     }
 
     /// Take one chunk.
@@ -317,8 +355,14 @@ impl Receiver {
             std::fs::rename(destination, &retired)
                 .map_err(|e| StateMachineError::Store(format!("retiring the old snapshot: {e}")))?;
         }
-        std::fs::rename(&self.staging, destination)
-            .map_err(|e| StateMachineError::Store(format!("publishing the snapshot: {e}")))?;
+        if let Err(error) = std::fs::rename(&self.staging, destination) {
+            if retired.exists() {
+                let _ = std::fs::rename(&retired, destination);
+            }
+            return Err(StateMachineError::Store(format!(
+                "publishing the snapshot: {error}"
+            )));
+        }
         if let Some(parent) = destination.parent() {
             // The rename is a directory entry, and a lost entry is a snapshot
             // that will not open.

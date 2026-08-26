@@ -3,14 +3,15 @@
 A Raft-replicated key-value store in Rust, built on an LSM storage engine, and
 verified by a deterministic simulator that replays any failure from a seed.
 
-> **Status: v2.0.0.** A three-node cluster of real processes serves traffic and
+> **Status: v3.0.0.** A three-node cluster of real processes serves traffic and
 > survives being partitioned, paused, killed a thousand times and clock-jumped —
 > with the histories it produced checked by Porcupine and by Knossos, and by
 > control arms that prove those checkers reject a corrupted one. Performance
 > numbers exist and are **Exploratory tier**: measured on a laptop, reproducible,
 > and never headlined. What is *not* claimed is listed below and is worth reading
-> first — starting with snapshots, which the simulator drives end to end and the
-> daemon does not.
+> first. The last missing production phase — real-process checkpoint creation,
+> resumable snapshot transfer and install — is implemented and tested now; the
+> remaining performance gap is dedicated Linux hardware.
 
 ## What is here today
 
@@ -54,8 +55,10 @@ the order the contract requires: persist, then one fsync, then send, then apply.
 Group commit falls out of that rather than being bolted on.
 
 **[`keel-server`](crates/keel-server/)** — the daemon. One process, one node, one
-loop, one thread. It serves clients, answers `/status` and `/metrics`, and writes
-a ready file once recovery is done. A client request is *parked* rather than
+loop, one thread. It checkpoints by applied entries, streams snapshots with a
+one-chunk flow-control window, resumes after the receiver process is killed,
+serves operator commands plus `/status` and `/metrics`, and writes a ready file
+once recovery is done. A client request is *parked* rather than
 answered: a write until its entry is applied, a read until the core has confirmed
 a read index and the state machine has reached it.
 
@@ -102,6 +105,12 @@ log replication with pipelining and conflict-term backtracking, the Figure 8
 commit rule, **ReadIndex** and **lease** reads with follower forwarding,
 **leader transfer**, voluntary **step-down**, and **learners with
 joint-consensus** membership changes.
+
+The same paths are operator-reachable through `keel-admin`: add a routed
+learner, promote it only after it catches up, remove a member, transfer
+leadership, or force a checkpoint. The real-process suite exercises the whole
+learner → voter → removed lifecycle and kills a snapshot receiver mid-stream
+before requiring it to resume and publish the checkpoint.
 
 ## Measured
 
@@ -293,10 +302,6 @@ hardware and no commit behind it. Both run in CI.
   ([`results/chaos/clock-jump.txt`](results/chaos/clock-jump.txt), with both
   machines named in its header), and every schedule drawn on macOS says out loud
   that it contains no clock jumps.
-- **No membership changes from an operator.** The core does joint consensus and
-  the in-process tests exercise it, but the simulator issues no configuration
-  change, so the admin verbs that would drive one are deferred until it does
-  (ADR-024).
 - **Linearizability is checked outside the simulator, not inside it.** Porcupine
   and Knossos check histories from real clusters — the last run was 50,344
   operations from eight clients, each with eight requests in flight, every key
@@ -307,18 +312,10 @@ hardware and no commit behind it. Both run in CI.
   linearization and stops; to refute, it must exhaust the space. On the full
   depth-8 history the control ran the machine out of memory. It records a run of
   its own instead, and the arm's claim is correspondingly narrower.
-- **The daemon does not take or stream snapshots.** The machinery is real and
-  tested — `Outgoing`/`Incoming` chunk a checkpoint, resume from an interruption,
-  refuse a corrupt chunk and refuse to publish a partial transfer, and the
-  simulator drives the whole path under faults across 500 seeds a size. What is
-  missing is the wiring in [`keel-node`](crates/keel-node/)'s loop: it never
-  calls for a checkpoint, so its log is never compacted, so no leader it runs
-  ever offers a snapshot. A node that is nonetheless offered one now *stops*
-  rather than acknowledging an install it did not perform, because the core
-  answers such an acknowledgement by moving its applied index over entries the
-  state machine never saw. Until that wiring exists, a follower that falls
-  behind catches up by replication or not at all, and the 1 GB snapshot timing
-  BENCH.md calls "not measured" is not a measurement anybody can take.
+- **No committed 1 GB snapshot number yet.** The daemon path and benchmark are
+  implemented, including receiver-process restart; `scripts/snapshot-bench.sh`
+  is the Reference-tier run. The number waits on the same dedicated Linux
+  allocation as the cross-node throughput and etcd comparison.
 - **The Apptainer path in the container scripts has never been run.** The clock
   nemesis and the etcd baseline detect Docker, Podman or Apptainer, because a
   shared cluster gives users the third and not the first two. Docker is what the
@@ -334,6 +331,12 @@ hardware and no commit behind it. Both run in CI.
   read, whether or not it is ever uploaded.
 
 ## Compatibility
+
+**v3.0.0 breaks the peer wire, not the client wire.** Snapshot requests,
+file-aware chunks, completion and status messages were added to `Peer`; mixed
+v2/v3 nodes therefore do not form a supported cluster. The client envelopes
+introduced in v2 are unchanged, and the on-disk log and state-machine formats
+remain readable.
 
 **v2.0.0 breaks the client wire, and a v1.0.0 client cannot talk to a v2.0.0
 node.** Every request and every answer is now wrapped in an envelope carrying a

@@ -95,6 +95,10 @@ impl<S: Store> StateMachine<S> {
         &self.store
     }
 
+    pub fn store_mut(&mut self) -> &mut S {
+        &mut self.store
+    }
+
     /// Apply one committed entry.
     ///
     /// Idempotent in both senses that matter. An `index` at or below what the

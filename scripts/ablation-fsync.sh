@@ -26,6 +26,7 @@ RATES="${2:-800,1600,3200,6400,12800,25600}"
 SECS="${3:-6}"
 CLIENTS="${4:-64}"
 DEPTH="${5:-32}"
+TIER="${KEEL_BENCH_TIER:-exploratory}"
 
 echo "building" >&2
 cargo build --quiet --release -p keel-bench -p keel-server >&2 || exit 1
@@ -46,6 +47,7 @@ trap 'rm -rf "$WORK"' EXIT
     --dir "$WORK" \
     --server-bin "$(pwd)/target/release/keel-server" \
     --sync none \
+    --tier "$TIER" \
     --out "ablation-fsync-off.txt" \
     --svg "ablation-fsync-off.svg" \
     --admit "the fsync-off arm of the durability ablation: the same cluster with writes neither ordered nor made durable"

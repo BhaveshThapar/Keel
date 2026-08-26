@@ -120,6 +120,23 @@ impl Incoming {
         })
     }
 
+    /// Recover the verified byte positions left by a killed receiver.
+    pub fn resume(
+        from: NodeId,
+        meta: SnapshotMeta,
+        staging: impl AsRef<Path>,
+    ) -> Result<Self, StateMachineError> {
+        let staging = staging.as_ref().to_path_buf();
+        Ok(Self {
+            from,
+            meta,
+            receiver: Receiver::resume(&staging)?,
+            staging,
+            chunks_accepted: 0,
+            chunks_rejected: 0,
+        })
+    }
+
     /// What this transfer has verified, per file. Sent back to the leader on a
     /// resume.
     pub fn position(&self) -> BTreeMap<String, u64> {
@@ -137,6 +154,10 @@ impl Incoming {
 
     pub fn is_complete(&self) -> bool {
         self.receiver.is_complete()
+    }
+
+    pub fn finish(&mut self) {
+        self.receiver.finish();
     }
 
     /// Publish, once the digest agrees.

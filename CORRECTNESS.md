@@ -160,6 +160,8 @@ the one place the simulator had never been.
 | A restarting node recovers its configuration from its snapshot and rebuilds the rest by replay, rather than keeping the one it held in memory | `the_membership_profile_never_takes_the_voter_set_below_three` — [KEEL-10](BUGS.md) | enforced |
 | The voter set never falls to two, where a single crash stops the cluster | the same test, across eighty runs | enforced |
 | …and at three nodes the profile is inert, which is stated rather than left to look like coverage | `the_membership_profile_is_inert_at_three_nodes` | enforced |
+| An operator adds a routed learner, waits for catch-up, promotes it and removes it | `cluster::an_operator_adds_promotes_and_removes_a_routed_learner` against four real processes | enforced |
+| An operator transfers leadership without waiting for an election timeout | `cluster::operator_commands_transfer_leadership_and_force_a_checkpoint` | enforced |
 
 ## A cluster under chaos
 
@@ -253,7 +255,7 @@ network or a disk, so a panic is a node a stranger can stop with one bad byte.
 
 | Property | Enforced by | Status |
 |---|---|---|
-| A node reports over a real socket, and answers only `GET` on two paths | `admin_surface::a_node_reports_itself_over_a_real_socket`; `tests::only_get_is_answered` | enforced |
+| A node reports over a real socket; observations stay `GET`-only and operator commands are strict `POST`s | `admin_surface::a_node_reports_itself_over_a_real_socket`; `tests::status_and_metrics_remain_get_only`; `tests::every_operator_command_is_parsed_strictly` | enforced |
 | `/metrics` parses as Prometheus text exposition | `admin_surface::a_node_reports_itself_over_a_real_socket` parses it the way a scraper does; `metrics::tests::the_output_parses_as_exposition` | enforced |
 | A node that is not power-loss durable says so | `admin_surface::a_node_that_is_not_durable_says_so` — in `/status` and as a metric | enforced |
 | The status is well-formed JSON whatever an operating system put in a failure message | `status::tests::a_failure_message_with_quotes_and_newlines_is_escaped` | enforced |
@@ -309,9 +311,11 @@ network or a disk, so a panic is a node a stranger can stop with one bad byte.
 | A chunk cannot name a path outside the snapshot | `snapshot_transfer::a_chunk_that_names_an_escape_is_refused`; `transfer::tests::a_name_that_could_escape_the_directory_is_refused` | enforced |
 | A fresh node is brought up past a compacted floor, killed mid-stream, and **resumes** | `snapshot_end_to_end::a_fresh_node_is_brought_up_by_a_snapshot_that_is_killed_mid_stream` — asserts the second attempt sent fewer chunks than the whole snapshot, and that the two attempts together cover it exactly once | enforced |
 | A transfer interrupted repeatedly still converges, re-sending nothing verified | `snapshot_end_to_end::a_transfer_interrupted_repeatedly_still_converges` | enforced |
+| A killed receiver reconstructs its verified per-file positions | `snapshot_transfer::a_killed_receiver_recovers_its_verified_file_positions` | enforced |
 | A checkpoint is due by entries applied, not by time passed | `snapshots::tests::a_checkpoint_is_due_by_entries_applied_rather_than_by_time` | enforced |
-| A host that cannot fetch snapshot bytes refuses to acknowledge an install | `NodeError::SnapshotUnsupported`, returned by `Node::pump` rather than echoing `snapshot_to_install` back. The core answers such an acknowledgement by moving the applied index over entries the state machine never saw | enforced |
-| The daemon takes or streams a snapshot between real processes | — | **not claimed**: the transfer types and the simulator cover the path; `keel-node`'s loop never calls for a checkpoint, so its log is never compacted and no leader it runs offers one |
+| The daemon never acknowledges an install before its log floor and state are durable | `cluster::a_real_follower_resumes_and_installs_a_snapshot_after_it_is_killed_mid_stream`; the host persists the floor before replacing the state store (KEEL-12 ordering) | enforced |
+| A real follower below a compacted floor is killed mid-transfer, restarts, resumes and publishes | `cluster::a_real_follower_resumes_and_installs_a_snapshot_after_it_is_killed_mid_stream` | enforced |
+| Snapshot senders are bounded to one chunk per receiver request | the same real-process test plus `Peer::SnapshotRequest`; no sender loop can fill an unbounded transport queue | enforced |
 | **A batch of entries means what applying them one at a time means** | `state_machine::a_batch_of_entries_means_what_applying_them_one_at_a_time_means` — an increment reading what the increment before it wrote, a compare-and-swap against a value set earlier in the batch, a duplicate sequence number, and an expiry, all in one | enforced |
 | A client registered in a batch can be used later in the same batch | `state_machine::a_client_registered_in_a_batch_can_be_used_later_in_the_same_batch` | enforced |
 | A batch leaves the applied index at its highest entry, and a replay changes nothing | `state_machine::a_batch_leaves_the_applied_index_at_its_highest_entry` | enforced |
@@ -477,7 +481,8 @@ Named here so the gaps are visible rather than discovered:
   a test.
 - **Injected I/O errors under a fault schedule.** `ENOSPC` on `allocate` and
   `EIO` on `sync` or `read` are not modelled. A node that cannot fsync must halt,
-  and there is no server to halt yet (M1 Phase 5).
+  and the server does halt on the storage error; the missing half is injecting
+  those errors under the seeded schedule.
 - **fsync loss.** A `Durable` sync that reports success and does not stick.
   Modelled by nothing, and the other half of TR-5.
 - **The state machine's own store under the disk fault model.** The simulator
@@ -488,22 +493,10 @@ Named here so the gaps are visible rather than discovered:
   unsynced writes of its own. Putting the engine over `FaultFs` is now possible
   — the upstream filesystem seam and `Db::open_manual` exist for exactly this —
   and it is not done.
-- **A lease read served by a leader whose own no-op has not committed.** The
-  guard exists and sits upstream of the lease branch in `request_read_index`, so
-  there is one check rather than two. The window itself is not reachable from the
-  in-process cluster: acquiring a lease takes a round of heartbeat
-  acknowledgements, and that harness delivers in order, so the no-op is
-  acknowledged first. Closed by P9's recency oracle, which reorders.
 - Exactly-once sessions across a *failover*. The session table survives a
   restart and deduplicates retries, both tested, and a client now keeps working
   across a leader being killed. What is untested is a *retry storm* crossing that
   change — a client whose answers are lost repeatedly while leadership moves,
-  which is what the linearizability checkers are for (M1 Phase 11, M2 Phase 18).
-- Membership changes from an operator. `Input::ProposeConfChange` and
-  `Input::TransferLeader` exist in the core and are exercised only by an
-  in-process cluster; the simulator issues neither, and the admin verbs that
-  would drive them are deferred to M3 for that reason (ADR-024).
-- Snapshots, streaming `InstallSnapshot`, and log compaction (M2).
-- External linearizability checking via Maelstrom and Porcupine (M1/M2).
-- Fuzzing of message decoding and arbitrary event sequences (M3).
-- Clock-skew nemesis proving lease reads fail outside their drift bound (M3).
+  which is what the external linearizability checkers exercise. The narrower
+  missing test is an aimed storm that repeatedly loses this one client's answer
+  while leadership changes.

@@ -41,6 +41,7 @@ CLIENTS="${4:-64}"
 # as much about this harness as about the system (ADR-033). It is in the result's
 # header for the same reason `clients` is.
 DEPTH="${5:-32}"
+TIER="${KEEL_BENCH_TIER:-exploratory}"
 
 echo "building" >&2
 cargo build --release -p keel-bench -p keel-server >&2 || exit 1
@@ -60,5 +61,6 @@ trap 'rm -rf "$WORK"' EXIT
     --dir "$WORK" \
     --server-bin "$(pwd)/target/release/keel-server" \
     --sync durable \
+    --tier "$TIER" \
     --out "campaign-$MIX.txt" \
     --svg "campaign-$MIX.svg"

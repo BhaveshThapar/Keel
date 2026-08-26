@@ -51,29 +51,68 @@ pub enum ServerError {
 pub enum Request {
     Status,
     Metrics,
+    TransferLeader {
+        to: u64,
+    },
+    AddLearner {
+        node: u64,
+    },
+    Promote {
+        node: u64,
+    },
+    Remove {
+        node: u64,
+    },
+    Snapshot,
     /// Anything else. Answered with 404 rather than with a guess.
     Unknown,
 }
 
 /// Parse the request line of an HTTP request.
 ///
-/// A deliberately small parser: this surface answers two `GET`s and has no
-/// business accepting anything else. A request line longer than a kilobyte is
+/// A deliberately small parser: this surface answers two `GET`s and a fixed
+/// set of operator `POST`s. A request line longer than a kilobyte is
 /// refused before it is read, because a status endpoint that can be made to
 /// allocate is a status endpoint that can be used to take the node down.
 pub fn parse_request(line: &str) -> Request {
     let mut parts = line.split_whitespace();
-    if parts.next() != Some("GET") {
+    let method = parts.next();
+    let Some(target) = parts.next() else {
         return Request::Unknown;
-    }
-    match parts
-        .next()
-        .map(|path| path.split('?').next().unwrap_or(path))
-    {
-        Some("/status") => Request::Status,
-        Some("/metrics") => Request::Metrics,
+    };
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    match (method, path) {
+        (Some("GET"), "/status") => Request::Status,
+        (Some("GET"), "/metrics") => Request::Metrics,
+        (Some("POST"), "/transfer-leader") => {
+            query_node(query, "to").map_or(Request::Unknown, |to| Request::TransferLeader { to })
+        }
+        (Some("POST"), "/add-learner") => {
+            query_node(query, "node").map_or(Request::Unknown, |node| Request::AddLearner { node })
+        }
+        (Some("POST"), "/promote") => {
+            query_node(query, "node").map_or(Request::Unknown, |node| Request::Promote { node })
+        }
+        (Some("POST"), "/remove") => {
+            query_node(query, "node").map_or(Request::Unknown, |node| Request::Remove { node })
+        }
+        (Some("POST"), "/snapshot") if query.is_empty() => Request::Snapshot,
         _ => Request::Unknown,
     }
+}
+
+fn query_node(query: &str, wanted: &str) -> Option<u64> {
+    let mut found = None;
+    for pair in query.split('&') {
+        let (key, value) = pair.split_once('=')?;
+        if key == wanted {
+            if found.is_some() {
+                return None;
+            }
+            found = value.parse().ok().filter(|value| *value > 0);
+        }
+    }
+    found
 }
 
 /// The largest request line this surface reads.
@@ -83,6 +122,8 @@ const MAX_REQUEST_LINE: u64 = 1024;
 pub fn respond(code: u16, content_type: &str, body: &str) -> String {
     let reason = match code {
         200 => "OK",
+        202 => "Accepted",
+        409 => "Conflict",
         404 => "Not Found",
         _ => "Error",
     };
@@ -97,7 +138,7 @@ pub fn respond(code: u16, content_type: &str, body: &str) -> String {
     )
 }
 
-/// Something that can answer the admin surface's two questions.
+/// Something that can answer the admin surface's observations.
 ///
 /// A trait rather than a struct holding a `Node`, because the node is behind
 /// the host's own lock and this crate has no business deciding what that lock
@@ -124,6 +165,17 @@ pub fn serve_one(stream: &mut TcpStream, node: &impl Observable) -> Result<Reque
             "text/plain; version=0.0.4; charset=utf-8",
             &metrics::render(&node.metrics()),
         ),
+        Request::TransferLeader { .. }
+        | Request::AddLearner { .. }
+        | Request::Promote { .. }
+        | Request::Remove { .. }
+        | Request::Snapshot => {
+            if node.status().role == keel_raft::Role::Leader {
+                respond(202, "text/plain; charset=utf-8", "accepted\n")
+            } else {
+                respond(409, "text/plain; charset=utf-8", "not leader\n")
+            }
+        }
         Request::Unknown => respond(404, "text/plain; charset=utf-8", "not found\n"),
     };
     stream.write_all(response.as_bytes())?;
@@ -156,7 +208,17 @@ impl Admin {
     /// turn costs a scrape a few milliseconds of latency and costs replication
     /// nothing.
     pub fn poll(&self, node: &impl Observable) -> Result<usize, ServerError> {
+        self.poll_with_commands(node).map(|(served, _)| served)
+    }
+
+    /// Answer requests and return accepted operator commands for the host loop
+    /// to apply after the immutable status borrow ends.
+    pub fn poll_with_commands(
+        &self,
+        node: &impl Observable,
+    ) -> Result<(usize, Vec<Request>), ServerError> {
         let mut served = 0;
+        let mut commands = Vec::new();
         loop {
             match self.listener.accept() {
                 Ok((mut stream, _)) => {
@@ -167,10 +229,20 @@ impl Admin {
                     let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(250)));
                     let _ = stream.set_write_timeout(Some(std::time::Duration::from_millis(250)));
                     // A connection that fails is that connection's problem.
-                    let _ = serve_one(&mut stream, node);
+                    if let Ok(request) = serve_one(&mut stream, node)
+                        && !matches!(
+                            request,
+                            Request::Status | Request::Metrics | Request::Unknown
+                        )
+                        && node.status().role == keel_raft::Role::Leader
+                    {
+                        commands.push(request);
+                    }
                     served += 1;
                 }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(served),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    return Ok((served, commands));
+                }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e.into()),
             }
@@ -223,16 +295,44 @@ mod tests {
         assert_eq!(parse_request(""), Request::Unknown);
     }
 
-    /// Read-only means read-only. A surface that answered a POST would be an
-    /// admin API, which is a different thing with different consequences.
     #[test]
-    fn only_get_is_answered() {
+    fn status_and_metrics_remain_get_only() {
         for method in ["POST", "PUT", "DELETE", "PATCH", "HEAD"] {
             assert_eq!(
                 parse_request(&format!("{method} /status HTTP/1.1")),
                 Request::Unknown,
                 "{method} was accepted"
             );
+        }
+    }
+
+    #[test]
+    fn every_operator_command_is_parsed_strictly() {
+        assert_eq!(
+            parse_request("POST /transfer-leader?to=3 HTTP/1.1"),
+            Request::TransferLeader { to: 3 }
+        );
+        assert_eq!(
+            parse_request("POST /add-learner?node=4 HTTP/1.1"),
+            Request::AddLearner { node: 4 }
+        );
+        assert_eq!(
+            parse_request("POST /promote?node=4 HTTP/1.1"),
+            Request::Promote { node: 4 }
+        );
+        assert_eq!(
+            parse_request("POST /remove?node=2 HTTP/1.1"),
+            Request::Remove { node: 2 }
+        );
+        assert_eq!(parse_request("POST /snapshot HTTP/1.1"), Request::Snapshot);
+        for malformed in [
+            "GET /snapshot HTTP/1.1",
+            "POST /promote HTTP/1.1",
+            "POST /remove?node=0 HTTP/1.1",
+            "POST /add-learner?node=abc HTTP/1.1",
+            "POST /transfer-leader?to=2&to=3 HTTP/1.1",
+        ] {
+            assert_eq!(parse_request(malformed), Request::Unknown, "{malformed}");
         }
     }
 

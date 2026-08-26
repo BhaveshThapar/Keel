@@ -13,7 +13,12 @@ keywords = ["raft", "server", "prometheus", "metrics", "daemon"]
 name = "keel-server"
 path = "src/main.rs"
 
+[[bin]]
+name = "keel-admin"
+path = "src/bin/keel-admin.rs"
+
 [dependencies]
+bytes = { workspace = true }
 clap = { workspace = true }
 keel-api = { workspace = true }
 keel-log = { workspace = true }
