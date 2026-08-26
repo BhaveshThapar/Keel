@@ -18,6 +18,8 @@
 //! - the cluster still commits afterwards, so a "no violations" result is not
 //!   the result of a cluster that had stopped answering.
 
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -114,6 +116,44 @@ fn get_until(c: &Cluster, key: &str, within: Duration) -> Option<Vec<u8>> {
     None
 }
 
+fn commit_index(c: &Cluster, node: usize) -> Option<u64> {
+    let mut stream =
+        TcpStream::connect_timeout(c.admin_addrs.get(node)?, Duration::from_millis(250)).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(250)))
+        .ok()?;
+    stream
+        .write_all(b"GET /status HTTP/1.1\r\nHost: keel\r\nConnection: close\r\n\r\n")
+        .ok()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+    response
+        .split_once("\"commit\":")?
+        .1
+        .split(|character: char| !character.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
+}
+
+fn wait_for_matching_commits(c: &Cluster, within: Duration) -> bool {
+    let deadline = Instant::now() + within;
+    while Instant::now() < deadline {
+        let commits: Vec<_> = (0..c.nodes())
+            .filter_map(|node| commit_index(c, node))
+            .collect();
+        if commits.len() == c.nodes()
+            && commits
+                .first()
+                .is_some_and(|first| *first > 0 && commits.iter().all(|commit| commit == first))
+        {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
 /// The whole exit criterion in one run, in the order the roadmap names it.
 #[test]
 fn a_cluster_survives_a_partition_a_pause_and_a_kill() {
@@ -149,6 +189,13 @@ fn a_cluster_survives_a_partition_a_pause_and_a_kill() {
 
     // 2. Heal.
     c.heal();
+    assert!(
+        wait_for_matching_commits(&c, Duration::from_secs(10)),
+        "the healed follower did not catch up before the next independent fault: {:?}",
+        (0..c.nodes())
+            .map(|node| commit_index(&c, node))
+            .collect::<Vec<_>>()
+    );
 
     // 3. Pause. Its sockets stay open and unanswered — the fault a crash does
     //    not produce.

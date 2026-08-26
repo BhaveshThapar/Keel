@@ -24,7 +24,8 @@
 #        scripts/release-checklist.sh v1.0.0
 
 set -uo pipefail
-cd "$(dirname "$0")/.." || exit 1
+SCRIPT_ROOT="$(cd "$(dirname "$0")/.." && pwd)" || exit 1
+cd "${KEEL_CHECKOUT:-$SCRIPT_ROOT}" || exit 1
 
 VERSION="${1:-}"
 fail=0
@@ -63,16 +64,28 @@ else
 fi
 
 step "tests"
-if cargo test --workspace --all-features >/dev/null 2>&1; then
-    ok "cargo test --all-features"
-else
-    problem "cargo test --workspace --all-features"
-fi
+# `--all-features` is deliberately invalid here: it unifies the
+# `negative-demos` features into keel-server and then asks the real-cluster
+# acceptance tests to pass with consensus and durability rules compiled out.
+# Exercise every positive optional feature explicitly instead.
 if cargo test --workspace >/dev/null 2>&1; then
     ok "cargo test, default features"
 else
     problem "cargo test --workspace"
 fi
+for suite in \
+    "keel-log conformance" \
+    "keel-net tcp,conformance" \
+    "keel-node lsm" \
+    "keel-sm lsm,conformance" \
+    "lsm_kv fuzzing"; do
+    set -- $suite
+    if cargo test -p "$1" --features "$2" >/dev/null 2>&1; then
+        ok "$1 --features $2"
+    else
+        problem "cargo test -p $1 --features $2"
+    fi
+done
 
 # The builds that deliberately remove a safety rule. Each has a test that
 # asserts the harness catches the result, so a rule that stopped being

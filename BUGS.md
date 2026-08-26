@@ -19,7 +19,7 @@ and not a violation, so no oracle was ever going to fail on it. It is here
 because the shape of it is the same: something believed correct was not, and the
 belief had a comment attached explaining why it was fine.
 
-**Six of the eighteen are the harness rather than the system**, which is the
+**Six of the twenty are the harness rather than the system**, which is the
 number the whole file exists to make visible. A verification harness that has
 never caught anything has not been shown to work; one that has never been wrong
 has not been looked at hard enough.
@@ -824,3 +824,31 @@ therefore re-offers the current checkpoint; success immediately continues above
 the installed floor. The receiver also persists the pending offer beside its
 staging directory, so a process restart can request the exact verified position
 without waiting for failure detection.
+
+---
+
+## KEEL-20 — a short partition stranded a follower below the leader
+
+**Found by** the real-process chaos acceptance test on the UMIACS Linux cluster.
+The test healed one follower and then paused a different one; the supposedly
+healed cluster could no longer form a quorum.
+
+**Symptom.** After the partition healed, two nodes reached commit index 9 while
+the formerly isolated follower stayed at 5 indefinitely. Heartbeats resumed,
+but the missing `AppendEntries` did not.
+
+**Root cause.** The leader advances a follower's `next` index optimistically when
+it queues an append. The proxy severed the TCP connection after four such
+messages, too few to fill the in-flight window covered by KEEL-1's recovery.
+`TcpTransport::flush` noticed and removed the dead socket, but exposed no error
+to the host. The consensus core therefore retained `next = 10` with
+`matched = 5`; heartbeat responses proved the follower was alive, but there
+were no entries at index 10 to send and no rejection that could move `next`
+backward.
+
+**Fix.** `TcpTransport` records outgoing connections found dead during a turn.
+The next send to that peer reports `Disconnected` once before redialling, which
+drives the existing `ReportUnreachable` path and moves progress back to `Probe`
+at `matched + 1`. A transport regression test covers the delayed error, and the
+chaos test now waits until all three commit indices match after healing before
+injecting its next independent fault.

@@ -1,7 +1,7 @@
 # UMIACS measurement handoff
 
-Transfer the repository **after the v3.0.0 tag exists and
-`scripts/release-checklist.sh v3.0.0` passes at that tag**. The code is then
+Transfer the repository **after the v3.0.1 tag exists and
+`scripts/release-checklist.sh v3.0.1` passes at that tag**. The code is then
 finished locally; moving it earlier would produce numbers for an unnamed tree.
 
 ## Allocation contract
@@ -15,12 +15,12 @@ Singularity, Podman, or Docker. The Apptainer branch is intentionally marked
 untested until its first cluster run.
 
 Do not copy the macOS `target/` directory. Transfer the tagged source (a clone,
-Git bundle, or `rsync` excluding `target/`), check out `v3.0.0`, then run:
+Git bundle, or `rsync` excluding `target/`), check out `v3.0.1`, then run:
 
 ```sh
 git status --short
 git describe --exact-match --tags HEAD
-scripts/release-checklist.sh v3.0.0
+scripts/release-checklist.sh v3.0.1
 scripts/umiacs-reference.sh /path/on/the/benchmark/device/keel-reference
 ```
 

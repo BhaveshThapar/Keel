@@ -24,7 +24,7 @@
 //! node restarts on a new port. Until that frame arrives the connection is
 //! pending and nothing on it is attributed to anyone.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 
@@ -118,6 +118,10 @@ pub struct TcpTransport {
     /// Connections other nodes dialled, once they have said who they are. Read
     /// from, never written to.
     incoming: BTreeMap<NodeId, Conn>,
+    /// Peers whose outgoing connection died between two calls to `send`.
+    /// Report each once before redialling so the consensus core can discard
+    /// optimistic replication progress derived from messages the socket lost.
+    disconnected: BTreeSet<NodeId>,
     /// Accepted connections that have not yet said who they are.
     unidentified: Vec<Conn>,
     inbox: VecDeque<Received>,
@@ -135,6 +139,7 @@ impl TcpTransport {
             routes: BTreeMap::new(),
             outgoing: BTreeMap::new(),
             incoming: BTreeMap::new(),
+            disconnected: BTreeSet::new(),
             unidentified: Vec::new(),
             inbox: VecDeque::new(),
             max_frame_bytes: MAX_FRAME_BYTES,
@@ -178,7 +183,15 @@ impl TcpTransport {
         for conn in self.outgoing.values_mut() {
             conn.write_some();
         }
-        self.outgoing.retain(|_, conn| !conn.dead);
+        let dead: Vec<_> = self
+            .outgoing
+            .iter()
+            .filter_map(|(peer, conn)| conn.dead.then_some(*peer))
+            .collect();
+        for peer in dead {
+            self.outgoing.remove(&peer);
+            self.disconnected.insert(peer);
+        }
         self.incoming.retain(|_, conn| !conn.dead);
     }
 
@@ -271,6 +284,9 @@ impl Transport for TcpTransport {
         if peer == self.local {
             return Err(TransportError::UnknownPeer(peer));
         }
+        if self.disconnected.remove(&peer) {
+            return Err(TransportError::Disconnected(peer));
+        }
         if !self.outgoing.contains_key(&peer) {
             self.dial(peer)?;
         }
@@ -289,5 +305,36 @@ impl Transport for TcpTransport {
     fn recv(&mut self) -> Result<Option<Received>, TransportError> {
         self.turn();
         Ok(self.inbox.pop_front())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    #[test]
+    fn a_connection_lost_during_flush_is_reported_by_the_next_send() {
+        let (mut left, mut right) = TcpTransport::connected_pair(1, 2).unwrap();
+        left.send(2, b"establish").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline && right.recv().unwrap().is_none() {
+            left.flush().unwrap();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        drop(right);
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            left.flush().unwrap();
+            match left.send(2, b"heartbeat") {
+                Err(TransportError::Disconnected(2)) => return,
+                Ok(()) => {}
+                Err(error) => panic!("lost connection was reported as {error}"),
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("lost connection was never reported");
     }
 }
