@@ -56,13 +56,14 @@ mkdir -p results/bench
     echo "nodes:      ${SLURM_JOB_NUM_NODES:-not supplied}"
     echo "cpus/node:  ${SLURM_CPUS_ON_NODE:-not supplied}"
     echo "data root:  $RUN_ROOT"
-    echo "started:    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "date:       $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } >results/bench/umiacs-reference.txt
 
 # Same host, same device, back to back. These populate results/bench with full
 # provenance; commit the artifacts separately from the release tag.
 scripts/campaign.sh writes
-scripts/campaign.sh balanced
+# YCSB A is the balanced 50% read / 50% update workload.
+scripts/campaign.sh a
 scripts/ablation-fsync.sh
 scripts/breakdown.sh
 scripts/failover.sh
