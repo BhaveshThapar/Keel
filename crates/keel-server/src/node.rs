@@ -80,6 +80,11 @@ struct SnapshotProgress {
     bytes_received: u64,
 }
 
+/// A receiver may pause while its storage engine flushes a large snapshot
+/// chunk. This is a liveness deadline, not the request cadence: the receiver
+/// retries every 250 ms when healthy.
+const SNAPSHOT_SENDER_IDLE: Duration = Duration::from_secs(5);
+
 /// A running node.
 pub struct Server {
     node: Node<StdFs, LsmStore, TcpTransport>,
@@ -601,7 +606,7 @@ impl Server {
         let expired: Vec<NodeId> = self
             .snapshot_activity
             .iter()
-            .filter(|(_, seen)| seen.elapsed() >= Duration::from_millis(500))
+            .filter(|(_, seen)| seen.elapsed() >= SNAPSHOT_SENDER_IDLE)
             .map(|(peer, _)| *peer)
             .collect();
         for peer in &expired {
