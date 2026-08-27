@@ -105,11 +105,22 @@ done
 step "the deliberately broken builds still fail the way they should"
 NEGATIVE_TARGET="${CARGO_TARGET_DIR:-target}/negative-demos"
 for pkg in keel-raft keel-sm keel-fuzz; do
-    if CARGO_TARGET_DIR="$NEGATIVE_TARGET" \
-        cargo test -p "$pkg" --features negative-demos >/dev/null 2>&1; then
-        ok "$pkg --features negative-demos"
+    if [ "$pkg" = keel-sm ]; then
+        if CARGO_TARGET_DIR="$NEGATIVE_TARGET" \
+            cargo test -p "$pkg" --features negative-demos \
+                without_the_atomic_index_a_kill_leaves_an_entry_that_will_apply_twice \
+                -- --exact >/dev/null 2>&1; then
+            ok "$pkg --features negative-demos"
+        else
+            problem "cargo test -p $pkg --features negative-demos"
+        fi
     else
-        problem "cargo test -p $pkg --features negative-demos"
+        if CARGO_TARGET_DIR="$NEGATIVE_TARGET" \
+            cargo test -p "$pkg" --features negative-demos >/dev/null 2>&1; then
+            ok "$pkg --features negative-demos"
+        else
+            problem "cargo test -p $pkg --features negative-demos"
+        fi
     fi
 done
 
