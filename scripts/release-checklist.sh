@@ -73,6 +73,13 @@ step "tests"
 # `negative-demos` features into keel-server and then asks the real-cluster
 # acceptance tests to pass with consensus and durability rules compiled out.
 # Exercise every positive optional feature explicitly instead.
+# The real-cluster tests execute this binary by path. A dev-dependency builds
+# keel-server's library but does not promise to refresh that executable.
+if cargo build -p keel-server >/dev/null 2>&1; then
+    ok "keel-server executable"
+else
+    problem "cargo build -p keel-server"
+fi
 if cargo test --workspace >/dev/null 2>&1; then
     ok "cargo test, default features"
 else

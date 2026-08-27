@@ -108,6 +108,13 @@ struct Parked {
 /// One client connection, and how much of it is outstanding here.
 struct Conn {
     stream: TcpStream,
+    /// Bytes received but not yet formed into a whole request frame.
+    ///
+    /// TCP may split the four-byte length prefix itself. Keeping those bytes is
+    /// therefore protocol state, not an optimisation: `read_exact` on a
+    /// non-blocking socket can consume part of a prefix before returning
+    /// `WouldBlock`, and those bytes cannot be recovered from the stream.
+    inbox: Vec<u8>,
     /// Requests read from this connection and not yet answered. Incremented for
     /// every request read and decremented for every answer written, including
     /// the ones answered where they stand — so the two can never drift.
@@ -201,7 +208,7 @@ impl Clients {
                 if conn.inflight >= MAX_INFLIGHT_PER_CONN {
                     break;
                 }
-                match read_request(&mut conn.stream) {
+                match read_request(conn) {
                     // Not a whole request yet. Try again next turn.
                     Ok(None) => break,
                     Ok(Some(envelope)) => {
@@ -239,6 +246,7 @@ impl Clients {
                         self.next_slot,
                         Conn {
                             stream,
+                            inbox: Vec::new(),
                             inflight: 0,
                         },
                     );
@@ -502,34 +510,47 @@ impl Clients {
 }
 
 /// Read one length-prefixed request, or `None` if it has not all arrived.
-fn read_request(stream: &mut TcpStream) -> io::Result<Option<Envelope<Request>>> {
-    let mut prefix = [0u8; 4];
-    match stream.read_exact(&mut prefix) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
-        Err(e) => return Err(e),
+fn read_request(conn: &mut Conn) -> io::Result<Option<Envelope<Request>>> {
+    if let Some(request) = take_request(&mut conn.inbox)? {
+        return Ok(Some(request));
     }
-    let len = u32::from_le_bytes(prefix) as usize;
+
+    let mut scratch = [0u8; 16 << 10];
+    match conn.stream.read(&mut scratch) {
+        Ok(0) => {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "client closed the connection",
+            ));
+        }
+        Ok(read) => conn.inbox.extend_from_slice(&scratch[..read]),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => return Ok(None),
+        Err(error) => return Err(error),
+    }
+    take_request(&mut conn.inbox)
+}
+
+/// Take one whole request frame, retaining a partial prefix or body.
+fn take_request(inbox: &mut Vec<u8>) -> io::Result<Option<Envelope<Request>>> {
+    if inbox.len() < 4 {
+        return Ok(None);
+    }
+    let len = u32::from_le_bytes([inbox[0], inbox[1], inbox[2], inbox[3]]) as usize;
     if len > MAX_REQUEST_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("a client sent a {len}-byte request, above the limit"),
         ));
     }
-
-    // The prefix is consumed, so the body has to arrive. Blocking briefly is
-    // right here: the client has committed to sending it, and the alternative
-    // is a partial-read state machine for a case that lasts microseconds.
-    stream.set_nonblocking(false)?;
-    stream.set_read_timeout(Some(Duration::from_millis(500)))?;
-    let mut body = vec![0u8; len];
-    let read = stream.read_exact(&mut body);
-    stream.set_nonblocking(true)?;
-    read?;
-
-    decode::<Envelope<Request>>(&body)
-        .map(Some)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+    let frame = 4 + len;
+    if inbox.len() < frame {
+        return Ok(None);
+    }
+    let request = decode::<Envelope<Request>>(&inbox[4..frame])
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    inbox.drain(..frame);
+    Ok(Some(request))
 }
 
 /// Write one answer, and leave the connection the way it was found.
@@ -595,6 +616,7 @@ mod tests {
             slot,
             Conn {
                 stream,
+                inbox: Vec::new(),
                 inflight: 0,
             },
         );
@@ -840,17 +862,46 @@ mod tests {
     /// elects a leader for as long as anybody is talking to it.
     #[test]
     fn a_connection_that_has_been_answered_is_still_read_without_blocking() {
-        let (_client, mut server) = pair();
-        server.set_nonblocking(true).expect("non-blocking");
-        answer(&mut server, 1, &Response::Applied).expect("answer");
+        let (_client, server) = pair();
+        let mut conn = Conn {
+            stream: server,
+            inbox: Vec::new(),
+            inflight: 0,
+        };
+        conn.stream.set_nonblocking(true).expect("non-blocking");
+        answer(&mut conn.stream, 1, &Response::Applied).expect("answer");
 
         let started = Instant::now();
-        let got = read_request(&mut server).expect("read");
+        let got = read_request(&mut conn).expect("read");
         assert!(got.is_none(), "there was nothing to read");
         assert!(
             started.elapsed() < Duration::from_millis(100),
             "reading an idle connection took {:?}, so the node's loop stalls on              every connection it has answered",
             started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_request_split_inside_its_prefix_is_not_lost() {
+        let (mut client, server) = pair();
+        let mut conn = Conn {
+            stream: server,
+            inbox: Vec::new(),
+            inflight: 0,
+        };
+        conn.stream.set_nonblocking(true).expect("non-blocking");
+        let payload =
+            keel_api::encode(&Envelope::new(7, Request::KeepAlive { client: 3 })).expect("encode");
+        let prefix = (payload.len() as u32).to_le_bytes();
+
+        client.write_all(&prefix[..2]).expect("partial prefix");
+        assert!(read_request(&mut conn).expect("partial read").is_none());
+
+        client.write_all(&prefix[2..]).expect("rest of prefix");
+        client.write_all(&payload).expect("body");
+        assert_eq!(
+            read_request(&mut conn).expect("whole frame"),
+            Some(Envelope::new(7, Request::KeepAlive { client: 3 }))
         );
     }
 

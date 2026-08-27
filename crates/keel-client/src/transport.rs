@@ -159,8 +159,7 @@ impl Endpoint {
             match self.poll(remaining)? {
                 Some(envelope) if envelope.id == id => return Ok(envelope.body),
                 // An answer to something this caller has already given up on.
-                Some(_) => continue,
-                None => return Err(ClientError::Timeout),
+                Some(_) | None => continue,
             }
         }
     }
@@ -379,6 +378,40 @@ mod tests {
             .round_trip(42, &Request::KeepAlive { client: 1 })
             .expect("round trip");
         assert_eq!(response, Response::Applied);
+        handle.join().expect("server thread");
+    }
+
+    #[test]
+    fn a_round_trip_keeps_waiting_after_a_nonblocking_empty_poll() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let handle = std::thread::spawn(move || {
+            let (mut server, _) = listener.accept().expect("accept");
+            let mut prefix = [0u8; 4];
+            server.read_exact(&mut prefix).expect("prefix");
+            let mut body = vec![0u8; u32::from_le_bytes(prefix) as usize];
+            server.read_exact(&mut body).expect("body");
+            let asked = decode::<Envelope<Request>>(&body).expect("decode");
+            std::thread::sleep(Duration::from_millis(25));
+            server
+                .write_all(&framed(&Envelope::new(asked.id, Response::Applied)))
+                .expect("answer");
+        });
+
+        let mut endpoint = Endpoint::new(addr);
+        endpoint.connect().expect("connect");
+        endpoint
+            .stream
+            .as_ref()
+            .expect("stream")
+            .set_nonblocking(true)
+            .expect("nonblocking");
+        assert_eq!(
+            endpoint
+                .round_trip(7, &Request::KeepAlive { client: 1 })
+                .expect("round trip"),
+            Response::Applied
+        );
         handle.join().expect("server thread");
     }
 }
