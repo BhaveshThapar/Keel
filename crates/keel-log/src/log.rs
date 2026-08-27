@@ -428,7 +428,42 @@ impl<F: Fs> Log<F> {
             });
         }
         let last = entries[entries.len() - 1].index;
-        let token = self.write(Record::Entries(entries.to_vec()))?;
+        // A Ready may collect several individually valid Append messages before
+        // the host reaches the log. Persisting that whole Ready as one record
+        // made a restarted follower reject a record its live writer had
+        // accepted once large client values filled the batch. Split only at
+        // record boundaries: one later sync still covers every piece, while
+        // recovery sees the same limit the writer enforced.
+        let mut records = Vec::new();
+        let mut batch = Vec::new();
+        for entry in entries {
+            batch.push(entry.clone());
+            let encoded = Record::Entries(batch.clone()).encode()?;
+            if encoded.len() <= self.opts.max_record_bytes as usize {
+                continue;
+            }
+            let Some(too_large) = batch.pop() else {
+                return Err(Error::RecordTooLarge {
+                    len: encoded.len(),
+                    max: self.opts.max_record_bytes,
+                });
+            };
+            if batch.is_empty() {
+                return Err(Error::RecordTooLarge {
+                    len: encoded.len(),
+                    max: self.opts.max_record_bytes,
+                });
+            }
+            records.push(std::mem::take(&mut batch));
+            batch.push(too_large);
+        }
+        if !batch.is_empty() {
+            records.push(batch);
+        }
+        let mut token = SyncToken(self.next_token);
+        for record in records {
+            token = self.write(Record::Entries(record))?;
+        }
         self.last_index = last;
         self.stats.appends += 1;
         Ok(token)

@@ -501,6 +501,22 @@ fn a_record_larger_than_the_limit_is_refused() {
     ));
 }
 
+#[test]
+fn a_large_ready_is_split_into_recoverable_records() {
+    let dir = TempDir::new().unwrap();
+    let (mut log, _) = open(dir.path());
+    let entries: Vec<_> = (1..=6)
+        .map(|index| Entry::new(1, index, EntryPayload::Normal(vec![0u8; 180].into())))
+        .collect();
+
+    log.append(&entries).unwrap();
+    log.sync().unwrap();
+    drop(log);
+
+    let (_, recovered) = open(dir.path());
+    assert_eq!(indices(&recovered), (1..=6).collect::<Vec<_>>());
+}
+
 /// A sync covers what had been written when it was issued, and nothing later.
 /// The token ordering is what the host uses to decide when a `Ready`'s messages
 /// may go out, and getting it loose is what KEEL-5 was.
