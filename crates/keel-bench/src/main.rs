@@ -134,7 +134,10 @@ enum Verb {
         /// commit, apply — so the tick is an upper bound on write throughput
         /// that has nothing to do with the disk. The fsync-off ablation is what
         /// showed that: it reads the same number.
-        #[arg(long, default_value_t = 10)]
+        // Checkpoint creation and digesting are synchronous by design. A
+        // large Reference checkpoint must not outlast the 100--200 ms election
+        // window and turn this transfer benchmark into ordinary log catch-up.
+        #[arg(long, default_value_t = 100)]
         tick_ms: u64,
         /// Where the cluster's data lives, which is also the filesystem the
         /// gate probes.
