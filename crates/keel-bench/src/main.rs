@@ -1083,7 +1083,10 @@ fn snapshot_campaign(args: SnapshotArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
         let follower_root = run_dir.join(format!("n{laggard}/snapshots"));
-        if wait_for_value(Duration::from_secs(600), || {
+        // LSM checkpoints can be far larger than logical state while compaction
+        // is in flight. Keep the benchmark's transfer deadline above that
+        // storage case; this is a measurement timeout, not a protocol timer.
+        if wait_for_value(Duration::from_secs(3_600), || {
             published_checkpoint(&follower_root)
         })
         .is_none()
