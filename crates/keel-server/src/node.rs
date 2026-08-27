@@ -83,7 +83,7 @@ struct SnapshotProgress {
 /// A receiver may pause while its storage engine flushes a large snapshot
 /// chunk. This is a liveness deadline, not the request cadence: the receiver
 /// retries every 250 ms when healthy.
-const SNAPSHOT_SENDER_IDLE: Duration = Duration::from_secs(5);
+const SNAPSHOT_SENDER_IDLE: Duration = Duration::from_secs(300);
 
 /// A running node.
 pub struct Server {
