@@ -1058,10 +1058,15 @@ fn snapshot_campaign(args: SnapshotArgs) -> ExitCode {
         }
 
         let checkpoint_started = Instant::now();
-        if post_admin(cluster.admin_addrs[leader], "/snapshot").is_err() {
-            eprintln!("run {run}: the leader refused the checkpoint");
+        let Some(leader) = wait_for_value(Duration::from_secs(30), || {
+            let leader = leader_index(&cluster.admin_addrs)?;
+            post_admin(cluster.admin_addrs[leader], "/snapshot")
+                .ok()
+                .map(|()| leader)
+        }) else {
+            eprintln!("run {run}: no leader accepted the checkpoint");
             return ExitCode::FAILURE;
-        }
+        };
         let leader_root = run_dir.join(format!("n{leader}/snapshots"));
         let Some(leader_checkpoint) = wait_for_value(Duration::from_secs(600), || {
             published_checkpoint(&leader_root)
