@@ -863,6 +863,34 @@ struct SimNode {
     clock_rng: Rng,
 }
 
+/// One client-visible event recorded on the simulator's virtual clock.
+///
+/// Writes complete when their log entry is first observed committed anywhere;
+/// reads complete when the selected node has applied the confirmed index and
+/// returned a value. Keeping this separate from the safety oracle makes the
+/// same deterministic workload exportable to an external checker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHistoryEvent {
+    pub at_ns: u64,
+    pub client: usize,
+    pub ctx: u64,
+    pub phase: ClientHistoryPhase,
+    pub operation: ClientHistoryOperation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHistoryPhase {
+    Invoke,
+    Replicated,
+    Returned(Option<Vec<u8>>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHistoryOperation {
+    Put { key: Vec<u8>, value: Vec<u8> },
+    Get { key: Vec<u8> },
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct Stats {
     pub events: u64,
@@ -1043,6 +1071,7 @@ pub struct Stats {
 #[derive(Debug, Clone)]
 struct PendingRead {
     node: NodeId,
+    client: usize,
     key: Vec<u8>,
     commit_at_issue: Index,
     confirmed: Option<Index>,
@@ -1068,6 +1097,8 @@ pub struct World {
     configurations_seen: std::collections::BTreeSet<(Vec<NodeId>, Vec<NodeId>)>,
     /// Reads issued and not yet answered, by context.
     reads: BTreeMap<u64, PendingRead>,
+    history: Vec<ClientHistoryEvent>,
+    history_writes_completed: std::collections::BTreeSet<u64>,
     oracle: Oracle,
     trace: VecDeque<String>,
     next_ctx: u64,
@@ -1256,6 +1287,8 @@ impl World {
             boot_conf: conf.clone(),
             configurations_seen: std::collections::BTreeSet::new(),
             reads: BTreeMap::new(),
+            history: Vec::new(),
+            history_writes_completed: std::collections::BTreeSet::new(),
             oracle: Oracle::new(),
             trace: VecDeque::new(),
             next_ctx: 1,
@@ -1494,6 +1527,23 @@ impl World {
             }
         }
         for entry in &committed_for_model {
+            if let EntryPayload::Normal(data) = &entry.payload
+                && let Ok(proposal) = decode::<Proposal>(data)
+                && let Some((client_id, ctx)) = proposal.session
+                && self.history_writes_completed.insert(ctx)
+                && let ProposalBody::Command(Command::Put { key, value }) = proposal.body
+            {
+                self.history.push(ClientHistoryEvent {
+                    at_ns: self.now,
+                    client: client_id.saturating_sub(1) as usize,
+                    ctx,
+                    phase: ClientHistoryPhase::Replicated,
+                    operation: ClientHistoryOperation::Put {
+                        key: key.to_vec(),
+                        value: value.to_vec(),
+                    },
+                });
+            }
             self.oracle.observe_committed_entry(entry);
         }
         for kind in applied_kinds {
@@ -1591,6 +1641,18 @@ impl World {
                 }),
             }
         };
+        if let ProposalBody::Command(Command::Put { key, value }) = &proposal.body {
+            self.history.push(ClientHistoryEvent {
+                at_ns: self.now,
+                client,
+                ctx,
+                phase: ClientHistoryPhase::Invoke,
+                operation: ClientHistoryOperation::Put {
+                    key: key.to_vec(),
+                    value: value.to_vec(),
+                },
+            });
+        }
         let Ok(encoded) = encode(&proposal) else {
             return;
         };
@@ -1735,6 +1797,13 @@ impl World {
             .unwrap_or(0);
 
         let key = format!("c{client}").into_bytes();
+        self.history.push(ClientHistoryEvent {
+            at_ns: self.now,
+            client,
+            ctx,
+            phase: ClientHistoryPhase::Invoke,
+            operation: ClientHistoryOperation::Get { key: key.clone() },
+        });
         // Counted before the step, because `lease_valid()` is the state that
         // decides whether the core may answer locally, and the step is what
         // consumes it.
@@ -1770,6 +1839,7 @@ impl World {
             ctx,
             PendingRead {
                 node: target,
+                client,
                 key,
                 commit_at_issue,
                 confirmed: None,
@@ -1843,6 +1913,15 @@ impl World {
                 .nodes
                 .get(&id)
                 .and_then(|n| n.sm.get(&pending.key).ok().flatten());
+            self.history.push(ClientHistoryEvent {
+                at_ns: self.now,
+                client: pending.client,
+                ctx,
+                phase: ClientHistoryPhase::Returned(observed.as_ref().map(|value| value.to_vec())),
+                operation: ClientHistoryOperation::Get {
+                    key: pending.key.clone(),
+                },
+            });
             self.stats.reads_answered += 1;
             // The node's applied index, not the read's confirmed index. The
             // read is entitled to everything through `confirmed`; the store it
@@ -2832,6 +2911,11 @@ impl World {
             }
         }
         h
+    }
+
+    /// The deterministic client history in virtual-time order.
+    pub fn client_history(&self) -> &[ClientHistoryEvent] {
+        &self.history
     }
 
     /// What every node's disk did, summed. The tear model's own coverage, as

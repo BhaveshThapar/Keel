@@ -9,7 +9,7 @@ use std::net::TcpStream;
 
 use keel_log::SyncMode;
 use keel_raft::Role;
-use keel_server::{Admin, Kind, Metric, Observable, Status, write_ready_file};
+use keel_server::{Admin, Histogram, Kind, Metric, Observable, Status, write_ready_file};
 
 /// A node that is not a node. The admin surface's job is to render what it is
 /// given, and a cluster would only make the test slower and less specific.
@@ -83,6 +83,16 @@ impl Observable for Fixture {
             },
         ]
     }
+
+    fn histograms(&self) -> Vec<Histogram> {
+        vec![Histogram {
+            name: "keel_commit_seconds",
+            help: "Command latency from parking through committed response",
+            buckets: vec![(0.001, 2), (0.01, 3)],
+            sum: 0.012,
+            count: 3,
+        }]
+    }
 }
 
 fn get(addr: std::net::SocketAddr, path: &str) -> String {
@@ -132,8 +142,13 @@ fn parse_exposition(body: &str) -> Vec<(String, String, f64)> {
             seen.insert(name.to_string()),
             "{name} appeared in more than one block"
         );
+        let bare_name = name.split_once('{').map_or(name, |(base, _)| base);
+        let family = ["_bucket", "_sum", "_count"]
+            .iter()
+            .find_map(|suffix| bare_name.strip_suffix(suffix))
+            .unwrap_or(bare_name);
         let kind = types
-            .get(name)
+            .get(family)
             .unwrap_or_else(|| panic!("{name} has samples and no TYPE"))
             .clone();
         let value: f64 = value
@@ -194,7 +209,7 @@ fn a_node_reports_itself_over_a_real_socket() {
         "a scraper decides how to parse from the content type: {head}"
     );
     let samples = parse_exposition(body);
-    assert_eq!(samples.len(), 5, "expected five metrics, got {samples:?}");
+    assert_eq!(samples.len(), 10, "expected ten samples, got {samples:?}");
     let durable = samples
         .iter()
         .find(|(name, _, _)| name == "keel_sync_durable")
@@ -203,6 +218,9 @@ fn a_node_reports_itself_over_a_real_socket() {
         durable.2, 1.0,
         "a durable node reported itself as not durable"
     );
+    assert!(body.contains("# TYPE keel_commit_seconds histogram\n"));
+    assert!(body.contains("keel_commit_seconds_bucket{le=\"+Inf\"} 3\n"));
+    assert!(body.contains("keel_commit_seconds_count 3\n"));
 
     // --- anything else
     let (head, _) = split(&unknown);

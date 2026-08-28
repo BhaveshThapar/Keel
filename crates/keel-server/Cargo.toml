@@ -28,6 +28,8 @@ keel-raft = { workspace = true }
 keel-sm = { workspace = true, features = ["lsm"] }
 lsm_kv = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 bytes = { workspace = true }

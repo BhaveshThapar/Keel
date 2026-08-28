@@ -68,3 +68,10 @@ path = "fuzz_targets/raft_message.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "core_events"
+path = "fuzz_targets/core_events.rs"
+test = false
+doc = false
+bench = false

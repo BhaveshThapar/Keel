@@ -7,7 +7,8 @@ Milestones and their exit criteria come from [plan.md](plan.md), which is the
 PRD and does not change. This file is the ordering, the constraints that made
 one phase depend on another, and the decisions each phase was waiting on.
 
-**All thirty phases are done; `v1.0.0`, `v2.0.0`, and `v3.0.0` are tagged.**
+**All thirty-one phases are done; `v1.0.0`, `v2.0.0`, `v3.0.0`, and the
+`v3.1.0` closure release are tagged.**
 This file is kept
 as the record of what was sequenced and why, because the reasoning about
 *ordering* is the part that does not survive in a commit log — which phase had to
@@ -130,11 +131,11 @@ sweep goes red on correct code and the day is spent proving it was the oracle.
 | ~~P22~~ | ~~`ReadyAudit` and fuzzing~~ | **Done.** Six targets compile and smoke-run on stable; the CRC-removed build accepts sixty corrupted segments the intact build rejects. The decision taken was **no nightly toolchain** — targets are plain functions, `fuzz/` wires them to libFuzzer for anyone who has one ([ADR-029](DESIGN.md)). `ReadyAudit` found the repository's own in-process test cluster acknowledging each `Ready` before sending its messages, in the harness every membership property rested on ([ADR-030](DESIGN.md)) |
 | ~~P23~~ | ~~Membership and transfer under the fault schedule~~ | **Done.** `membership-hunt` reaches 30,263 joint-configuration observations and 32 distinct voter sets in a single seed, with the one-change-in-flight refusal exercised 99 times. It found [KEEL-10](BUGS.md) at one seed in five hundred — a Leader Completeness violation that turned out to be the harness restarting nodes with a configuration that had already moved past the log they were about to replay. The crash nemesis's quorum was a majority of *every node that exists*, which under a joint configuration would kill enough of `C_old` to stop the cluster while the arithmetic still said a quorum survived; it is now a majority of the voters, and of both halves when joint. `PROFILES` was already a slice |
 
-**P23 closes a gap the milestone table hides.** `Input::ProposeConfChange` and
-`Input::TransferLeader` appear **nowhere** in `keel-sim` today, so every
-membership and transfer property currently rests on an in-process cluster whose
-own doc comment says messages are FIFO, persistence is instantaneous, and
-nothing reads a clock.
+**P23 closed a gap the milestone table hid.** Before it,
+`Input::ProposeConfChange` and `Input::TransferLeader` appeared nowhere in
+`keel-sim`, so every membership and transfer property rested on an in-process
+cluster whose own doc comment said messages were FIFO, persistence was
+instantaneous, and nothing read a clock.
 
 **P20's exit criterion is the interesting one.** New fault shapes must not shift
 old schedules — which means every new nemesis action draws from a stream split
@@ -164,11 +165,17 @@ bypassed once.
 | ~~P29~~ | ~~Snapshots between real daemon processes~~ | **Done.** Leaders checkpoint by applied entries and compact; followers request one verified chunk at a time, persist the pending offer, resume from staged per-file positions after `SIGKILL`, verify the whole-state digest and publish only after the log floor is durable. The real-process test kills the receiver mid-stream and requires the restarted process to finish. It found [KEEL-19](BUGS.md) |
 | ~~P30~~ | ~~Operator surface and the missing snapshot benchmark~~ | **Done.** `keel-admin` drives add-learner, caught-up promotion, remove, leader transfer and manual snapshot through the single-threaded host loop. A four-process test covers learner → voter → removed. `keel-bench snapshot` and `scripts/snapshot-bench.sh` measure checkpoint stall and real-process transfer; a 1 MiB admitted smoke run is green, while the 1 GiB Reference result waits on UMIACS |
 
-### The one external decision still owed
+### M6 — close every remaining non-stretch PRD acceptance item
+
+| # | Phase | Exit criterion |
+|---|---|---|
+| ~~P31~~ | ~~PRD closure and `v3.1.0`~~ | **Done.** Exact retry-storm failover and five-node membership-under-load tests; simulated acknowledged-fsync loss; deterministic in-sim client history; complete Prometheus histograms, elections and structured tracing; background checkpoint digesting so checkpoint publication does not scan 1 GiB on the node loop; ReadIndex/lease Porcupine arms; ASan libFuzzer campaigns; availability timeline; 3/5-node, 128 B/1 KiB, open/closed-loop matrix; all four PR-3 ablations; fair Linux etcd baseline; and write-path flame graph. The release checklist is the stop condition. |
+
+### The Reference allocation decision
 
 | Decision | Binds at |
 |---|---|
-| UMIACS allocation and filesystem: dedicated bare metal is Reference tier; a shared node or cloud placement group remains Exploratory | Reference throughput, etcd, breakdown, cross-node and 1 GiB snapshot runs |
+| UMIACS `cbcb` nodes with exclusive Slurm allocation and node-local XFS are Reference tier | Reference throughput, etcd, breakdown, cross-node, ablations and 1 GiB snapshot runs |
 
 Two were taken in M1 Phase 2 and are recorded here so they are not re-opened.
 The log frame gains no self-identifying `(seq, offset)`, so the format stays at

@@ -20,7 +20,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand, ValueEnum};
-use keel_api::{Command, Query};
+use keel_api::{Command, Consistency, Query};
 use keel_bench::failover::Trial;
 use keel_bench::plot::{Point, Series, throughput_vs_latency};
 use keel_bench::workload::{Loop, Mix, Op, key_bytes, parse_nodes, value_bytes};
@@ -47,6 +47,23 @@ struct Cli {
 enum TierArg {
     Exploratory,
     Reference,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum ConsistencyArg {
+    ReadIndex,
+    Lease,
+    Stale,
+}
+
+impl From<ConsistencyArg> for Consistency {
+    fn from(value: ConsistencyArg) -> Self {
+        match value {
+            ConsistencyArg::ReadIndex => Self::Linearizable,
+            ConsistencyArg::Lease => Self::Lease,
+            ConsistencyArg::Stale => Self::Stale,
+        }
+    }
 }
 
 impl From<TierArg> for Tier {
@@ -96,6 +113,8 @@ enum Verb {
         depth: usize,
         #[arg(long, default_value_t = 1)]
         seed: u64,
+        #[arg(long, value_enum, default_value_t = ConsistencyArg::ReadIndex)]
+        consistency: ConsistencyArg,
     },
     /// A sweep of offered rates, and the curve it makes.
     Campaign {
@@ -127,6 +146,12 @@ enum Verb {
         runs: usize,
         #[arg(long, default_value_t = 3)]
         cluster_nodes: usize,
+        #[arg(long, default_value_t = 16)]
+        max_inflight_msgs: usize,
+        #[arg(long, default_value_t = usize::MAX)]
+        max_batch_entries: usize,
+        #[arg(long, value_enum, default_value_t = ConsistencyArg::ReadIndex)]
+        consistency: ConsistencyArg,
         /// Milliseconds per tick of the consensus clock.
         ///
         /// Not a detail. The daemon's loop turns on this granularity, and a
@@ -156,6 +181,44 @@ enum Verb {
         #[arg(long, default_value = ".")]
         root: String,
         /// Record even though the gate refuses, saying what the run is for.
+        #[arg(long)]
+        admit: Option<String>,
+        #[arg(long, value_enum, default_value_t = TierArg::Exploratory)]
+        tier: TierArg,
+    },
+    /// A closed-loop measurement: each sender replaces a completion with one
+    /// new request, so concurrency rather than an offered rate is fixed.
+    Closed {
+        #[arg(long, default_value = "a")]
+        mix: String,
+        #[arg(long, default_value_t = 64)]
+        clients: usize,
+        #[arg(long, default_value_t = 10)]
+        secs: u64,
+        #[arg(long, default_value_t = 128)]
+        value_bytes: usize,
+        #[arg(long, default_value_t = 1_000_000)]
+        keys: u64,
+        #[arg(long, default_value_t = 1)]
+        depth: usize,
+        #[arg(long, default_value_t = 3)]
+        runs: usize,
+        #[arg(long, default_value_t = 3)]
+        cluster_nodes: usize,
+        #[arg(long, value_enum, default_value_t = ConsistencyArg::ReadIndex)]
+        consistency: ConsistencyArg,
+        #[arg(long, default_value_t = 100)]
+        tick_ms: u64,
+        #[arg(long)]
+        dir: String,
+        #[arg(long)]
+        server_bin: String,
+        #[arg(long, default_value = "durable")]
+        sync: String,
+        #[arg(long, default_value = "closed.txt")]
+        out: String,
+        #[arg(long, default_value = ".")]
+        root: String,
         #[arg(long)]
         admit: Option<String>,
         #[arg(long, value_enum, default_value_t = TierArg::Exploratory)]
@@ -232,6 +295,7 @@ fn main() -> ExitCode {
             keys,
             depth,
             seed,
+            consistency,
         } => single(SingleArgs {
             nodes,
             mix,
@@ -242,6 +306,7 @@ fn main() -> ExitCode {
             keys,
             depth,
             seed,
+            consistency: consistency.into(),
         }),
         Verb::Campaign {
             mix,
@@ -253,6 +318,9 @@ fn main() -> ExitCode {
             depth,
             runs,
             cluster_nodes,
+            max_inflight_msgs,
+            max_batch_entries,
+            consistency,
             tick_ms,
             dir,
             server_bin,
@@ -272,12 +340,52 @@ fn main() -> ExitCode {
             depth,
             runs,
             cluster_nodes,
+            max_inflight_msgs,
+            max_batch_entries,
+            consistency: consistency.into(),
             tick_ms,
             dir,
             server_bin,
             sync,
             out,
             svg,
+            root,
+            admit,
+            tier: tier.into(),
+        }),
+        Verb::Closed {
+            mix,
+            clients,
+            secs,
+            value_bytes,
+            keys,
+            depth,
+            runs,
+            cluster_nodes,
+            consistency,
+            tick_ms,
+            dir,
+            server_bin,
+            sync,
+            out,
+            root,
+            admit,
+            tier,
+        } => closed(ClosedArgs {
+            mix,
+            clients,
+            secs,
+            value_len: value_bytes,
+            keys,
+            depth,
+            runs,
+            cluster_nodes,
+            consistency: consistency.into(),
+            tick_ms,
+            dir,
+            server_bin,
+            sync,
+            out,
             root,
             admit,
             tier: tier.into(),
@@ -354,6 +462,7 @@ fn gate(dir: &str, tier: Tier) -> ExitCode {
 fn parse_sync(name: &str) -> Option<SyncMode> {
     match name {
         "durable" => Some(SyncMode::Durable),
+        "full" => Some(SyncMode::Full),
         "barrier" => Some(SyncMode::Barrier),
         "none" => Some(SyncMode::None),
         _ => None,
@@ -430,6 +539,14 @@ fn shape_for(rate: u64, clients: usize, depth: usize) -> Loop {
     }
 }
 
+fn consistency_name(consistency: Consistency) -> &'static str {
+    match consistency {
+        Consistency::Linearizable => "ReadIndex",
+        Consistency::Lease => "lease",
+        Consistency::Stale => "stale",
+    }
+}
+
 /// A session nonce nothing else in this process will use.
 ///
 /// Not hygiene — correctness, and getting it wrong cost an afternoon and a
@@ -464,6 +581,7 @@ fn reserve_nonces(count: u64) -> u64 {
 struct Pipelined {
     pipeline: Pipeline,
     value_len: usize,
+    consistency: Consistency,
 }
 
 impl workload::Sender for Pipelined {
@@ -479,9 +597,12 @@ impl workload::Sender for Pipelined {
         match op {
             Op::Read { key } => self
                 .pipeline
-                .submit_query(Query::Get {
-                    key: key_bytes(key).into(),
-                })
+                .submit_query_with_consistency(
+                    Query::Get {
+                        key: key_bytes(key).into(),
+                    },
+                    self.consistency,
+                )
                 .ok(),
             Op::Write { key } => self
                 .pipeline
@@ -502,16 +623,27 @@ impl workload::Sender for Pipelined {
     }
 }
 
-/// One run against a real cluster.
-fn measure(
-    addrs: &[SocketAddr],
+struct MeasureSpec {
     shape: Loop,
     mix: Mix,
     seed: u64,
     keys: u64,
     value_len: usize,
     secs: u64,
-) -> workload::Run {
+    consistency: Consistency,
+}
+
+/// One run against a real cluster.
+fn measure(addrs: &[SocketAddr], spec: MeasureSpec) -> workload::Run {
+    let MeasureSpec {
+        shape,
+        mix,
+        seed,
+        keys,
+        value_len,
+        secs,
+        consistency,
+    } = spec;
     let addrs = addrs.to_vec();
     // Depth one is the closed client, unchanged: one request on the wire, the
     // thread blocked until it is answered. Everything measured before ADR-033
@@ -538,6 +670,7 @@ fn measure(
                 Box::new(Pipelined {
                     pipeline,
                     value_len,
+                    consistency,
                 })
             },
         );
@@ -564,7 +697,9 @@ fn measure(
                 let mut slot = slot.borrow_mut();
                 let handle = slot.get_or_insert_with(|| Client::new(&addrs, fresh_nonce()));
                 match op {
-                    Op::Read { key } => handle.get(&key_bytes(key)).is_ok(),
+                    Op::Read { key } => handle
+                        .get_with_consistency(&key_bytes(key), consistency)
+                        .is_ok(),
                     Op::Write { key } => handle
                         .put(&key_bytes(key), &value_bytes(value_len, seq))
                         .is_ok(),
@@ -616,6 +751,7 @@ struct SingleArgs {
     keys: u64,
     depth: usize,
     seed: u64,
+    consistency: Consistency,
 }
 
 fn single(args: SingleArgs) -> ExitCode {
@@ -630,12 +766,15 @@ fn single(args: SingleArgs) -> ExitCode {
     }
     let run = measure(
         &addrs,
-        shape_for(args.rate, args.clients, args.depth),
-        mix,
-        args.seed,
-        args.keys,
-        args.value_len,
-        args.secs,
+        MeasureSpec {
+            shape: shape_for(args.rate, args.clients, args.depth),
+            mix,
+            seed: args.seed,
+            keys: args.keys,
+            value_len: args.value_len,
+            secs: args.secs,
+            consistency: args.consistency,
+        },
     );
     println!("{}", render_run(&run));
     ExitCode::SUCCESS
@@ -653,6 +792,9 @@ struct CampaignArgs {
     depth: usize,
     runs: usize,
     cluster_nodes: usize,
+    max_inflight_msgs: usize,
+    max_batch_entries: usize,
+    consistency: Consistency,
     tick_ms: u64,
     dir: String,
     server_bin: String,
@@ -702,6 +844,8 @@ fn campaign(args: CampaignArgs) -> ExitCode {
     let mut cfg = ClusterConfig::new(args.cluster_nodes, &args.dir, &server_bin);
     cfg.sync = args.sync.clone();
     cfg.tick_ms = args.tick_ms;
+    cfg.max_inflight_msgs = args.max_inflight_msgs.max(1);
+    cfg.max_batch_entries = args.max_batch_entries.max(1);
     let cluster = match Cluster::start(cfg) {
         Ok(c) => c,
         Err(e) => {
@@ -713,10 +857,11 @@ fn campaign(args: CampaignArgs) -> ExitCode {
     println!("{}\n", env.render());
 
     let mut body = format!(
-        "mix          {}\nvalue        {} B\nkey space    {}\nclients      {}\n\
+        "mix          {}\nconsistency   {}\nvalue        {} B\nkey space    {}\nclients      {}\n\
          nodes        {}\ntick         {} ms\nseconds      {} per run\n\
          repetitions  {} per rate, median reported\n\n",
         mix.name(),
+        consistency_name(args.consistency),
         args.value_len,
         args.keys,
         args.clients,
@@ -744,12 +889,15 @@ fn campaign(args: CampaignArgs) -> ExitCode {
         for run_index in 0..args.runs.max(1) {
             let run = measure(
                 &addrs,
-                shape,
-                mix,
-                1 + run_index as u64,
-                args.keys,
-                args.value_len,
-                args.secs,
+                MeasureSpec {
+                    shape,
+                    mix,
+                    seed: 1 + run_index as u64,
+                    keys: args.keys,
+                    value_len: args.value_len,
+                    secs: args.secs,
+                    consistency: args.consistency,
+                },
             );
             tp.push(run.throughput());
             p50.push(run.latency.quantile(0.5));
@@ -845,6 +993,116 @@ fn campaign(args: CampaignArgs) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+// ---------------------------------------------------------------- closed loop
+
+struct ClosedArgs {
+    mix: String,
+    clients: usize,
+    secs: u64,
+    value_len: usize,
+    keys: u64,
+    depth: usize,
+    runs: usize,
+    cluster_nodes: usize,
+    consistency: Consistency,
+    tick_ms: u64,
+    dir: String,
+    server_bin: String,
+    sync: String,
+    out: String,
+    root: String,
+    admit: Option<String>,
+    tier: Tier,
+}
+
+fn closed(args: ClosedArgs) -> ExitCode {
+    let Some(mix) = Mix::parse(&args.mix) else {
+        eprintln!("unknown mix {:?}: expected a, b, c or writes", args.mix);
+        return ExitCode::FAILURE;
+    };
+    let Some(sync) = parse_sync(&args.sync) else {
+        eprintln!("unknown sync mode {:?}", args.sync);
+        return ExitCode::FAILURE;
+    };
+    let server_bin = PathBuf::from(&args.server_bin);
+    if !server_bin.exists() || std::fs::create_dir_all(&args.dir).is_err() {
+        eprintln!("server binary or data directory is unavailable");
+        return ExitCode::FAILURE;
+    }
+    let Some(env) = Environment::probe(&args.dir) else {
+        eprintln!("could not probe {}", args.dir);
+        return ExitCode::FAILURE;
+    };
+    let Some((verdict, admitted)) = decide(&env, args.tier, sync, args.runs, &args.admit) else {
+        return ExitCode::FAILURE;
+    };
+    let mut cfg = ClusterConfig::new(args.cluster_nodes, &args.dir, &server_bin);
+    cfg.sync = args.sync.clone();
+    cfg.tick_ms = args.tick_ms;
+    let cluster = match Cluster::start(cfg) {
+        Ok(cluster) => cluster,
+        Err(error) => {
+            eprintln!("could not start the cluster: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut throughput = Vec::new();
+    let mut p50 = Vec::new();
+    let mut p99 = Vec::new();
+    let mut acknowledged = Vec::new();
+    for run_index in 0..args.runs {
+        let run = measure(
+            &cluster.client_addrs,
+            MeasureSpec {
+                shape: Loop::Closed {
+                    clients: args.clients,
+                    depth: args.depth,
+                },
+                mix,
+                seed: run_index as u64 + 1,
+                keys: args.keys,
+                value_len: args.value_len,
+                secs: args.secs,
+                consistency: args.consistency,
+            },
+        );
+        throughput.push(run.throughput());
+        p50.push(run.latency.quantile(0.5));
+        p99.push(run.latency.quantile(0.99));
+        acknowledged.push(run.acknowledged);
+    }
+    let body = format!(
+        "mix          {}\nshape        closed-loop\nconsistency   {}\nvalue        {} B\nkey space    {}\n\
+         clients      {}\ndepth        {}\nnodes        {}\ntick         {} ms\n\
+         seconds      {} per run\nrepetitions  {}, median reported\n\n\
+         achieved     {} ops/s\nacknowledged {} operations\np50          {:.3} ms\np99          {:.3} ms\n",
+        mix.name(),
+        consistency_name(args.consistency),
+        args.value_len,
+        args.keys,
+        args.clients,
+        args.depth,
+        args.cluster_nodes,
+        args.tick_ms,
+        args.secs,
+        args.runs,
+        median(&mut throughput),
+        median(&mut acknowledged),
+        ms(median(&mut p50)),
+        ms(median(&mut p99)),
+    );
+    match record(&args.root, &args.out, &verdict, &admitted, &body) {
+        Ok(path) => {
+            println!("wrote {}", path.display());
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 // ------------------------------------------------------------------ failover

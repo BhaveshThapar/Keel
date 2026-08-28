@@ -139,6 +139,14 @@ pub struct Clients {
     /// Contexts handed to the core for reads, so a confirmation can be matched
     /// back to the request that asked.
     next_ctx: u64,
+    progress: ClientProgress,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClientProgress {
+    /// End-to-end time from parking a command until its committed response is
+    /// written. Refusals and timeouts are deliberately excluded.
+    pub commit_latencies: keel_node::Buckets<12>,
 }
 
 /// What the node should do with a request that arrived.
@@ -169,6 +177,7 @@ impl Clients {
             by_nonce: HashMap::new(),
             by_ctx: HashMap::new(),
             next_ctx: 1,
+            progress: ClientProgress::default(),
         })
     }
 
@@ -178,6 +187,10 @@ impl Clients {
 
     pub fn parked(&self) -> usize {
         self.parked.len()
+    }
+
+    pub fn progress(&self) -> ClientProgress {
+        self.progress
     }
 
     pub fn connections(&self) -> usize {
@@ -440,6 +453,18 @@ impl Clients {
         let Some(parked) = self.parked.remove(&park) else {
             return;
         };
+        if matches!(
+            &parked.waiting,
+            Waiting::Write { .. } | Waiting::Register { .. }
+        ) && !matches!(
+            response,
+            Response::NotLeader { .. } | Response::Error(_) | Response::CasMismatch { .. }
+        ) {
+            self.progress.commit_latencies.observe(
+                parked.since.elapsed().as_nanos() as u64,
+                &keel_node::LATENCY_NANOS_BUCKETS,
+            );
+        }
         self.unindex(park, &parked.waiting);
         self.reply(parked.slot, parked.id, response);
     }

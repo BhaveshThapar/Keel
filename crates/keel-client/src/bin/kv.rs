@@ -9,8 +9,26 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+use keel_api::Consistency;
 use keel_client::{Client, Pipeline};
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ConsistencyArg {
+    ReadIndex,
+    Lease,
+    Stale,
+}
+
+impl From<ConsistencyArg> for Consistency {
+    fn from(value: ConsistencyArg) -> Self {
+        match value {
+            ConsistencyArg::ReadIndex => Consistency::Linearizable,
+            ConsistencyArg::Lease => Consistency::Lease,
+            ConsistencyArg::Stale => Consistency::Stale,
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -75,7 +93,8 @@ enum Command {
     /// deliberately not checked here: a checker written by the same people as
     /// the code it checks shares their blind spots, and the whole point of the
     /// file is to be handed to one that does not.
-    Workload {
+    #[command(alias = "workload")]
+    Bench {
         /// Concurrent clients. One is enough to record a history and not enough
         /// to record an interesting one: linearizability is a property about
         /// *overlapping* operations, and a single client never overlaps itself.
@@ -98,6 +117,9 @@ enum Command {
         /// linearize them in an order it should not.
         #[arg(long, default_value_t = 8)]
         depth: usize,
+        /// Consistency used by reads in the recorded workload.
+        #[arg(long, value_enum, default_value_t = ConsistencyArg::ReadIndex)]
+        consistency: ConsistencyArg,
         #[arg(long)]
         out: PathBuf,
     },
@@ -113,6 +135,7 @@ fn workload_thread(
     id: u64,
     keys: u64,
     depth: usize,
+    consistency: Consistency,
     origin: Instant,
     deadline: Instant,
 ) -> Option<keel_client::History> {
@@ -135,7 +158,7 @@ fn workload_thread(
                 let value = format!("c{id}-{n}");
                 let _ = client.put(key.as_bytes(), value.as_bytes());
             } else {
-                let _ = client.get(key.as_bytes());
+                let _ = client.get_with_consistency(key.as_bytes(), consistency);
             }
         }
         return client.take_history();
@@ -162,9 +185,12 @@ fn workload_thread(
                     .is_ok()
             } else {
                 pipeline
-                    .submit_query(keel_api::Query::Get {
-                        key: key.into_bytes().into(),
-                    })
+                    .submit_query_with_consistency(
+                        keel_api::Query::Get {
+                            key: key.into_bytes().into(),
+                        },
+                        consistency,
+                    )
                     .is_ok()
             };
             if !sent {
@@ -185,6 +211,7 @@ fn run_workload(
     secs: u64,
     keys: u64,
     depth: usize,
+    consistency: Consistency,
     out: &PathBuf,
 ) -> Result<String, String> {
     let origin = Instant::now();
@@ -192,7 +219,9 @@ fn run_workload(
     let handles: Vec<_> = (0..clients as u64)
         .map(|id| {
             let nodes = nodes.to_vec();
-            std::thread::spawn(move || workload_thread(nodes, id, keys, depth, origin, deadline))
+            std::thread::spawn(move || {
+                workload_thread(nodes, id, keys, depth, consistency, origin, deadline)
+            })
         })
         .collect();
 
@@ -224,15 +253,24 @@ fn run_workload(
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    if let Command::Workload {
+    if let Command::Bench {
         clients,
         secs,
         keys,
         depth,
+        consistency,
         out,
     } = &cli.command
     {
-        return match run_workload(&cli.nodes, *clients, *secs, *keys, *depth, out) {
+        return match run_workload(
+            &cli.nodes,
+            *clients,
+            *secs,
+            *keys,
+            *depth,
+            (*consistency).into(),
+            out,
+        ) {
             Ok(summary) => {
                 println!("{summary}");
                 ExitCode::SUCCESS
@@ -291,7 +329,7 @@ fn main() -> ExitCode {
                     .join("\n")
             }),
         // Handled above, before a session is opened: it runs its own clients.
-        Command::Workload { .. } => unreachable!("workload returns before this match"),
+        Command::Bench { .. } => unreachable!("bench returns before this match"),
     };
 
     match result {

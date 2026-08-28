@@ -8,11 +8,10 @@
 //! makes every dashboard built on them silently wrong. Each one below says
 //! which it is and why.
 //!
-//! Deliberately no histograms yet. A commit-latency histogram is what FR-13
-//! actually wants, and it needs the host loop to time its own fsyncs, which is
-//! M4's work alongside the benchmark harness. Exporting a made-up bucket
-//! layout now would be worse than exporting nothing: a dashboard would be built
-//! on it.
+//! Histograms are accumulated at the ownership seams that observe the event:
+//! the node loop times persistence/fsync/apply and the client parker times a
+//! command through its committed answer. Rendering never derives a latency
+//! distribution from totals.
 
 use std::fmt::Write;
 
@@ -42,6 +41,16 @@ pub struct Metric {
     pub value: f64,
 }
 
+/// One Prometheus histogram. Bucket counts are cumulative and `+Inf` is
+/// rendered from `count`, as required by the text exposition format.
+pub struct Histogram {
+    pub name: &'static str,
+    pub help: &'static str,
+    pub buckets: Vec<(f64, u64)>,
+    pub sum: f64,
+    pub count: u64,
+}
+
 /// Render metrics as Prometheus text exposition, version 0.0.4.
 ///
 /// The format's rules that matter here: every sample line is
@@ -60,6 +69,40 @@ pub fn render(metrics: &[Metric]) -> String {
         let _ = writeln!(out, "{} {}", metric.name, format_value(metric.value));
     }
     out
+}
+
+pub fn render_all(metrics: &[Metric], histograms: &[Histogram]) -> String {
+    let mut out = render(metrics);
+    for histogram in histograms {
+        let help = histogram.help.replace(['\n', '\\'], " ");
+        let _ = writeln!(out, "# HELP {} {}", histogram.name, help);
+        let _ = writeln!(out, "# TYPE {} histogram", histogram.name);
+        for (upper, count) in &histogram.buckets {
+            let _ = writeln!(
+                out,
+                "{}_bucket{{le=\"{}\"}} {}",
+                histogram.name,
+                format_bound(*upper),
+                count
+            );
+        }
+        let _ = writeln!(
+            out,
+            "{}_bucket{{le=\"+Inf\"}} {}",
+            histogram.name, histogram.count
+        );
+        let _ = writeln!(out, "{}_sum {}", histogram.name, histogram.sum);
+        let _ = writeln!(out, "{}_count {}", histogram.name, histogram.count);
+    }
+    out
+}
+
+fn format_bound(value: f64) -> String {
+    if value.fract() == 0.0 {
+        format!("{value:.0}")
+    } else {
+        format!("{value}")
+    }
 }
 
 /// Prometheus wants `1` rather than `1.0` for a whole number, and every value
@@ -169,6 +212,25 @@ mod tests {
     fn nothing_to_export_is_an_empty_body_rather_than_a_malformed_one() {
         assert_eq!(render(&[]), "");
         assert!(parse("").is_empty());
+    }
+
+    #[test]
+    fn a_histogram_has_cumulative_buckets_and_inf_sum_and_count() {
+        let body = render_all(
+            &[],
+            &[Histogram {
+                name: "keel_commit_seconds",
+                help: "Committed command latency",
+                buckets: vec![(0.1, 2), (1.0, 3)],
+                sum: 0.8,
+                count: 3,
+            }],
+        );
+        assert!(body.contains("# TYPE keel_commit_seconds histogram\n"));
+        assert!(body.contains("keel_commit_seconds_bucket{le=\"0.1\"} 2\n"));
+        assert!(body.contains("keel_commit_seconds_bucket{le=\"+Inf\"} 3\n"));
+        assert!(body.contains("keel_commit_seconds_sum 0.8\n"));
+        assert!(body.contains("keel_commit_seconds_count 3\n"));
     }
 
     /// The parser has to be able to fail, or the test above proves nothing.

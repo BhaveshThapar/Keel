@@ -62,6 +62,15 @@ struct Cli {
     /// production defaults to the policy in `keel-node`.
     #[arg(long, default_value_t = keel_node::ENTRIES_BETWEEN_CHECKPOINTS)]
     checkpoint_entries: u64,
+    /// Maximum replication messages outstanding per follower.
+    #[arg(long, default_value_t = 16)]
+    max_inflight_msgs: usize,
+    /// Maximum replication bytes outstanding per follower.
+    #[arg(long, default_value_t = 8 << 20)]
+    max_inflight_bytes: usize,
+    /// Maximum proposals placed in one Ready. One disables proposal batching.
+    #[arg(long, default_value_t = usize::MAX)]
+    max_batch_entries: usize,
 }
 
 fn parse_peer(raw: &str) -> Result<(u64, String), String> {
@@ -113,6 +122,7 @@ fn resolve_peers(raw: &[(u64, String)]) -> Result<BTreeMap<u64, SocketAddr>, Str
 fn parse_sync(raw: &str) -> Option<SyncMode> {
     match raw {
         "durable" => Some(SyncMode::Durable),
+        "full" => Some(SyncMode::Full),
         "barrier" => Some(SyncMode::Barrier),
         "none" => Some(SyncMode::None),
         _ => None,
@@ -120,11 +130,18 @@ fn parse_sync(raw: &str) -> Option<SyncMode> {
 }
 
 fn main() -> ExitCode {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_target(false)
+        .try_init();
     let cli = Cli::parse();
 
     let Some(sync_mode) = parse_sync(&cli.sync) else {
         eprintln!(
-            "unknown sync mode {:?}: expected durable, barrier or none",
+            "unknown sync mode {:?}: expected durable, full, barrier or none",
             cli.sync
         );
         return ExitCode::FAILURE;
@@ -168,15 +185,19 @@ fn main() -> ExitCode {
         sync_mode,
         tick: Duration::from_millis(cli.tick_ms),
         checkpoint_entries: cli.checkpoint_entries.max(1),
+        max_inflight_msgs: cli.max_inflight_msgs.max(1),
+        max_inflight_bytes: cli.max_inflight_bytes.max(1),
+        max_batch_entries: cli.max_batch_entries.max(1),
     };
 
     let mut server = match Server::start(cfg) {
         Ok(server) => server,
         Err(e) => {
-            eprintln!("node {} could not start: {e}", cli.id);
+            tracing::error!(node_id = cli.id, error = %e, "node could not start");
             return ExitCode::FAILURE;
         }
     };
+    tracing::info!(node_id = cli.id, "node started");
 
     loop {
         match server.turn() {
@@ -189,7 +210,7 @@ fn main() -> ExitCode {
             Err(e) => {
                 // A node that cannot turn cannot serve, and carrying on would
                 // mean answering reads from state it can no longer extend.
-                eprintln!("node {} failed: {e}", cli.id);
+                tracing::error!(node_id = cli.id, error = %e, "node failed");
                 return ExitCode::FAILURE;
             }
         }

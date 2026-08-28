@@ -84,6 +84,7 @@ pub const MINIMUM_RUNS: usize = 3;
 fn sync_mode_name(mode: SyncMode) -> (&'static str, &'static str) {
     match mode {
         SyncMode::Durable => ("durable", ""),
+        SyncMode::Full => ("full", ""),
         SyncMode::Barrier => (
             "barrier",
             "writes are ordered but not made to survive power loss",
@@ -137,7 +138,7 @@ impl Publishable {
         if environment.tree_modified {
             return Err(Refusal::TreeModified);
         }
-        if sync_mode != SyncMode::Durable {
+        if !sync_mode.is_durable() {
             let (name, why) = sync_mode_name(sync_mode);
             return Err(Refusal::SyncNotDurable(name, why));
         }
@@ -167,13 +168,18 @@ impl Publishable {
     /// The provenance block a published result carries.
     pub fn header(&self) -> String {
         format!(
-            "{}\ntier:   {}{}\nsync:   durable (F_FULLSYNC or fdatasync, per platform)\nruns:   {}",
+            "{}\ntier:   {}{}\nsync:   {}\nruns:   {}",
             self.environment.render(),
             self.tier.name(),
             if self.tier.may_be_headlined() {
                 ""
             } else {
                 " — not a headline number; see BENCH.md for what that means"
+            },
+            match self.sync_mode {
+                SyncMode::Durable => "durable (F_FULLFSYNC or fdatasync, per platform)",
+                SyncMode::Full => "full (full file-and-metadata fsync)",
+                SyncMode::Barrier | SyncMode::None => unreachable!("publishable sync is durable"),
             },
             self.runs,
         )
@@ -255,6 +261,18 @@ mod tests {
             p.header().contains("not a headline number"),
             "an Exploratory result must say so in its own header"
         );
+    }
+
+    #[test]
+    fn full_fsync_is_durable_and_publishable() {
+        let p = Publishable::check_with_sync(
+            &durable_host(),
+            Tier::Reference,
+            SyncMode::Full,
+            MINIMUM_RUNS,
+        )
+        .expect("full fsync is durable");
+        assert!(p.header().contains("full file-and-metadata fsync"));
     }
 
     /// The refusal this whole crate exists for.

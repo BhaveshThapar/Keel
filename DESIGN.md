@@ -808,22 +808,18 @@ would name its cause rather than reading as a regression.
 
 ---
 
-## ADR-029 — The fuzz targets are ordinary functions, and stable runs them
+## ADR-029 — Fuzz targets stay ordinary functions; release runs add ASan
 
-Six targets, one per place a byte string arrives from somewhere this process
-does not control: a client's request body, a peer's reply, a socket mid-stream,
-a disk after a crash tore a write in half, a snapshot another node sent, and a
-message from a peer that may be running different code. Each is a `pub fn` over
-`&[u8]` in `keel-fuzz`, and the contract is that it does not panic.
+Seven targets cover the six places a byte string arrives from somewhere this
+process does not control plus an arbitrary sequence of core events. Each is a
+`pub fn` over `&[u8]` in `keel-fuzz`, and the contract is that it does not panic.
 
-**The decision: no nightly toolchain.** `cargo-fuzz` needs nightly for
-`-Z sanitizer=address` and `-C instrument-coverage`, and `rust-toolchain.toml`
-pins stable for everything else. Splitting the toolchain would buy
-coverage-guided fuzzing that in practice runs when somebody remembers to run it;
-plain functions buy a smoke harness that runs the same six targets on every
-commit, on the toolchain everything else already uses. The `fuzz/` directory
-wires them to libFuzzer in eight lines each for anyone who does have nightly,
-and a crash it finds replays on stable as
+**The stable gate and the release gate are deliberately different.** Stable
+still smoke-runs the same ordinary functions on every commit. Before a release,
+`scripts/fuzz-asan.sh` runs the hostile-message and arbitrary-event targets
+through libFuzzer under nightly's AddressSanitizer instrumentation and records
+the execution counts. The root toolchain remains stable; nightly is an explicit
+release tool rather than an implicit workspace dependency. A crash replays as
 `keel_fuzz::<target>(&std::fs::read(path)?)`.
 
 What that gives up is real: a blind generator cannot keep the inputs that

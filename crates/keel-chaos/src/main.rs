@@ -10,6 +10,7 @@
 //! one demonstration that needs its own proof: that a clock jump reached
 //! `CLOCK_MONOTONIC` rather than only the wall clock nothing in Raft reads.
 
+use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -76,6 +77,13 @@ enum Verb {
         /// sequential order at all.
         #[arg(long)]
         history: Option<PathBuf>,
+        /// Consistency mode for reads in a recorded history.
+        #[arg(long, default_value = "read-index")]
+        history_consistency: String,
+        /// Write a CSV of cumulative acknowledgements and annotated nemesis
+        /// events for an availability plot.
+        #[arg(long)]
+        timeline: Option<PathBuf>,
     },
     /// Kill one node at a time, over and over, while clients keep writing.
     ///
@@ -142,6 +150,8 @@ fn main() -> ExitCode {
             kv_bin,
             sync,
             history,
+            history_consistency,
+            timeline,
         } => run(RunOptions {
             seed,
             nodes,
@@ -151,6 +161,8 @@ fn main() -> ExitCode {
             kv_bin,
             sync,
             history,
+            history_consistency,
+            timeline,
         }),
         Verb::KillLoop {
             cycles,
@@ -424,6 +436,7 @@ fn start_recorder(
     nodes: &[String],
     secs: u64,
     out: &Path,
+    consistency: &str,
 ) -> Result<std::process::Child, ChaosError> {
     let mut cmd = Command::new(kv_bin);
     for n in nodes {
@@ -447,6 +460,8 @@ fn start_recorder(
     // the damage. A history that stopped at the last kill would never show
     // whether the cluster came back consistent.
     .arg((secs + 8).to_string())
+    .arg("--consistency")
+    .arg(consistency)
     .arg("--out")
     .arg(out)
     .stdout(Stdio::piped())
@@ -463,6 +478,8 @@ struct RunOptions {
     kv_bin: PathBuf,
     sync: String,
     history: Option<PathBuf>,
+    history_consistency: String,
+    timeline: Option<PathBuf>,
 }
 
 fn run(opts: RunOptions) -> Result<(), ChaosError> {
@@ -475,6 +492,8 @@ fn run(opts: RunOptions) -> Result<(), ChaosError> {
         kv_bin,
         sync,
         history,
+        history_consistency,
+        timeline,
     } = opts;
     if !server_bin.exists() {
         return Err(ChaosError::NoBinary(server_bin.display().to_string()));
@@ -518,7 +537,13 @@ fn run(opts: RunOptions) -> Result<(), ChaosError> {
     // other's timings, and the history handed to a checker would be a history
     // of a cluster busy with something the history does not mention.
     let mut recorder = match history.as_deref() {
-        Some(path) => Some(start_recorder(&kv_bin, &client_nodes, secs, path)?),
+        Some(path) => Some(start_recorder(
+            &kv_bin,
+            &client_nodes,
+            secs,
+            path,
+            &history_consistency,
+        )?),
         None => None,
     };
     let counter = recorder
@@ -529,11 +554,21 @@ fn run(opts: RunOptions) -> Result<(), ChaosError> {
     // rather than fatal: a schedule drawn before the run cannot know that a
     // node it wants to pause is one the previous fault killed.
     let started = Instant::now();
+    let mut timeline_rows: Vec<(f64, u64, String)> = Vec::new();
+    let mut next_sample = Duration::ZERO;
     let mut injected = 0u64;
     let mut skipped = 0u64;
     for event in &schedule.events {
         let due = started + event.at;
         while Instant::now() < due {
+            let elapsed = started.elapsed();
+            if elapsed >= next_sample {
+                let acked = counter
+                    .as_ref()
+                    .map_or(0, |(workload, _)| workload.acked.load(Ordering::SeqCst));
+                timeline_rows.push((elapsed.as_secs_f64(), acked, "sample".into()));
+                next_sample += Duration::from_millis(100);
+            }
             std::thread::sleep(Duration::from_millis(5));
         }
         let outcome = match (&event.action, faketime.as_mut()) {
@@ -553,6 +588,14 @@ fn run(opts: RunOptions) -> Result<(), ChaosError> {
         match outcome {
             Ok(()) => {
                 injected += 1;
+                let acked = counter
+                    .as_ref()
+                    .map_or(0, |(workload, _)| workload.acked.load(Ordering::SeqCst));
+                timeline_rows.push((
+                    started.elapsed().as_secs_f64(),
+                    acked,
+                    format!("nemesis: {}", event.action),
+                ));
                 if !matches!(event.action, Action::ClockJump { .. }) {
                     println!("  {:>8.3}s  {}", event.at.as_secs_f64(), event.action);
                 }
@@ -575,7 +618,28 @@ fn run(opts: RunOptions) -> Result<(), ChaosError> {
     for i in 0..cluster.nodes() {
         let _ = cluster.process(i).and_then(|p| p.resume());
     }
-    std::thread::sleep(Duration::from_secs(5));
+    let recovered_at = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < recovered_at {
+        let elapsed = started.elapsed();
+        if elapsed >= next_sample {
+            let acked = counter
+                .as_ref()
+                .map_or(0, |(workload, _)| workload.acked.load(Ordering::SeqCst));
+            timeline_rows.push((elapsed.as_secs_f64(), acked, "sample".into()));
+            next_sample += Duration::from_millis(100);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    if let Some(path) = timeline.as_deref() {
+        let mut body = String::from("elapsed_seconds,acknowledged,event\n");
+        for (elapsed, acked, event) in &timeline_rows {
+            let escaped = event.replace('"', "\"\"");
+            let _ = writeln!(body, "{elapsed:.3},{acked},\"{escaped}\"");
+        }
+        std::fs::write(path, body)?;
+        println!("availability timeline: {}", path.display());
+    }
 
     let (carried, refused, severed) = cluster.traffic();
     println!("faults injected {injected}, skipped {skipped}");

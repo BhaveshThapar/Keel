@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-//! P22's exit criterion: six targets that compile and smoke-run, and a
+//! P22's exit criterion: every target compiles and smoke-runs, and a
 //! checksum demonstration that says the harness would notice if one stopped
 //! catching things.
 
@@ -14,7 +14,7 @@ use keel_fuzz::{TARGETS, smoke};
 /// or a disk, so a panic is a node a stranger can stop with one bad byte.
 #[test]
 fn every_target_survives_a_smoke_run() {
-    assert_eq!(TARGETS.len(), 6, "the target list changed");
+    assert_eq!(TARGETS.len(), 7, "the target list changed");
     let report = smoke::run(1, 400);
     assert_eq!(report.inputs, 400 * TARGETS.len() as u64);
     // The counter that stops this being a test of a length check. Uniformly
@@ -58,6 +58,7 @@ fn every_target_is_named_once() {
         vec![
             "api_proposal",
             "api_response",
+            "core_events",
             "log_records",
             "net_frames",
             "raft_message",

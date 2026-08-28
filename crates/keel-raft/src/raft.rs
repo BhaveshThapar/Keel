@@ -209,6 +209,11 @@ pub struct Status {
     pub last_index: Index,
     pub conf: ConfState,
     pub progress: Vec<(NodeId, Index, ProgressState)>,
+    /// Current bounded replication window occupancy for every peer.
+    pub follower_inflight: Vec<(NodeId, usize)>,
+    /// Real elections started by this node. Pre-vote attempts do not count;
+    /// this moves only when the term does.
+    pub elections: u64,
     /// How many times this node committed an entry from an earlier term purely
     /// on replica count. Always zero in a correct build: the Figure 8 rule
     /// forbids it. Non-zero means the guard was compiled out, which the
@@ -251,6 +256,7 @@ pub struct RaftCore {
     /// checkpoint it could not have taken, which is worth surfacing rather than
     /// swallowing.
     snapshots_refused: u64,
+    elections: u64,
     /// The configuration as of the last checkpoint, offered to a follower that
     /// has fallen behind the log's floor.
     checkpoint_conf: Option<ConfState>,
@@ -349,6 +355,7 @@ impl RaftCore {
             uncommitted_bytes: 0,
             fig8_bypasses: 0,
             snapshots_refused: 0,
+            elections: 0,
             checkpoint_conf: None,
             msgs: Vec::new(),
             read_states: Vec::new(),
@@ -446,6 +453,13 @@ impl RaftCore {
                 .iter()
                 .map(|(id, pr)| (*id, pr.matched, pr.state))
                 .collect(),
+            follower_inflight: self
+                .tracker
+                .progress
+                .iter()
+                .map(|(id, pr)| (*id, pr.inflight.count()))
+                .collect(),
+            elections: self.elections,
             fig8_bypasses: self.fig8_bypasses,
             in_memory_entries: self.log.len(),
             snapshots_refused: self.snapshots_refused,
@@ -739,6 +753,7 @@ impl RaftCore {
     }
 
     fn start_real_election(&mut self, transfer: bool) {
+        self.elections = self.elections.saturating_add(1);
         self.become_candidate();
         self.tracker.record_vote(self.cfg.id, true);
         if self.tracker.tally_votes() == VoteResult::Won {

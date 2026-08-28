@@ -24,8 +24,10 @@ use keel_raft::{
 };
 use keel_sm::{Accepted, LsmStore, StateMachine};
 
-use crate::clients::{Clients, Incoming as ClientIncoming};
-use crate::{Admin, Kind, Metric, Observable, Request, ServerError, Status, write_ready_file};
+use crate::clients::{ClientProgress, Clients, Incoming as ClientIncoming};
+use crate::{
+    Admin, Histogram, Kind, Metric, Observable, Request, ServerError, Status, write_ready_file,
+};
 
 /// Whether a turn found anything to do.
 ///
@@ -57,6 +59,9 @@ pub struct NodeConfig {
     pub tick: Duration,
     /// Applied entries between storage-engine checkpoints.
     pub checkpoint_entries: u64,
+    pub max_inflight_msgs: usize,
+    pub max_inflight_bytes: usize,
+    pub max_batch_entries: usize,
 }
 
 struct Checkpoint {
@@ -98,6 +103,10 @@ pub struct Server {
     /// Set once the ready file has been written, so it is written once.
     announced: bool,
     checkpoint: Option<Checkpoint>,
+    /// Hashing an immutable checkpoint is proportional to state size and does
+    /// not belong on the consensus turn that serves writes.
+    checkpoint_digest: Option<std::thread::JoinHandle<Result<Checkpoint, String>>>,
+    checkpoint_digest_meta: Option<(u64, u64)>,
     transfer: Option<Transfer>,
     snapshot_activity: BTreeMap<NodeId, Instant>,
     force_checkpoint: bool,
@@ -132,7 +141,7 @@ impl Server {
             &state_dir,
             lsm_kv::Options {
                 sync_wal: match cfg.sync_mode {
-                    SyncMode::Durable => lsm_kv::SyncMode::Durable,
+                    SyncMode::Durable | SyncMode::Full => lsm_kv::SyncMode::Durable,
                     SyncMode::Barrier => lsm_kv::SyncMode::Barrier,
                     SyncMode::None => lsm_kv::SyncMode::None,
                 },
@@ -151,8 +160,11 @@ impl Server {
             }
         }
 
-        let node = Node::new(
-            Config::new(cfg.id),
+        let mut raft_cfg = Config::new(cfg.id);
+        raft_cfg.max_inflight_msgs = cfg.max_inflight_msgs.max(1);
+        raft_cfg.max_inflight_bytes = cfg.max_inflight_bytes.max(1);
+        let mut node = Node::new(
+            raft_cfg,
             ConfState {
                 voters: cfg.voters.clone(),
                 ..ConfState::default()
@@ -162,6 +174,7 @@ impl Server {
             StateMachine::new(store),
             transport,
         );
+        node.set_max_proposals_per_turn(cfg.max_batch_entries);
         let admin = Admin::bind(cfg.admin_addr)?;
         let clients = Clients::bind(cfg.client_addr)?;
 
@@ -175,6 +188,8 @@ impl Server {
             last_tick: Instant::now(),
             announced: false,
             checkpoint,
+            checkpoint_digest: None,
+            checkpoint_digest_meta: None,
             transfer: None,
             snapshot_activity: BTreeMap::new(),
             force_checkpoint: false,
@@ -285,10 +300,13 @@ impl Server {
         busy |= self.expire_snapshot_senders();
 
         let reported = self.status();
+        let core_report = self.node.status();
         let (_, commands) = self.admin.poll_with_commands(&Reported(
             reported.clone(),
             self.node.progress(),
             self.snapshot_progress,
+            self.clients.progress(),
+            core_report,
         ))?;
         busy |= !commands.is_empty();
         for command in commands {
@@ -564,6 +582,13 @@ impl Server {
             .as_ref()
             .filter(|checkpoint| checkpoint.meta.index == index && checkpoint.meta.term == term)
         else {
+            // The checkpoint is durable and the core has compacted to it, but
+            // its whole-state verification digest may still be scanning. Keep
+            // the follower in snapshot state; its 250 ms retry will be served
+            // once the digest is ready.
+            if self.checkpoint_digest_meta == Some((index, term)) {
+                return Ok(());
+            }
             self.node.report_snapshot(peer, false);
             return Ok(());
         };
@@ -657,7 +682,12 @@ impl Server {
                 ),
             });
         }
-        let checkpoint = self.write_checkpoint(meta.clone(), digest)?;
+        let path = self.write_checkpoint(&meta)?;
+        let checkpoint = Checkpoint {
+            meta: meta.clone(),
+            path,
+            digest,
+        };
         self.node
             .snapshot_installed(transfer.ready_number, meta.clone());
         self.snapshot_progress.installed += 1;
@@ -680,8 +710,12 @@ impl Server {
     }
 
     fn maybe_checkpoint(&mut self) -> Result<bool, ServerError> {
+        let finished_digest = self.finish_checkpoint_digest()?;
+        if self.checkpoint_digest.is_some() {
+            return Ok(finished_digest);
+        }
         if self.node.role() != Role::Leader {
-            return Ok(false);
+            return Ok(finished_digest);
         }
         let last = self.checkpoint.as_ref().map_or_else(
             || self.node.log().snapshot().map_or(0, |meta| meta.index),
@@ -694,27 +728,73 @@ impl Server {
             applied.saturating_sub(last) >= self.cfg.checkpoint_entries.max(1)
         };
         if !due && !self.force_checkpoint {
-            return Ok(false);
+            return Ok(finished_digest);
         }
         self.force_checkpoint = false;
         let Some(meta) = self.node.checkpoint_meta() else {
             return Ok(false);
         };
         let started = Instant::now();
-        let digest = self.node.state_machine().state_digest().map_err(sm_error)?;
-        let checkpoint = self.write_checkpoint(meta.clone(), digest)?;
+        let checkpoint_index = meta.index;
+        let checkpoint_term = meta.term;
+        let checkpoint_conf = meta.conf.clone();
+        let path = self.write_checkpoint(&meta)?;
         self.node.checkpoint_taken(meta).map_err(node_error)?;
         self.snapshot_progress.checkpoints += 1;
         self.snapshot_progress.checkpoint_nanos += started.elapsed().as_nanos() as u64;
+        tracing::info!(
+            node_id = self.cfg.id,
+            index = checkpoint_index,
+            term = checkpoint_term,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "checkpoint published"
+        );
+        self.checkpoint_digest = Some(std::thread::spawn(move || {
+            let digest = digest_at(&path).map_err(|error| error.to_string())?;
+            Ok(Checkpoint {
+                meta: SnapshotMeta {
+                    index: checkpoint_index,
+                    term: checkpoint_term,
+                    conf: checkpoint_conf,
+                },
+                path,
+                digest,
+            })
+        }));
+        self.checkpoint_digest_meta = Some((checkpoint_index, checkpoint_term));
+        Ok(true)
+    }
+
+    fn finish_checkpoint_digest(&mut self) -> Result<bool, ServerError> {
+        if !self
+            .checkpoint_digest
+            .as_ref()
+            .is_some_and(|worker| worker.is_finished())
+        {
+            return Ok(false);
+        }
+        let Some(worker) = self.checkpoint_digest.take() else {
+            return Ok(false);
+        };
+        self.checkpoint_digest_meta = None;
+        let checkpoint = worker
+            .join()
+            .map_err(|_| ServerError::Io(std::io::Error::other("checkpoint digest panicked")))?
+            .map_err(|why| ServerError::Io(std::io::Error::other(why)))?;
+        tracing::info!(
+            node_id = self.cfg.id,
+            index = checkpoint.meta.index,
+            "checkpoint digest ready for transfer"
+        );
         self.checkpoint = Some(checkpoint);
         self.remove_old_checkpoints()?;
         Ok(true)
     }
 
-    fn write_checkpoint(&self, meta: SnapshotMeta, digest: u64) -> Result<Checkpoint, ServerError> {
+    fn write_checkpoint(&self, meta: &SnapshotMeta) -> Result<PathBuf, ServerError> {
         let root = Self::snapshot_root(&self.cfg);
         std::fs::create_dir_all(&root)?;
-        let path = Self::checkpoint_path(&self.cfg, &meta);
+        let path = Self::checkpoint_path(&self.cfg, meta);
         let pending = path.with_extension("pending");
         if pending.exists() {
             std::fs::remove_dir_all(&pending)?;
@@ -729,7 +809,7 @@ impl Server {
             .map_err(sm_error)?;
         std::fs::rename(&pending, &path)?;
         std::fs::File::open(&root)?.sync_all()?;
-        Ok(Checkpoint { meta, path, digest })
+        Ok(path)
     }
 
     fn remove_old_checkpoints(&self) -> Result<(), ServerError> {
@@ -755,8 +835,20 @@ impl Server {
             changes: vec![ConfChangeSingle { kind, node }],
         };
         match request {
-            Request::TransferLeader { to } => self.node.transfer_leader(to),
+            Request::TransferLeader { to } => {
+                tracing::info!(
+                    node_id = self.cfg.id,
+                    target = to,
+                    "leader transfer requested"
+                );
+                self.node.transfer_leader(to);
+            }
             Request::AddLearner { node } if self.cfg.peers.contains_key(&node) => {
+                tracing::info!(
+                    node_id = self.cfg.id,
+                    member = node,
+                    "learner addition requested"
+                );
                 let _ = self
                     .node
                     .propose_conf_change(change(ChangeKind::AddLearner, node));
@@ -764,16 +856,29 @@ impl Server {
             Request::Promote { node }
                 if self.cfg.peers.contains_key(&node) && self.node.learner_caught_up(node) =>
             {
+                tracing::info!(
+                    node_id = self.cfg.id,
+                    member = node,
+                    "learner promotion requested"
+                );
                 let _ = self
                     .node
                     .propose_conf_change(change(ChangeKind::AddVoter, node));
             }
             Request::Remove { node } => {
+                tracing::info!(
+                    node_id = self.cfg.id,
+                    member = node,
+                    "member removal requested"
+                );
                 let _ = self
                     .node
                     .propose_conf_change(change(ChangeKind::RemoveNode, node));
             }
-            Request::Snapshot => self.force_checkpoint = true,
+            Request::Snapshot => {
+                tracing::info!(node_id = self.cfg.id, "manual checkpoint requested");
+                self.force_checkpoint = true;
+            }
             Request::Status
             | Request::Metrics
             | Request::Unknown
@@ -856,7 +961,13 @@ fn resolve(sm: &StateMachine<LsmStore>, query: &keel_api::Query) -> keel_api::Re
 /// The admin surface needs an [`Observable`], and the node is already borrowed
 /// mutably by the turn that is answering. A snapshot of the status and the
 /// counters is enough: a scrape is a point in time by definition.
-struct Reported(Status, keel_node::Progress, SnapshotProgress);
+struct Reported(
+    Status,
+    keel_node::Progress,
+    SnapshotProgress,
+    ClientProgress,
+    keel_raft::Status,
+);
 
 impl Observable for Reported {
     fn status(&self) -> Status {
@@ -969,6 +1080,12 @@ impl Observable for Reported {
                 kind: Kind::Counter,
                 value: p.proposals_dropped as f64,
             },
+            Metric {
+                name: "keel_elections_total",
+                help: "Real elections started by this node",
+                kind: Kind::Counter,
+                value: self.4.elections as f64,
+            },
             // Where the time in a round goes. Divided by `keel_readies_total`
             // these are the mean cost of one round's persist, send and apply;
             // divided by `keel_entries_applied_total` they are what one
@@ -1023,5 +1140,81 @@ impl Observable for Reported {
                 value: snapshots.bytes_received as f64,
             },
         ]
+    }
+
+    fn histograms(&self) -> Vec<Histogram> {
+        let progress = &self.1;
+        let clients = &self.3;
+        vec![
+            histogram_count(
+                "keel_ready_batch_entries",
+                "Entries appended in one Ready batch",
+                &progress.batch_sizes,
+                &keel_node::BATCH_SIZE_BUCKETS,
+            ),
+            histogram_seconds(
+                "keel_persist_seconds",
+                "Time spent persisting one Ready",
+                &progress.persist_latencies,
+            ),
+            histogram_seconds(
+                "keel_fsync_seconds",
+                "Time spent in one durable log sync",
+                &progress.fsync_latencies,
+            ),
+            histogram_seconds(
+                "keel_apply_seconds",
+                "Time spent applying one Ready batch",
+                &progress.apply_latencies,
+            ),
+            histogram_count(
+                "keel_follower_inflight_messages",
+                "Replication messages in flight per follower observation",
+                &progress.follower_inflight,
+                &keel_node::INFLIGHT_MESSAGE_BUCKETS,
+            ),
+            histogram_seconds(
+                "keel_commit_seconds",
+                "Command latency from parking through committed response",
+                &clients.commit_latencies,
+            ),
+        ]
+    }
+}
+
+fn histogram_seconds(
+    name: &'static str,
+    help: &'static str,
+    buckets: &keel_node::Buckets<12>,
+) -> Histogram {
+    Histogram {
+        name,
+        help,
+        buckets: keel_node::LATENCY_NANOS_BUCKETS
+            .iter()
+            .zip(buckets.counts)
+            .map(|(upper, count)| (*upper as f64 / 1e9, count))
+            .collect(),
+        sum: buckets.sum as f64 / 1e9,
+        count: buckets.count,
+    }
+}
+
+fn histogram_count<const N: usize>(
+    name: &'static str,
+    help: &'static str,
+    buckets: &keel_node::Buckets<N>,
+    upper_bounds: &[u64; N],
+) -> Histogram {
+    Histogram {
+        name,
+        help,
+        buckets: upper_bounds
+            .iter()
+            .zip(buckets.counts)
+            .map(|(upper, count)| (*upper as f64, count))
+            .collect(),
+        sum: buckets.sum as f64,
+        count: buckets.count,
     }
 }

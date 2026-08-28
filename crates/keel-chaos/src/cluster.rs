@@ -52,6 +52,9 @@ pub struct ClusterConfig {
     pub sync: String,
     pub tick_ms: u64,
     pub checkpoint_entries: u64,
+    pub max_inflight_msgs: usize,
+    pub max_inflight_bytes: usize,
+    pub max_batch_entries: usize,
     /// Environment every node is started with — where the clock nemesis's
     /// preload goes.
     pub env: Vec<(String, String)>,
@@ -66,6 +69,9 @@ impl ClusterConfig {
             sync: "durable".into(),
             tick_ms: 10,
             checkpoint_entries: 10_000,
+            max_inflight_msgs: 16,
+            max_inflight_bytes: 8 << 20,
+            max_batch_entries: usize::MAX,
             env: Vec::new(),
         }
     }
@@ -144,6 +150,12 @@ impl Cluster {
                 cfg.tick_ms.to_string(),
                 "--checkpoint-entries".into(),
                 cfg.checkpoint_entries.to_string(),
+                "--max-inflight-msgs".into(),
+                cfg.max_inflight_msgs.to_string(),
+                "--max-inflight-bytes".into(),
+                cfg.max_inflight_bytes.to_string(),
+                "--max-batch-entries".into(),
+                cfg.max_batch_entries.to_string(),
             ];
             for j in 0..n {
                 // Its own entry is its real address: a node that reached itself

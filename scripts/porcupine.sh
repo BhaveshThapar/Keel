@@ -17,7 +17,7 @@
 # tell them apart. A checker that accepted both would have told us nothing, and
 # nobody would have noticed, because the output would have looked identical.
 #
-# Usage: scripts/porcupine.sh [seed] [seconds]
+# Usage: scripts/porcupine.sh [seed] [seconds] [control-seconds] [read-index|lease]
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
@@ -27,6 +27,11 @@ SECS="${2:-40}"
 # How long the control arm's own run records for. It gets a history of its own
 # rather than a slice of the experiment's; see the note it prints.
 CONTROL_SECS="${3:-6}"
+CONSISTENCY="${4:-read-index}"
+case "$CONSISTENCY" in
+    read-index|lease) ;;
+    *) echo "consistency must be read-index or lease" >&2; exit 1 ;;
+esac
 
 # Homebrew's Go is not on a login shell's PATH under every launcher.
 GO="$(command -v go || echo /opt/homebrew/bin/go)"
@@ -37,7 +42,11 @@ fi
 
 # shellcheck source=scripts/lib/provenance.sh
 source "$(dirname "$0")/lib/provenance.sh"
-OUT=results/porcupine/lin-check.txt
+if [ "$CONSISTENCY" = read-index ]; then
+    OUT=results/porcupine/lin-check.txt
+else
+    OUT="results/porcupine/lin-check-${CONSISTENCY}.txt"
+fi
 mkdir -p "$(dirname "$OUT")"
 provenance_of "$OUT" || exit 1
 
@@ -64,6 +73,7 @@ echo 0 >"$TALLY"
     echo "seed:       $SEED"
     echo "seconds:    $SECS of faults, plus 8 for the recovery the history has to cover"
     echo "sync mode:  durable"
+    echo "reads:      $CONSISTENCY"
     echo
 
     echo "--- recording a history while the cluster is being broken ---"
@@ -75,6 +85,7 @@ echo 0 >"$TALLY"
         --server-bin "$(pwd)/target/release/keel-server" \
         --kv-bin "$(pwd)/target/release/kv" \
         --sync durable \
+        --history-consistency "$CONSISTENCY" \
         --history "$WORK/history.jsonl" 2>&1
     recorded=$?
     if [ $recorded -ne 0 ]; then
@@ -114,6 +125,7 @@ echo 0 >"$TALLY"
             --server-bin "$(pwd)/target/release/keel-server" \
             --kv-bin "$(pwd)/target/release/kv" \
             --sync durable \
+            --history-consistency "$CONSISTENCY" \
             --history "$WORK/control.jsonl" 2>&1 | tail -3
         if [ ! -s "$WORK/control.jsonl" ]; then
             echo "FAIL the control run did not produce a history"

@@ -94,6 +94,10 @@ pub struct Turn {
     /// every message to the transport; `apply` covers the state machine's own
     /// batch and its own fsync.
     pub persist_nanos: u64,
+    /// Nanoseconds spent in the durable-log sync itself. This is a subset of
+    /// `persist_nanos`; keeping it separately is what makes the fsync latency
+    /// histogram an observation rather than an estimate.
+    pub fsync_nanos: u64,
     pub send_nanos: u64,
     pub apply_nanos: u64,
 }
@@ -120,8 +124,14 @@ pub struct Progress {
     pub entries_applied: u64,
     pub proposals_dropped: u64,
     pub persist_nanos: u64,
+    pub fsync_nanos: u64,
     pub send_nanos: u64,
     pub apply_nanos: u64,
+    pub batch_sizes: Buckets<12>,
+    pub persist_latencies: Buckets<12>,
+    pub fsync_latencies: Buckets<12>,
+    pub apply_latencies: Buckets<12>,
+    pub follower_inflight: Buckets<8>,
 }
 
 impl Progress {
@@ -134,10 +144,76 @@ impl Progress {
         self.entries_applied += turn.entries_applied;
         self.proposals_dropped += turn.proposals_dropped;
         self.persist_nanos += turn.persist_nanos;
+        self.fsync_nanos += turn.fsync_nanos;
         self.send_nanos += turn.send_nanos;
         self.apply_nanos += turn.apply_nanos;
+        if turn.readies > 0 {
+            self.batch_sizes
+                .observe(turn.entries_appended, &BATCH_SIZE_BUCKETS);
+            self.persist_latencies
+                .observe(turn.persist_nanos, &LATENCY_NANOS_BUCKETS);
+            self.fsync_latencies
+                .observe(turn.fsync_nanos, &LATENCY_NANOS_BUCKETS);
+            self.apply_latencies
+                .observe(turn.apply_nanos, &LATENCY_NANOS_BUCKETS);
+        }
+    }
+
+    fn observe_inflight(&mut self, values: impl Iterator<Item = u64>) {
+        for value in values {
+            self.follower_inflight
+                .observe(value, &INFLIGHT_MESSAGE_BUCKETS);
+        }
     }
 }
+
+/// A bounded cumulative histogram. Counts are already cumulative, matching
+/// Prometheus' bucket format, so a scrape never has to reconstruct history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Buckets<const N: usize> {
+    pub counts: [u64; N],
+    pub count: u64,
+    pub sum: u64,
+}
+
+impl<const N: usize> Default for Buckets<N> {
+    fn default() -> Self {
+        Self {
+            counts: [0; N],
+            count: 0,
+            sum: 0,
+        }
+    }
+}
+
+impl<const N: usize> Buckets<N> {
+    pub fn observe(&mut self, value: u64, upper_bounds: &[u64; N]) {
+        self.count = self.count.saturating_add(1);
+        self.sum = self.sum.saturating_add(value);
+        for (count, upper) in self.counts.iter_mut().zip(upper_bounds) {
+            if value <= *upper {
+                *count = count.saturating_add(1);
+            }
+        }
+    }
+}
+
+pub const BATCH_SIZE_BUCKETS: [u64; 12] = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
+pub const LATENCY_NANOS_BUCKETS: [u64; 12] = [
+    100_000,
+    250_000,
+    500_000,
+    1_000_000,
+    2_500_000,
+    5_000_000,
+    10_000_000,
+    25_000_000,
+    50_000_000,
+    100_000_000,
+    500_000_000,
+    5_000_000_000,
+];
+pub const INFLIGHT_MESSAGE_BUCKETS: [u64; 8] = [0, 1, 2, 4, 8, 16, 32, 64];
 
 /// A response, and enough to say whose it is.
 #[derive(Debug, Clone)]
@@ -193,6 +269,7 @@ pub struct Node<F: Fs, S: Store, T: Transport> {
     next_ctx: u64,
     progress: Progress,
     snapshot_events: Vec<SnapshotEvent>,
+    max_proposals_per_turn: usize,
 }
 
 impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
@@ -232,11 +309,18 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
             next_ctx: 1,
             progress: Progress::default(),
             snapshot_events: Vec::new(),
+            max_proposals_per_turn: usize::MAX,
         }
     }
 
     pub fn id(&self) -> NodeId {
         self.core.status().id
+    }
+
+    /// Bound how many queued proposals share one Ready. The production default
+    /// is unbounded-by-policy; one exists for the batching control arm.
+    pub fn set_max_proposals_per_turn(&mut self, max: usize) {
+        self.max_proposals_per_turn = max.max(1);
     }
 
     pub fn status(&self) -> Status {
@@ -420,6 +504,14 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
             .flush()
             .map_err(|e| NodeError::Transport(e.to_string()))?;
         self.progress.add(turn);
+        let status = self.core.status();
+        self.progress.observe_inflight(
+            status
+                .follower_inflight
+                .into_iter()
+                .filter(|(id, _)| *id != status.id)
+                .map(|(_, count)| count as u64),
+        );
         Ok(turn)
     }
 
@@ -511,7 +603,10 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
 
     /// Step every queued proposal into the core, so they share one `Ready`.
     fn drain_queue(&mut self) {
-        while let Some(queued) = self.queue.pop_front() {
+        for _ in 0..self.max_proposals_per_turn {
+            let Some(queued) = self.queue.pop_front() else {
+                break;
+            };
             // An encoding failure is this node's own doing, not a peer's, and
             // it cannot be proposed. Refusing it as overloaded is the closest
             // honest answer: the entry never reaches the log.
@@ -548,7 +643,9 @@ impl<F: Fs, S: Store, T: Transport> Node<F, S, T> {
             self.log.set_hard_state(hs)?;
         }
         let persisted = ready.entries.last().map(|e| (e.index, e.term));
+        let fsync_started = Instant::now();
         self.log.sync()?;
+        turn.fsync_nanos += fsync_started.elapsed().as_nanos() as u64;
         let persisted_at = Instant::now();
         turn.persist_nanos += persisted_at.duration_since(started).as_nanos() as u64;
 

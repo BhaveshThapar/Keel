@@ -13,9 +13,11 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use keel_api::{Command as ApiCommand, Envelope, Request as ApiRequest, encode};
 use keel_client::{Client, Pipeline};
 
 static CLUSTER_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -32,6 +34,17 @@ fn free_port() -> u16 {
 
 fn addr(port: u16) -> SocketAddr {
     format!("127.0.0.1:{port}").parse().unwrap()
+}
+
+fn send_and_drop_answer(addr: SocketAddr, id: u64, request: &ApiRequest) {
+    let mut stream = TcpStream::connect(addr).expect("connect for answer-loss injection");
+    let payload = encode(&Envelope::new(id, request.clone())).expect("encode request");
+    stream
+        .write_all(&(payload.len() as u32).to_le_bytes())
+        .expect("write request length");
+    stream.write_all(&payload).expect("write request body");
+    stream.flush().expect("flush request");
+    drop(stream);
 }
 
 /// Where `cargo` put the server binary.
@@ -357,6 +370,73 @@ fn writes_survive_a_leader_being_killed() {
     }
 }
 
+/// FR-7's exact acceptance case: the command commits, every answer is lost,
+/// leadership moves, and a storm of the same `(client, seq)` is still one
+/// state-machine operation.
+#[test]
+fn a_retry_storm_across_forced_failover_applies_the_command_exactly_once() {
+    let mut cluster = Cluster::start(3);
+    const NONCE: u64 = 424_242;
+
+    let mut registering = cluster.client(NONCE);
+    let client_id = registering.register().expect("register session");
+    let leader = wait_for_value(Duration::from_secs(10), || {
+        (0..3).find(|index| {
+            cluster
+                .status(*index)
+                .is_some_and(|status| status.contains("\"role\":\"leader\""))
+        })
+    })
+    .expect("the cluster never elected a leader");
+    let before = cluster
+        .status(leader)
+        .and_then(|status| applied_from(&status))
+        .expect("leader status had no applied index");
+    let request = ApiRequest::Command {
+        client: client_id,
+        seq: 1,
+        command: ApiCommand::Incr {
+            key: b"failover-dedup".to_vec().into(),
+            by: 1,
+        },
+    };
+
+    // Re-send while deliberately dropping every response. Waiting for applied
+    // proves the command crossed the uncertainty boundary before the kill.
+    for id in 1..=16 {
+        send_and_drop_answer(cluster.client_addrs[leader], id, &request);
+    }
+    wait_for(Duration::from_secs(10), || {
+        cluster
+            .status(leader)
+            .and_then(|status| applied_from(&status))
+            .is_some_and(|applied| applied > before)
+    })
+    .expect("the answer-lost command never committed");
+    cluster.kill(leader);
+
+    let new_leader = wait_for_value(Duration::from_secs(10), || {
+        (0..3).filter(|index| *index != leader).find(|index| {
+            cluster
+                .status(*index)
+                .is_some_and(|status| status.contains("\"role\":\"leader\""))
+        })
+    })
+    .expect("the survivors never elected a leader");
+    for id in 17..=32 {
+        send_and_drop_answer(cluster.client_addrs[new_leader], id, &request);
+    }
+
+    // A fresh client with the same registration nonce reopens the session and
+    // begins at seq=1, making this the same command after the failover.
+    let mut retry = cluster.client(NONCE);
+    assert_eq!(retry.incr(b"failover-dedup", 1).expect("retry"), 1);
+    assert_eq!(
+        retry.get(b"failover-dedup").expect("read back"),
+        Some(1i64.to_le_bytes().to_vec())
+    );
+}
+
 /// ADR-033, against a real cluster: many requests outstanding on one connection,
 /// answered in whatever order they finish, and every one of them applied exactly
 /// once.
@@ -675,6 +755,105 @@ fn an_operator_adds_promotes_and_removes_a_routed_learner() {
         })
     })
     .expect("node 4 was not removed");
+}
+
+/// FR-10's production acceptance shape: two routed learners join a three-node
+/// voting configuration while writes continue, then the current leader is
+/// removed and the same client continues through the election.
+#[test]
+fn two_nodes_join_under_load_and_the_removed_leader_is_replaced() {
+    let cluster = Cluster::start_with_options(5, 10_000, vec![1, 2, 3]);
+    let stop = Arc::new(AtomicBool::new(false));
+    let successes = Arc::new(AtomicU64::new(0));
+    let failures = Arc::new(AtomicU64::new(0));
+    let writer = {
+        let addrs = cluster.client_addrs.clone();
+        let stop = Arc::clone(&stop);
+        let successes = Arc::clone(&successes);
+        let failures = Arc::clone(&failures);
+        std::thread::spawn(move || {
+            let mut client = Client::new(&addrs, 606_060);
+            client.register().expect("register load client");
+            while !stop.load(Ordering::Relaxed) {
+                match client.incr(b"membership-live", 1) {
+                    Ok(_) => {
+                        successes.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(_) => {
+                        failures.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        })
+    };
+
+    for member in [4u64, 5] {
+        cluster
+            .post_to_leader(&format!("/add-learner?node={member}"))
+            .expect("add learner");
+        wait_for(Duration::from_secs(10), || {
+            (0..5).any(|index| {
+                cluster.status(index).is_some_and(|status| {
+                    status
+                        .split_once("\"learners\":")
+                        .and_then(|(_, rest)| rest.split_once(']'))
+                        .is_some_and(|(learners, _)| {
+                            learners
+                                .trim_start_matches('[')
+                                .split(',')
+                                .any(|id| id == member.to_string())
+                        })
+                })
+            })
+        })
+        .expect("learner was not configured");
+        wait_for(Duration::from_secs(10), || {
+            let Some(leader) = cluster.leader() else {
+                return false;
+            };
+            match (
+                cluster.status(leader),
+                cluster.status((member - 1) as usize),
+            ) {
+                (Some(leader), Some(learner)) => applied_from(&leader) == applied_from(&learner),
+                _ => false,
+            }
+        })
+        .expect("learner did not catch up under load");
+        cluster
+            .post_to_leader(&format!("/promote?node={member}"))
+            .expect("promote learner");
+        wait_for(Duration::from_secs(10), || {
+            cluster.status(0).is_some_and(|status| {
+                status.contains(&format!("{member}]")) && !status.contains("\"voters_outgoing\":[1")
+            })
+        })
+        .expect("promoted voter did not leave joint consensus");
+    }
+
+    let old_leader = cluster.leader().expect("no leader to remove");
+    let old_id = old_leader as u64 + 1;
+    cluster
+        .post_admin(old_leader, &format!("/remove?node={old_id}"))
+        .filter(|response| response.starts_with("HTTP/1.1 202 Accepted"))
+        .expect("remove leader request");
+    wait_for(Duration::from_secs(10), || {
+        cluster.leader().is_some_and(|leader| leader != old_leader)
+    })
+    .expect("a new leader was not elected after removing the old one");
+
+    wait_for(Duration::from_secs(5), || {
+        successes.load(Ordering::Relaxed) >= 20
+    })
+    .expect("load never made sustained progress");
+    stop.store(true, Ordering::Relaxed);
+    writer.join().expect("load thread panicked");
+    assert_eq!(
+        failures.load(Ordering::Relaxed),
+        0,
+        "a client-visible write failed during membership changes"
+    );
 }
 
 fn applied_from(status: &str) -> Option<u64> {

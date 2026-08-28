@@ -139,6 +139,45 @@ pub fn raft_message(data: &[u8]) {
     }
 }
 
+/// An arbitrary sequence of host events stepped through one core.
+///
+/// The byte stream selects ticks, proposals, reads and leader transfers. This
+/// complements `raft_message`: that target makes one peer message hostile,
+/// while this one lets coverage guidance mutate the ordering of many events
+/// and every Ready/Advance boundary they create.
+pub fn core_events(data: &[u8]) {
+    let mut core = keel_raft::RaftCore::new(
+        keel_raft::Config {
+            rng_seed: 1,
+            ..keel_raft::Config::new(1)
+        },
+        keel_raft::ConfState::single([1, 2, 3]),
+    );
+    let mut ctx = 1u64;
+    for chunk in data.chunks(8) {
+        let input = match chunk.first().copied().unwrap_or(0) % 4 {
+            0 => keel_raft::Input::Tick,
+            1 => keel_raft::Input::Propose {
+                ctx,
+                data: Bytes::copy_from_slice(chunk.get(1..).unwrap_or_default()),
+            },
+            2 => keel_raft::Input::ReadIndex { ctx },
+            _ => keel_raft::Input::TransferLeader { to: 2 },
+        };
+        ctx = ctx.saturating_add(1);
+        let _ = core.step(input);
+        while core.has_ready() {
+            let rd = core.ready();
+            core.advance(keel_raft::Advance {
+                ready_number: rd.number,
+                persisted: rd.entries.last().map(|entry| (entry.index, entry.term)),
+                applied: rd.committed_entries.last().map(|entry| entry.index),
+                snapshot_installed: rd.snapshot_to_install,
+            });
+        }
+    }
+}
+
 /// One fuzz target: a name, and something to point bytes at.
 pub type Target = (&'static str, fn(&[u8]));
 
@@ -152,6 +191,7 @@ pub const TARGETS: &[Target] = &[
     ("log_records", log_records),
     ("store_snapshot", store_snapshot),
     ("raft_message", raft_message),
+    ("core_events", core_events),
 ];
 
 /// A `Bytes` from a slice, for targets that need one.

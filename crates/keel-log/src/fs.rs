@@ -33,6 +33,10 @@ pub enum SyncMode {
     /// the only mode a published performance number may use.
     #[default]
     Durable,
+    /// Full file-and-metadata sync (`fsync` on Linux, with the same
+    /// power-loss flush as `Durable` on macOS). This exists primarily for the
+    /// required `fdatasync` versus `fsync` benchmark ablation.
+    Full,
     /// `fdatasync` on Linux, plain `fsync` on macOS: ordering, not power-loss
     /// durability. Exists so development on a Mac is not unusably slow. Never
     /// used for a claim.
@@ -44,7 +48,7 @@ pub enum SyncMode {
 impl SyncMode {
     /// Whether a number measured under this mode may be published.
     pub fn is_durable(self) -> bool {
-        matches!(self, SyncMode::Durable)
+        matches!(self, SyncMode::Durable | SyncMode::Full)
     }
 }
 
@@ -191,9 +195,16 @@ impl File for StdFile {
         match mode {
             SyncMode::None => Ok(()),
             SyncMode::Durable => durable_sync(&self.file),
+            SyncMode::Full => full_sync(&self.file),
             SyncMode::Barrier => barrier_sync(&self.file),
         }
     }
+}
+
+fn full_sync(f: &std::fs::File) -> io::Result<()> {
+    #[cfg(target_vendor = "apple")]
+    durable_sync(f)?;
+    f.sync_all()
 }
 
 #[cfg(target_os = "linux")]

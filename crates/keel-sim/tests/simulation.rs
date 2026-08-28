@@ -1,6 +1,32 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use keel_sim::{NemesisAction, NemesisWeights, SimConfig, World, run_seed};
+use keel_sim::{ClientHistoryPhase, NemesisAction, NemesisWeights, SimConfig, World, run_seed};
+
+#[test]
+fn the_random_client_workload_records_a_deterministic_history() {
+    let mut first = World::new(41, SimConfig::read_hunt(3));
+    first.run(30_000);
+    assert!(!first.is_broken(), "{}", first.failure_report());
+    assert!(
+        first
+            .client_history()
+            .iter()
+            .any(|event| event.phase == ClientHistoryPhase::Replicated),
+        "no write completion was recorded"
+    );
+    assert!(
+        first
+            .client_history()
+            .iter()
+            .any(|event| matches!(event.phase, ClientHistoryPhase::Returned(_))),
+        "no read result was recorded"
+    );
+
+    let expected = first.client_history().to_vec();
+    let mut replay = World::new(41, SimConfig::read_hunt(3));
+    replay.run(30_000);
+    assert_eq!(replay.client_history(), expected);
+}
 
 /// A short sweep, cheap enough to run on every change. The real sweeps live in
 /// CI; this one exists so a change that breaks safety fails locally in seconds.

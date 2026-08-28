@@ -227,8 +227,16 @@ impl Client {
     }
 
     pub fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, ClientError> {
+        self.get_with_consistency(key, Consistency::Linearizable)
+    }
+
+    pub fn get_with_consistency(
+        &mut self,
+        key: &[u8],
+        consistency: Consistency,
+    ) -> Result<Option<Vec<u8>>, ClientError> {
         let request = Request::Query {
-            consistency: Consistency::Linearizable,
+            consistency,
             query: Query::Get {
                 key: Bytes::copy_from_slice(key),
             },

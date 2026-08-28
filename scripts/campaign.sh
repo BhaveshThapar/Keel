@@ -13,7 +13,7 @@
 # be refused should be refused in the second it starts rather than in the hour it
 # finishes.
 #
-# Usage: scripts/campaign.sh [mix] [rates] [seconds-per-run] [clients] [depth]
+# Usage: scripts/campaign.sh [mix] [rates] [seconds] [clients] [depth] [value-bytes] [keys] [nodes]
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
@@ -41,7 +41,11 @@ CLIENTS="${4:-64}"
 # as much about this harness as about the system (ADR-033). It is in the result's
 # header for the same reason `clients` is.
 DEPTH="${5:-32}"
+VALUE_BYTES="${6:-128}"
+KEYS="${7:-10000}"
+NODES="${8:-3}"
 TIER="${KEEL_BENCH_TIER:-exploratory}"
+SUFFIX="${MIX}-${VALUE_BYTES}b-${KEYS}k-${NODES}n"
 
 echo "building" >&2
 cargo build --release -p keel-bench -p keel-server >&2 || exit 1
@@ -58,9 +62,12 @@ trap 'rm -rf "$WORK"' EXIT
     --secs "$SECS" \
     --clients "$CLIENTS" \
     --depth "$DEPTH" \
+    --value-bytes "$VALUE_BYTES" \
+    --keys "$KEYS" \
+    --cluster-nodes "$NODES" \
     --dir "$WORK" \
     --server-bin "$(pwd)/target/release/keel-server" \
     --sync durable \
     --tier "$TIER" \
-    --out "campaign-$MIX.txt" \
-    --svg "campaign-$MIX.svg"
+    --out "campaign-$SUFFIX.txt" \
+    --svg "campaign-$SUFFIX.svg"

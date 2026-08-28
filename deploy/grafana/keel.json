@@ -400,6 +400,56 @@
       ],
       "title": "Checkpoint stall",
       "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "PROM"},
+      "description": "End-to-end committed-command latency measured from admission to the committed response. Refusals and retries are excluded.",
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 12, "x": 0, "y": 37},
+      "id": 13,
+      "targets": [{"datasource": {"type": "prometheus", "uid": "PROM"}, "expr": "histogram_quantile(0.99, sum by (le, instance) (rate(keel_commit_seconds_bucket[5m])))", "legendFormat": "p99, {{instance}}", "refId": "A"}],
+      "title": "Commit latency p99",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "PROM"},
+      "description": "The durable-sync portion of a Ready. Compare this with commit latency to distinguish storage pressure from consensus or apply pressure.",
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 12, "x": 12, "y": 37},
+      "id": 14,
+      "targets": [{"datasource": {"type": "prometheus", "uid": "PROM"}, "expr": "histogram_quantile(0.99, sum by (le, instance) (rate(keel_fsync_seconds_bucket[5m])))", "legendFormat": "p99, {{instance}}", "refId": "A"}],
+      "title": "Fsync latency p99",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "PROM"},
+      "description": "Distribution of entries sharing one Ready. This directly verifies that batching is occurring instead of inferring it from aggregate counters.",
+      "fieldConfig": {"defaults": {"unit": "none"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 0, "y": 44},
+      "id": 15,
+      "targets": [{"datasource": {"type": "prometheus", "uid": "PROM"}, "expr": "histogram_quantile(0.50, sum by (le, instance) (rate(keel_ready_batch_entries_bucket[5m])))", "legendFormat": "p50, {{instance}}", "refId": "A"}],
+      "title": "Ready batch distribution",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "PROM"},
+      "description": "Observed replication messages outstanding per follower. A sustained value at the configured ceiling identifies flow-control pressure.",
+      "fieldConfig": {"defaults": {"unit": "none"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 8, "y": 44},
+      "id": 16,
+      "targets": [{"datasource": {"type": "prometheus", "uid": "PROM"}, "expr": "histogram_quantile(0.99, sum by (le, instance) (rate(keel_follower_inflight_messages_bucket[5m])))", "legendFormat": "p99, {{instance}}", "refId": "A"}],
+      "title": "Follower in-flight window",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "PROM"},
+      "description": "Real election campaigns started by each node. Pre-vote attempts are intentionally excluded; spikes correspond to availability events.",
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 16, "y": 44},
+      "id": 17,
+      "targets": [{"datasource": {"type": "prometheus", "uid": "PROM"}, "expr": "increase(keel_elections_total[5m])", "legendFormat": "elections, {{instance}}", "refId": "A"}],
+      "title": "Elections",
+      "type": "timeseries"
     }
   ],
   "refresh": "5s",

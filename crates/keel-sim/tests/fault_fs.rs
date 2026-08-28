@@ -115,6 +115,21 @@ fn a_barrier_sync_does_not_survive_a_crash() {
 }
 
 #[test]
+fn an_acknowledged_but_lost_fsync_is_exposed_by_the_next_crash() {
+    let fs = FaultFs::new();
+    write(&fs, "a.bin", 0, b"firmware-lied");
+    link(&fs);
+    fs.lose_next_sync();
+    sync(&fs, "a.bin");
+    assert_eq!(read(&fs, "a.bin", 0, 13), b"firmware-lied");
+
+    fs.crash();
+
+    assert_eq!(read(&fs, "a.bin", 0, 13), b"");
+    assert_eq!(fs.fault_stats().syncs_lost, 1);
+}
+
+#[test]
 fn a_directory_entry_is_not_durable_until_its_directory_is_synced() {
     let fs = FaultFs::new();
     write(&fs, "orphan.bin", 0, b"bytes");

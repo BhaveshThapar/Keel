@@ -138,6 +138,9 @@ pub struct FaultStats {
     /// it syncs a new segment before the directory entry naming it is durable,
     /// so a crash that loses the allocation loses the whole file.
     pub allocations_a_crash_took_back: u64,
+    /// Durable sync calls that reported success while deliberately persisting
+    /// nothing. This is the device/firmware failure arm of TR-5.
+    pub syncs_lost: u64,
 }
 
 /// What a crash did to one staged write, once the sector decisions are in.
@@ -203,6 +206,7 @@ struct Disk {
     /// unreachable rather than merely unlikely.
     rng: Rng,
     stats: FaultStats,
+    lose_next_sync: bool,
 }
 
 impl Default for Disk {
@@ -215,6 +219,7 @@ impl Default for Disk {
             // at all.
             rng: Rng::new(0),
             stats: FaultStats::default(),
+            lose_next_sync: false,
         }
     }
 }
@@ -316,6 +321,13 @@ impl FaultFs {
         self.disk.borrow().stats
     }
 
+    /// Make the next durable file sync acknowledge success without making its
+    /// pending writes durable. One-shot so a test identifies the exact barrier
+    /// whose promise was broken.
+    pub fn lose_next_sync(&self) {
+        self.disk.borrow_mut().lose_next_sync = true;
+    }
+
     /// Power loss.
     ///
     /// Every write no durable sync had covered is gone, and so is every
@@ -337,6 +349,7 @@ impl FaultFs {
             tear,
             rng,
             stats,
+            ..
         } = &mut *disk;
         stats.crashes += 1;
         let mut in_flight = 0u64;
@@ -674,8 +687,16 @@ impl File for FaultFile {
         // with no cross-file reordering it retires nothing — the same as `None`.
         // Saying so here is the honest version of ADR-013: the two differ in
         // what they promise, and only one of them is a durability primitive.
-        if mode != SyncMode::Durable {
+        if !mode.is_durable() {
             return self.with(|_| Ok(()));
+        }
+        {
+            let mut disk = self.disk.borrow_mut();
+            if disk.lose_next_sync {
+                disk.lose_next_sync = false;
+                disk.stats.syncs_lost = disk.stats.syncs_lost.saturating_add(1);
+                return Ok(());
+            }
         }
         self.with(|img| {
             // Everything staged on this file becomes durable, and nothing on any

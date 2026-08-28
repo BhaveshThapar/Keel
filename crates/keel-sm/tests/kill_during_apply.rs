@@ -83,7 +83,7 @@ fn run_child_if_requested() {
     };
 
     let stdout = std::io::stdout();
-    for index in (sm.applied() + 1).. {
+    for index in (sm.applied() + 1)..=u64::MAX {
         sm.apply(index, &increment(index, client))
             .expect("child: apply");
         // The engine spawns no threads here, so flushes and compactions only

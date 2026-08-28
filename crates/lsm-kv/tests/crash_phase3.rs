@@ -31,7 +31,7 @@ fn run_child_if_requested() {
     let dir = std::env::var(DIR_ENV).expect("child needs target dir");
     let db = Db::open_with(&dir, opts()).expect("child: open");
     let stdout = std::io::stdout();
-    for i in 0u64.. {
+    for i in 0u64..=u64::MAX {
         let key = format!("key{i:08}");
         let value = format!("value-for-{i}-padded-padded-padded");
         db.put(key.as_bytes(), value.as_bytes())

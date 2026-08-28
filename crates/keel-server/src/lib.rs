@@ -31,8 +31,8 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 
-pub use clients::Clients;
-pub use metrics::{Kind, Metric};
+pub use clients::{ClientProgress, Clients};
+pub use metrics::{Histogram, Kind, Metric};
 pub use node::{Busy, NodeConfig, Server};
 pub use status::{Status, sync_mode_name};
 
@@ -146,6 +146,9 @@ pub fn respond(code: u16, content_type: &str, body: &str) -> String {
 pub trait Observable {
     fn status(&self) -> Status;
     fn metrics(&self) -> Vec<Metric>;
+    fn histograms(&self) -> Vec<Histogram> {
+        Vec::new()
+    }
 }
 
 /// Serve one connection: read the request line, answer, close.
@@ -163,7 +166,7 @@ pub fn serve_one(stream: &mut TcpStream, node: &impl Observable) -> Result<Reque
             200,
             // The version matters: a scraper uses it to decide how to parse.
             "text/plain; version=0.0.4; charset=utf-8",
-            &metrics::render(&node.metrics()),
+            &metrics::render_all(&node.metrics(), &node.histograms()),
         ),
         Request::TransferLeader { .. }
         | Request::AddLearner { .. }

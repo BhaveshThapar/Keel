@@ -19,6 +19,7 @@ use keel_raft::{Index, NodeId, Role, Term};
 pub fn sync_mode_name(mode: SyncMode) -> &'static str {
     match mode {
         SyncMode::Durable => "durable",
+        SyncMode::Full => "full",
         SyncMode::Barrier => "barrier",
         SyncMode::None => "none",
     }
@@ -229,11 +230,13 @@ mod tests {
     }
 
     #[test]
-    fn every_sync_mode_has_a_name_and_only_one_is_durable() {
+    fn every_sync_mode_has_a_name_and_durable_modes_are_identified() {
         assert_eq!(sync_mode_name(SyncMode::Durable), "durable");
+        assert_eq!(sync_mode_name(SyncMode::Full), "full");
         assert_eq!(sync_mode_name(SyncMode::Barrier), "barrier");
         assert_eq!(sync_mode_name(SyncMode::None), "none");
         assert!(SyncMode::Durable.is_durable());
+        assert!(SyncMode::Full.is_durable());
         assert!(!SyncMode::Barrier.is_durable());
         assert!(!SyncMode::None.is_durable());
     }

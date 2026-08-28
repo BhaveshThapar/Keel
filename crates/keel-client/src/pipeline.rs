@@ -220,16 +220,21 @@ impl Pipeline {
     /// Send a linearizable query. A read carries no sequence number, so it
     /// occupies a slot but does not consume one.
     pub fn submit_query(&mut self, query: Query) -> Result<RequestId, PipelineError> {
+        self.submit_query_with_consistency(query, keel_api::Consistency::Linearizable)
+    }
+
+    pub fn submit_query_with_consistency(
+        &mut self,
+        query: Query,
+        consistency: keel_api::Consistency,
+    ) -> Result<RequestId, PipelineError> {
         let slot = self
             .sessions
             .iter()
             .position(|s| !s.busy && s.client.is_some())
             .ok_or(PipelineError::Full(self.sessions.len()))?;
         self.sessions[slot].busy = true;
-        let request = Request::Query {
-            consistency: keel_api::Consistency::Linearizable,
-            query,
-        };
+        let request = Request::Query { consistency, query };
         let op = op_of(&request);
         Ok(self.dispatch(slot, request, false, op))
     }

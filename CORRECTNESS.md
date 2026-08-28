@@ -138,7 +138,8 @@ node answered and when.
 | A roll never falls off the end of the weight table, whatever the weights | `every_roll_selects_an_action_whatever_the_weights_are` | enforced |
 | A lease read is safe only inside its clock assumption, and unsafe outside it | `leases_are_only_safe_inside_their_clock_assumption`; `scripts/negative-demos/lease-drift.sh` — control clean, experiment dirty on the same seeds | enforced |
 | Pre-vote stops a partitioned node burning terms nobody can hear | `pre_vote_stops_a_partitioned_node_from_burning_terms`; `scripts/negative-demos/pre-vote.sh` — a margin, because what pre-vote costs is availability rather than safety | enforced |
-| A client's read observed under a real cluster's faults | `scripts/porcupine.sh` — see [Checked by somebody else's checker](#checked-by-somebody-elses-checker) | enforced |
+| A client's ReadIndex and lease read observed under real-cluster faults | `scripts/porcupine.sh ... read-index` and `scripts/porcupine.sh ... lease` — see [Checked by somebody else's checker](#checked-by-somebody-elses-checker) | enforced |
+| The simulator records deterministic client invocations and completions | `simulation::the_random_client_workload_records_a_deterministic_history` | enforced |
 
 ## Membership, under the fault schedule
 
@@ -217,15 +218,17 @@ number: a gate added afterwards is a gate that has already been bypassed once.
 
 ## Parsers, against bytes they did not write
 
-Six targets, one per place a byte string arrives from somewhere this process
-does not control. The contract each is held to is that it does not panic:
+Seven targets cover every place a byte string arrives from somewhere this
+process does not control plus arbitrary core-event sequences. The contract each
+is held to is that it does not panic:
 returning an error is correct, refusing to decode is correct, and producing
 nonsense from nonsense is correct — but every one of these is reached from a
 network or a disk, so a panic is a node a stranger can stop with one bad byte.
 
 | Property | Enforced by | Status |
 |---|---|---|
-| Six targets compile and survive a smoke run | `every_target_survives_a_smoke_run` | enforced |
+| Seven targets compile and survive a smoke run | `every_target_survives_a_smoke_run` | enforced |
+| Message decoding and arbitrary core-event sequences survive libFuzzer under ASan | `scripts/fuzz-asan.sh`; recorded execution counts in `results/fuzz/asan.txt` | release gate |
 | …over inputs that have structure, rather than noise no parser gets past | the same test: more than a quarter of inputs must be structured | enforced |
 | A smoke run replays exactly from its seed | `a_smoke_run_is_a_pure_function_of_its_seed` | enforced |
 | A target that is written and never wired up is a failure, not an omission | `every_target_is_named_once` | enforced |
@@ -257,6 +260,7 @@ network or a disk, so a panic is a node a stranger can stop with one bad byte.
 |---|---|---|
 | A node reports over a real socket; observations stay `GET`-only and operator commands are strict `POST`s | `admin_surface::a_node_reports_itself_over_a_real_socket`; `tests::status_and_metrics_remain_get_only`; `tests::every_operator_command_is_parsed_strictly` | enforced |
 | `/metrics` parses as Prometheus text exposition | `admin_surface::a_node_reports_itself_over_a_real_socket` parses it the way a scraper does; `metrics::tests::the_output_parses_as_exposition` | enforced |
+| Commit, persist, fsync and apply latency, Ready batch size, follower in-flight depth and elections are exported | `admin_surface::a_node_reports_itself_over_a_real_socket`; `metrics::tests::a_histogram_has_cumulative_buckets_and_inf_sum_and_count`; Grafana panels 13–17 | enforced |
 | A node that is not power-loss durable says so | `admin_surface::a_node_that_is_not_durable_says_so` — in `/status` and as a metric | enforced |
 | The status is well-formed JSON whatever an operating system put in a failure message | `status::tests::a_failure_message_with_quotes_and_newlines_is_escaped` | enforced |
 | The ready file is whole or absent, never half-written | `admin_surface::the_ready_file_is_written_whole_or_not_at_all` | enforced |
@@ -483,8 +487,6 @@ Named here so the gaps are visible rather than discovered:
   `EIO` on `sync` or `read` are not modelled. A node that cannot fsync must halt,
   and the server does halt on the storage error; the missing half is injecting
   those errors under the seeded schedule.
-- **fsync loss.** A `Durable` sync that reports success and does not stick.
-  Modelled by nothing, and the other half of TR-5.
 - **The state machine's own store under the disk fault model.** The simulator
   drives the real state machine, and its store is `MemStore` — memory, which a
   simulated crash takes, so every restart replays the whole log into a fresh
@@ -493,10 +495,3 @@ Named here so the gaps are visible rather than discovered:
   unsynced writes of its own. Putting the engine over `FaultFs` is now possible
   — the upstream filesystem seam and `Db::open_manual` exist for exactly this —
   and it is not done.
-- Exactly-once sessions across a *failover*. The session table survives a
-  restart and deduplicates retries, both tested, and a client now keeps working
-  across a leader being killed. What is untested is a *retry storm* crossing that
-  change — a client whose answers are lost repeatedly while leadership moves,
-  which is what the external linearizability checkers exercise. The narrower
-  missing test is an aimed storm that repeatedly loses this one client's answer
-  while leadership changes.
