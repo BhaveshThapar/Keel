@@ -302,11 +302,12 @@ hardware and no commit behind it. Both run in CI.
   ([`results/chaos/clock-jump.txt`](results/chaos/clock-jump.txt), with both
   machines named in its header), and every schedule drawn on macOS says out loud
   that it contains no clock jumps.
-- **Linearizability is checked outside the simulator, not inside it.** Porcupine
-  and Knossos check histories from real clusters — the last run was 50,344
-  operations from eight clients, each with eight requests in flight, every key
-  linearizable. The simulator itself still checks only Raft's internal safety
-  properties; it has no client and records no history.
+- **Simulator histories are deterministic, not an in-process linearizability
+  proof.** The simulator records deterministic client invocations and
+  completions while checking Raft safety properties after every event.
+  Porcupine and Knossos remain the independent linearizability checkers for
+  real-cluster histories — the last run was 50,344 operations from eight
+  clients, each with eight requests in flight, every key linearizable.
 - **The linearizability control runs on a shorter history than the experiment.**
   Refuting costs what accepting does not: to accept, the checker finds one
   linearization and stops; to refute, it must exhaust the space. On the full
