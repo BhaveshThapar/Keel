@@ -1,13 +1,11 @@
 //! Wiring: one node's worth of consensus, storage, network and admin surface,
 //! driven by one loop on one thread.
 //!
-//! One thread on purpose. The consensus core is a pure function of its inputs,
-//! the log owns no thread, the storage engine spawns none under
-//! `Maintenance::Manual`, and the admin surface is polled rather than served —
-//! so the whole node is a sequence of turns, and a turn is the same sequence of
-//! events the simulator drives. That is what makes a bug found in a seed
-//! reproducible here, and it is worth more than the throughput a second thread
-//! would buy.
+//! The consensus core is a pure function of its inputs, the log owns no thread,
+//! and the admin surface is polled rather than served. Storage maintenance is
+//! the exception: it runs in engine workers so an SSTable merge never blocks a
+//! consensus turn. The simulator retains manual maintenance for deterministic
+//! replay.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -145,6 +143,7 @@ impl Server {
                     SyncMode::Barrier => lsm_kv::SyncMode::Barrier,
                     SyncMode::None => lsm_kv::SyncMode::None,
                 },
+                maintenance: lsm_kv::Maintenance::Threads,
                 ..LsmStore::default_options()
             },
         )
@@ -292,9 +291,6 @@ impl Server {
         self.was_leader = is_leader;
         self.clients.expire();
 
-        // The engine spawns no threads here, so its deferred work happens on
-        // this turn or not at all. One unit, so a merge cannot stall the timer.
-        let _ = self.node.state_machine().store().maintain();
         busy |= self.maybe_checkpoint()?;
         busy |= self.retry_snapshot_request()?;
         busy |= self.expire_snapshot_senders();
