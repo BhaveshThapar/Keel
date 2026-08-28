@@ -1,0 +1,15 @@
+Keel write-path CPU flame graph
+host:   AMD EPYC-Rome Processor, 4 cores, 23 GiB, Linux 5.14.0-687.39.1.el9_8.x86_64, x86_64
+commit: bcf3e08
+date:   2026-08-28T13:03:24Z
+shape: single durable node, 12,000 offered writes/s, 64 clients x depth 32, 20 s
+tool:  flamegraph 0.6.14 over perf version 5.14.0-687.42.1.el9_8.x86_64
+
+mix writes (100% update)
+shape open-loop, 12000 ops/s offered, 64 senders, depth 32
+value 128 B, key space 1000000
+acknowledged 194816 of 194816 attempted in 20.2s -> 9636 ops/s
+latency ms  p50 1384.120  p90 3556.770  p99 3909.091  p999 3976.200  max 4006.716
+late 219171
+** the load generator could not offer this rate; the throughput above is a statement about the harness **
+PASS profile captured with zero server failure

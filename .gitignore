@@ -2,6 +2,7 @@ target/
 tools/maelstrom/
 store/
 *.profraw
+perf.data
 .DS_Store
 target-linux/
 fuzz/target/
