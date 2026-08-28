@@ -630,6 +630,18 @@ impl<F: Fs> Drop for Snapshot<F> {
     }
 }
 
+impl<F: Fs> Snapshot<F> {
+    /// Read a bounded page from this immutable point-in-time view.
+    pub fn scan(
+        &self,
+        start: Option<&[u8]>,
+        end: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        self.inner.scan_at(start, end, limit, self.horizon)
+    }
+}
+
 impl<F: Fs> DbInner<F> {
     /// Latch the first failure and return the error every later call will see.
     ///
