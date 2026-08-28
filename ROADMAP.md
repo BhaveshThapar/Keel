@@ -8,7 +8,7 @@ PRD and does not change. This file is the ordering, the constraints that made
 one phase depend on another, and the decisions each phase was waiting on.
 
 **All thirty-one phases are done; `v1.0.0`, `v2.0.0`, `v3.0.0`, and the
-`v3.1.0` closure release are tagged.**
+`v3.1.0` closure release and the `v3.1.1` snapshot-correctness follow-up are tagged.**
 This file is kept
 as the record of what was sequenced and why, because the reasoning about
 *ordering* is the part that does not survive in a commit log — which phase had to
@@ -169,7 +169,7 @@ bypassed once.
 
 | # | Phase | Exit criterion |
 |---|---|---|
-| ~~P31~~ | ~~PRD closure and `v3.1.0`~~ | **Done.** Exact retry-storm failover and five-node membership-under-load tests; simulated acknowledged-fsync loss; deterministic in-sim client history; complete Prometheus histograms, elections and structured tracing; background checkpoint digesting so checkpoint publication does not scan 1 GiB on the node loop; ReadIndex/lease Porcupine arms; ASan libFuzzer campaigns; availability timeline; 3/5-node, 128 B/1 KiB, open/closed-loop matrix; all four PR-3 ablations; fair Linux etcd baseline; and write-path flame graph. The release checklist is the stop condition. |
+| ~~P31~~ | ~~PRD closure and `v3.1.0`~~ | **Done.** Exact retry-storm failover and five-node membership-under-load tests; simulated acknowledged-fsync loss; deterministic in-sim client history; complete Prometheus histograms, elections and structured tracing; background checkpoint materialization from a pinned state so the node loop does not flush a 1 GiB live database; ReadIndex/lease Porcupine arms; ASan libFuzzer campaigns; availability timeline; 3/5-node, 128 B/1 KiB, open/closed-loop matrix; all four PR-3 ablations; fair Linux etcd baseline; and write-path flame graph. The release checklist is the stop condition. |
 
 ### The Reference allocation decision
 
