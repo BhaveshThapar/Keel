@@ -184,7 +184,27 @@ impl RaftLog {
             };
         }
 
-        let last_new = prev_index + entries.len() as Index;
+        // A peer message is untrusted input. An AppendEntries sequence must
+        // start immediately after `prev_index` and advance one index at a
+        // time; accepting a gap would corrupt the VecDeque-backed log (and
+        // used to trip the assertion below on hostile traffic).
+        let mut expected = prev_index;
+        for entry in &entries {
+            let Some(next) = expected.checked_add(1) else {
+                return AppendOutcome::Conflict {
+                    conflict_index: self.last_index().saturating_add(1),
+                    conflict_term: None,
+                };
+            };
+            if entry.index != next {
+                return AppendOutcome::Conflict {
+                    conflict_index: self.last_index().saturating_add(1),
+                    conflict_term: None,
+                };
+            }
+            expected = next;
+        }
+        let last_new = expected;
         for entry in entries {
             match self.term(entry.index) {
                 // Already have this exact entry; leave it alone rather than
@@ -438,6 +458,25 @@ mod tests {
             before,
             "an idempotent append must not make the host rewrite anything"
         );
+    }
+
+    #[test]
+    fn malformed_append_with_a_gap_is_rejected_without_mutating_the_log() {
+        let mut log = RaftLog::new();
+
+        // This was found by the hostile-peer fuzz target. `prev_index = 0`
+        // means the first entry must be index 1, never index 49.
+        let outcome = log.try_append(0, 0, vec![e(1, 49)]);
+
+        assert_eq!(
+            outcome,
+            AppendOutcome::Conflict {
+                conflict_index: 1,
+                conflict_term: None,
+            }
+        );
+        assert!(log.is_empty());
+        assert_eq!(log.last_index(), 0);
     }
 
     #[test]
