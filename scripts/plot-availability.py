@@ -27,7 +27,7 @@ x = lambda t: left + t / max_t * plot_w
 y = lambda rate: top + plot_h - rate / max_rate * plot_h
 points = " ".join(f"{x(t):.2f},{y(rate):.2f}" for t, rate in rates)
 
-head = provenance.read_text(encoding="utf-8").splitlines()[:3]
+head = provenance.read_text(encoding="utf-8").splitlines()[:4]
 out = [*head, "", f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="monospace" font-size="11">']
 out += [
     f'<rect width="{width}" height="{height}" fill="#fff"/>',

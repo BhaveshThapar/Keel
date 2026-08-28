@@ -8,6 +8,8 @@ RUNS="${KEEL_FUZZ_RUNS:-100000}"
 TIME="${KEEL_FUZZ_TIME:-60}"
 OUT="${KEEL_FUZZ_OUT:-results/fuzz/asan.txt}"
 mkdir -p "$(dirname "$OUT")"
+source scripts/lib/provenance.sh
+provenance_of "$OUT"
 
 if ! cargo fuzz --help >/dev/null 2>&1; then
     echo "cargo-fuzz is required: cargo install cargo-fuzz" >&2
@@ -20,6 +22,7 @@ fi
 
 {
     echo "Keel libFuzzer + ASan release campaigns"
+    provenance_header
     echo "rustc: $(rustup run nightly rustc --version)"
     echo "cargo-fuzz: $(cargo fuzz --version)"
     echo "runs per target: $RUNS"
