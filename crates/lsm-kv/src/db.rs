@@ -642,6 +642,40 @@ impl<F: Fs> Snapshot<F> {
     }
 }
 
+impl Snapshot<StdFs> {
+    /// Materialize this immutable view into an independent database without
+    /// observing writes made after the snapshot was taken.
+    pub fn materialize_to(&self, dir: impl AsRef<Path>) -> Result<()> {
+        let target = Db::open_with(
+            dir,
+            Options {
+                maintenance: Maintenance::Manual,
+                ..Options::default()
+            },
+        )?;
+        let mut after: Option<Vec<u8>> = None;
+        loop {
+            let mut page = self.scan(after.as_deref(), None, 1025)?;
+            if let Some(last) = &after {
+                page.retain(|(key, _)| key != last);
+            }
+            if page.is_empty() {
+                break;
+            }
+            let mut batch = WriteBatch::new();
+            for (key, value) in &page {
+                batch.put(key, value);
+            }
+            target.write_batch(&batch)?;
+            after = page.last().map(|(key, _)| key.clone());
+            if page.len() < 1025 {
+                break;
+            }
+        }
+        target.flush_only()
+    }
+}
+
 impl<F: Fs> DbInner<F> {
     /// Latch the first failure and return the error every later call will see.
     ///

@@ -99,6 +99,11 @@ impl LsmStore {
         self.db()?.checkpoint(dir).map_err(store_err)
     }
 
+    /// Pin the exact state visible now for asynchronous checkpoint materialization.
+    pub fn snapshot(&self) -> Result<lsm_kv::Snapshot<StdFs>, StateMachineError> {
+        Ok(self.db()?.snapshot())
+    }
+
     /// `Err` once the engine has latched a failure. A node that sees this must
     /// step down: it can no longer make an entry durable.
     pub fn health(&self) -> Result<(), StateMachineError> {
