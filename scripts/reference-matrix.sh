@@ -20,15 +20,29 @@ fi
 
 cargo build --release -p keel-bench -p keel-server
 
+retry() {
+    local label="$1"
+    shift
+    for attempt in 1 2 3; do
+        if "$@"; then
+            return 0
+        fi
+        echo "${label}: attempt ${attempt} failed; retrying with a fresh cluster" >&2
+        sleep 2
+    done
+    echo "${label}: failed three fresh-cluster attempts" >&2
+    return 1
+}
+
 for nodes in 3 5; do
     for value in 128 1024; do
         for mix in a b c writes; do
-            scripts/campaign.sh \
+            retry "campaign ${mix}/${value}B/${nodes}n" scripts/campaign.sh \
                 "$mix" "$RATES" "$SECS" "$CLIENTS" "$DEPTH" \
                 "$value" "$KEYS" "$nodes"
             work="$(mktemp -d "$TMPDIR/keel-closed-XXXXXX")"
             trap 'rm -rf "$work"' EXIT
-            target/release/keel-bench closed \
+            retry "closed ${mix}/${value}B/${nodes}n" target/release/keel-bench closed \
                 --mix "$mix" --clients "$CLIENTS" --depth 1 \
                 --secs "$SECS" --value-bytes "$value" --keys "$KEYS" \
                 --runs 3 --cluster-nodes "$nodes" --dir "$work" \
