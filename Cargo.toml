@@ -3,26 +3,26 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "3.1.2"
+version = "3.1.3"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/BhaveshThapar/Keel"
 rust-version = "1.85"
 
 [workspace.dependencies]
-keel-api = { path = "crates/keel-api", version = "3.1.2" }
-keel-raft = { path = "crates/keel-raft", version = "3.1.2" }
-keel-log = { path = "crates/keel-log", version = "3.1.2" }
-keel-sm = { path = "crates/keel-sm", version = "3.1.2" }
-keel-net = { path = "crates/keel-net", version = "3.1.2" }
-keel-node = { path = "crates/keel-node", version = "3.1.2" }
-keel-server = { path = "crates/keel-server", version = "3.1.2" }
-keel-rand = { path = "crates/keel-rand", version = "3.1.2" }
-keel-bench = { path = "crates/keel-bench", version = "3.1.2" }
-keel-chaos = { path = "crates/keel-chaos", version = "3.1.2" }
-keel-fuzz = { path = "crates/keel-fuzz", version = "3.1.2" }
-keel-client = { path = "crates/keel-client", version = "3.1.2" }
-keel-maelstrom = { path = "crates/keel-maelstrom", version = "3.1.2" }
+keel-api = { path = "crates/keel-api", version = "3.1.3" }
+keel-raft = { path = "crates/keel-raft", version = "3.1.3" }
+keel-log = { path = "crates/keel-log", version = "3.1.3" }
+keel-sm = { path = "crates/keel-sm", version = "3.1.3" }
+keel-net = { path = "crates/keel-net", version = "3.1.3" }
+keel-node = { path = "crates/keel-node", version = "3.1.3" }
+keel-server = { path = "crates/keel-server", version = "3.1.3" }
+keel-rand = { path = "crates/keel-rand", version = "3.1.3" }
+keel-bench = { path = "crates/keel-bench", version = "3.1.3" }
+keel-chaos = { path = "crates/keel-chaos", version = "3.1.3" }
+keel-fuzz = { path = "crates/keel-fuzz", version = "3.1.3" }
+keel-client = { path = "crates/keel-client", version = "3.1.3" }
+keel-maelstrom = { path = "crates/keel-maelstrom", version = "3.1.3" }
 # The vendored engine keeps upstream's own version, because it is upstream's
 # crate. Keel's version says what Keel is; it does not get to renumber somebody
 # else's release.

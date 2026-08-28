@@ -1375,6 +1375,15 @@ fn snapshot_campaign(args: SnapshotArgs) -> ExitCode {
             transfer_ms[run],
             snapshot_sizes[run]
         );
+        // A one-gigabyte trial leaves replicated logs plus checkpoints on all
+        // three nodes.  Retaining every successful trial until the median is
+        // computed can exhaust a benchmark device before the final run starts.
+        // The samples above are the only data needed for that median.
+        drop(cluster);
+        if std::fs::remove_dir_all(&run_dir).is_err() {
+            eprintln!("could not clean completed snapshot run {run}");
+            return ExitCode::FAILURE;
+        }
     }
 
     let create = median(&mut creation_ms);
