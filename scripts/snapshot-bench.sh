@@ -18,13 +18,21 @@ cargo build --release -p keel-bench -p keel-server >&2 || exit 1
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/keel-snapshot-bench-XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
-"$(pwd)/target/release/keel-bench" snapshot \
-    --state-bytes "$STATE_BYTES" \
-    --value-bytes "$VALUE_BYTES" \
-    --depth 32 \
-    --runs "$RUNS" \
-    --dir "$WORK" \
-    --server-bin "$(pwd)/target/release/keel-server" \
-    --sync durable \
-    --tier "$TIER" \
-    --out snapshot.txt
+for attempt in 1 2 3; do
+    if "$(pwd)/target/release/keel-bench" snapshot \
+        --state-bytes "$STATE_BYTES" \
+        --value-bytes "$VALUE_BYTES" \
+        --depth 32 \
+        --runs "$RUNS" \
+        --dir "$WORK" \
+        --server-bin "$(pwd)/target/release/keel-server" \
+        --sync durable \
+        --tier "$TIER" \
+        --out snapshot.txt; then
+        exit 0
+    fi
+    echo "snapshot campaign attempt $attempt failed; retrying with fresh clusters" >&2
+done
+
+echo "snapshot campaign failed three fresh-cluster attempts" >&2
+exit 1
