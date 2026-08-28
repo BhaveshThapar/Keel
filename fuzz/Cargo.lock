@@ -160,7 +160,7 @@ dependencies = [
 
 [[package]]
 name = "keel-api"
-version = "3.1.5"
+version = "3.1.6"
 dependencies = [
  "bytes",
  "keel-raft",
@@ -171,7 +171,7 @@ dependencies = [
 
 [[package]]
 name = "keel-fuzz"
-version = "3.1.5"
+version = "3.1.6"
 dependencies = [
  "bytes",
  "keel-api",
@@ -193,7 +193,7 @@ dependencies = [
 
 [[package]]
 name = "keel-log"
-version = "3.1.5"
+version = "3.1.6"
 dependencies = [
  "crc32c",
  "keel-raft",
@@ -205,14 +205,14 @@ dependencies = [
 
 [[package]]
 name = "keel-net"
-version = "3.1.5"
+version = "3.1.6"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "keel-raft"
-version = "3.1.5"
+version = "3.1.6"
 dependencies = [
  "bytes",
  "serde",
@@ -221,11 +221,11 @@ dependencies = [
 
 [[package]]
 name = "keel-rand"
-version = "3.1.5"
+version = "3.1.6"
 
 [[package]]
 name = "keel-sm"
-version = "3.1.5"
+version = "3.1.6"
 dependencies = [
  "bytes",
  "crc32c",
