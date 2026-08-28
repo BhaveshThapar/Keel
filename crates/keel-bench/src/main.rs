@@ -1271,6 +1271,7 @@ fn snapshot_campaign(args: SnapshotArgs) -> ExitCode {
     let value_len = args.value_bytes.clamp(16, 8 << 20);
     let values = args.state_bytes.div_ceil(value_len).max(1);
     let mut creation_ms = Vec::new();
+    let mut write_stall_ms = Vec::new();
     let mut transfer_ms = Vec::new();
     let mut snapshot_sizes = Vec::new();
 
@@ -1318,6 +1319,11 @@ fn snapshot_campaign(args: SnapshotArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
 
+        let mut probe = Client::new(&addrs, 9_000_000 + run as u64);
+        if probe.register().is_err() {
+            eprintln!("run {run}: could not register checkpoint probe");
+            return ExitCode::FAILURE;
+        }
         let checkpoint_started = Instant::now();
         let Some(leader) = wait_for_value(Duration::from_secs(30), || {
             let leader = leader_index(&cluster.admin_addrs)?;
@@ -1328,6 +1334,12 @@ fn snapshot_campaign(args: SnapshotArgs) -> ExitCode {
             eprintln!("run {run}: no leader accepted the checkpoint");
             return ExitCode::FAILURE;
         };
+        let write_started = Instant::now();
+        if probe.put(b"checkpoint-stall-probe", b"ok").is_err() {
+            eprintln!("run {run}: write probe failed during checkpoint");
+            return ExitCode::FAILURE;
+        }
+        write_stall_ms.push(write_started.elapsed().as_millis() as u64);
         let leader_root = run_dir.join(format!("n{leader}/snapshots"));
         let Some(leader_checkpoint) = wait_for_value(Duration::from_secs(600), || {
             published_checkpoint(&leader_root)
@@ -1366,6 +1378,11 @@ fn snapshot_campaign(args: SnapshotArgs) -> ExitCode {
     }
 
     let create = median(&mut creation_ms);
+    let write_stall = median(&mut write_stall_ms);
+    if write_stall > 50 {
+        eprintln!("snapshot write stall {write_stall} ms exceeds the 50 ms acceptance limit");
+        return ExitCode::FAILURE;
+    }
     let transfer = median(&mut transfer_ms);
     let size = median(&mut snapshot_sizes);
     let mib_per_second = if transfer == 0 {
@@ -1376,7 +1393,7 @@ fn snapshot_campaign(args: SnapshotArgs) -> ExitCode {
     let body = format!(
         "requested state  {} bytes\nvalue            {} bytes\nvalues           {}\n\
          nodes            3\nsync             {}\nruns             {}, median reported\n\n\
-         checkpoint       {} ms\ncheckpoint bytes {}\ntransfer         {} ms\ntransfer rate    {:.2} MiB/s\n\n\
+         checkpoint       {} ms\nwrite stall      {} ms\ncheckpoint bytes {}\ntransfer         {} ms\ntransfer rate    {:.2} MiB/s\n\n\
          The transfer clock starts immediately before the compacted follower is\n\
          restarted and stops only after that real process publishes the received\n\
          checkpoint. The receiver uses the same resumable TCP path as production.\n",
@@ -1386,6 +1403,7 @@ fn snapshot_campaign(args: SnapshotArgs) -> ExitCode {
         args.sync,
         args.runs,
         create,
+        write_stall,
         size,
         transfer,
         mib_per_second,
