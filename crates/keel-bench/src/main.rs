@@ -1314,8 +1314,8 @@ fn snapshot_campaign(args: SnapshotArgs) -> ExitCode {
             .filter(|(index, _)| *index != laggard)
             .map(|(_, addr)| *addr)
             .collect();
-        if fill_state(&addrs, run as u64 + 1, values, value_len, args.depth).is_err() {
-            eprintln!("run {run}: the state could not be filled");
+        if let Err(error) = fill_state(&addrs, run as u64 + 1, values, value_len, args.depth) {
+            eprintln!("run {run}: state fill failed: {error}");
             return ExitCode::FAILURE;
         }
 
@@ -1335,8 +1335,8 @@ fn snapshot_campaign(args: SnapshotArgs) -> ExitCode {
             return ExitCode::FAILURE;
         };
         let write_started = Instant::now();
-        if probe.put(b"checkpoint-stall-probe", b"ok").is_err() {
-            eprintln!("run {run}: write probe failed during checkpoint");
+        if let Err(error) = probe.put(b"checkpoint-stall-probe", b"ok") {
+            eprintln!("run {run}: write probe failed during checkpoint: {error}");
             return ExitCode::FAILURE;
         }
         write_stall_ms.push(write_started.elapsed().as_millis() as u64);

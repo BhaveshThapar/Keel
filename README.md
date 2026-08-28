@@ -3,7 +3,7 @@
 A Raft-replicated key-value store in Rust, built on an LSM storage engine, and
 verified by a deterministic simulator that replays any failure from a seed.
 
-> **Status: v3.1.1.** A three-node cluster of real processes serves traffic and
+> **Status: v3.1.2.** A three-node cluster of real processes serves traffic and
 > survives being partitioned, paused, killed a thousand times and clock-jumped —
 > with the histories it produced checked by Porcupine and by Knossos, and by
 > control arms that prove those checkers reject a corrupted one. Performance
