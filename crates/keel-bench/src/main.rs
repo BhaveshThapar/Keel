@@ -1307,6 +1307,18 @@ fn snapshot_campaign(args: SnapshotArgs) -> ExitCode {
             eprintln!("run {run}: could not stop lagging follower");
             return ExitCode::FAILURE;
         }
+        // The killed node may have had a live connection through the proxy
+        // mesh.  Do not charge the brief re-election/connection handoff to
+        // state-fill throughput, nor let an otherwise sound trial fail before
+        // its first request reaches the surviving quorum.
+        if wait_for_value(Duration::from_secs(30), || {
+            leader_index(&cluster.admin_addrs)
+        })
+        .is_none()
+        {
+            eprintln!("run {run}: no surviving leader after stopping laggard");
+            return ExitCode::FAILURE;
+        }
         let addrs: Vec<SocketAddr> = cluster
             .client_addrs
             .iter()
