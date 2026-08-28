@@ -734,22 +734,26 @@ impl Server {
         let Some(meta) = self.node.checkpoint_meta() else {
             return Ok(false);
         };
-        let started = Instant::now();
         let checkpoint_index = meta.index;
         let checkpoint_term = meta.term;
         let checkpoint_conf = meta.conf.clone();
-        let path = self.write_checkpoint(&meta)?;
-        self.node.checkpoint_taken(meta).map_err(node_error)?;
-        self.snapshot_progress.checkpoints += 1;
-        self.snapshot_progress.checkpoint_nanos += started.elapsed().as_nanos() as u64;
-        tracing::info!(
-            node_id = self.cfg.id,
-            index = checkpoint_index,
-            term = checkpoint_term,
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "checkpoint published"
-        );
+        let store = self.node.state_machine().store().clone();
+        let root = Self::snapshot_root(&self.cfg);
+        let path = Self::checkpoint_path(&self.cfg, &meta);
         self.checkpoint_digest = Some(std::thread::spawn(move || {
+            let pending = path.with_extension("pending");
+            std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+            if pending.exists() {
+                std::fs::remove_dir_all(&pending).map_err(|e| e.to_string())?;
+            }
+            if path.exists() {
+                std::fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
+            }
+            store.checkpoint(&pending).map_err(|e| e.to_string())?;
+            std::fs::rename(&pending, &path).map_err(|e| e.to_string())?;
+            std::fs::File::open(&root)
+                .and_then(|f| f.sync_all())
+                .map_err(|e| e.to_string())?;
             let digest = digest_at(&path).map_err(|error| error.to_string())?;
             Ok(Checkpoint {
                 meta: SnapshotMeta {
@@ -786,6 +790,10 @@ impl Server {
             index = checkpoint.meta.index,
             "checkpoint digest ready for transfer"
         );
+        self.node
+            .checkpoint_taken(checkpoint.meta.clone())
+            .map_err(node_error)?;
+        self.snapshot_progress.checkpoints += 1;
         self.checkpoint = Some(checkpoint);
         self.remove_old_checkpoints()?;
         Ok(true)

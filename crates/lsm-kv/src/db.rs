@@ -207,6 +207,17 @@ pub struct Db<F: Fs = StdFs> {
     inner: Arc<DbInner<F>>,
 }
 
+// A cloned handle shares the same inner database. It deliberately does not own
+// the maintenance workers; only the original handle joins them on drop.
+impl<F: Fs> Clone for Db<F> {
+    fn clone(&self) -> Self {
+        Self {
+            workers: None,
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
 impl Db<StdFs> {
     /// Open (creating if needed) the database rooted at `dir` with defaults.
     pub fn open(dir: impl AsRef<Path>) -> Result<Db<StdFs>> {

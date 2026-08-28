@@ -29,6 +29,17 @@ pub struct LsmStore {
     applied: Index,
 }
 
+impl Clone for LsmStore {
+    fn clone(&self) -> Self {
+        Self {
+            db: self.db.clone(),
+            dir: self.dir.clone(),
+            opts: self.opts.clone(),
+            applied: self.applied,
+        }
+    }
+}
+
 impl LsmStore {
     /// Open at `dir`, recovering the applied index from what is there.
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, StateMachineError> {
