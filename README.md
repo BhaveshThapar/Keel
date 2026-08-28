@@ -3,15 +3,15 @@
 A Raft-replicated key-value store in Rust, built on an LSM storage engine, and
 verified by a deterministic simulator that replays any failure from a seed.
 
-> **Status: v3.0.5.** A three-node cluster of real processes serves traffic and
+> **Status: v3.1.0.** A three-node cluster of real processes serves traffic and
 > survives being partitioned, paused, killed a thousand times and clock-jumped —
 > with the histories it produced checked by Porcupine and by Knossos, and by
 > control arms that prove those checkers reject a corrupted one. Performance
 > numbers exist and are **Exploratory tier**: measured on a laptop, reproducible,
 > and never headlined. What is *not* claimed is listed below and is worth reading
-> first. The last missing production phase — real-process checkpoint creation,
-> resumable snapshot transfer and install — is implemented and tested now; the
-> remaining performance gap is dedicated Linux hardware.
+> first. The full Reference suite has run on dedicated Linux hardware; its raw
+> 3/5-node curves, ablations, failover, snapshot, etcd, and profile artifacts
+> are committed under `results/`.
 
 ## What is here today
 
@@ -114,9 +114,9 @@ before requiring it to resume and publish the checkpoint.
 
 ## Measured
 
-Every number is **Exploratory tier** — an Apple M2 Pro laptop, macOS,
-`F_FULLFSYNC`, three nodes over loopback. Reproducible, and not a claim about how
-fast Keel is. Full methodology and the caveats that matter are in
+Reference-tier results now exist on an exclusive 32-core AMD EPYC 7313 Linux/XFS
+allocation. Historical exploratory laptop results below remain context only;
+the current raw reference matrix is the source of record. Full methodology and the caveats that matter are in
 [BENCH.md](BENCH.md); the raw files are in [`results/bench/`](results/bench/).
 
 | | |

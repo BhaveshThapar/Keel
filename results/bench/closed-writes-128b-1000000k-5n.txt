@@ -1,0 +1,24 @@
+host:   AMD EPYC 7313 16-Core Processor, 32 cores, 2014 GiB, Red Hat Enterprise Linux 9.8 (Plow), kernel 5.14.0-687.39.1.el9_8.x86_64, x86_64
+commit: 9bd85e3
+date:   2026-08-28T15:00:56Z
+data:   /scratch0/bthapar/keel-v31-samehost-7371407/data/keel-closed-gutMD5 on xfs
+tier:   Reference
+sync:   durable (F_FULLFSYNC or fdatasync, per platform)
+runs:   3
+
+mix          writes (100% update)
+shape        closed-loop
+consistency   ReadIndex
+value        128 B
+key space    1000000
+clients      64
+depth        1
+nodes        5
+tick         100 ms
+seconds      10 per run
+repetitions  3, median reported
+
+achieved     1677 ops/s
+acknowledged 16824 operations
+p50          35.127 ms
+p99          66.847 ms

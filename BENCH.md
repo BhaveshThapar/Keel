@@ -17,13 +17,9 @@ differences a benchmark exists to show.
 **Reference** is dedicated Linux hardware, stated in full, with nothing else
 running on it. It is the only tier a headline number may come from.
 
-**Every number this repository currently contains is Exploratory.** They were
-taken on an Apple M2 Pro laptop running macOS, with `F_FULLFSYNC` as the durable
-sync primitive, and with a browser and an editor open. That is stated in each
-file's header, repeated above the numbers in the same file, and rendered into
-the caption of every plot — because a picture travels further than the file it
-came from, and a screenshot with no caption is how a laptop measurement becomes
-a claim.
+The current reference artifacts were taken on an exclusive 32-core AMD EPYC
+7313 Linux/XFS allocation; each records its host, commit, filesystem, tier, and
+shape. Historical laptop artifacts remain Exploratory and are not headline data.
 
 The harness for the Reference tier is built and works. What is missing is the
 hardware, and that is the whole of what is missing: `scripts/campaign.sh`,

@@ -1,7 +1,7 @@
 === where the time in a write goes ===
 host:   AMD EPYC 7313 16-Core Processor, 32 cores, 2014 GiB, Linux 5.14.0-687.39.1.el9_8.x86_64, x86_64
-commit: a53a181
-date:   2026-08-28T00:07:13Z
+commit: 9bd85e3
+date:   2026-08-28T15:43:57Z
 
 nodes:       3 on one host over loopback
 senders:     24, each with 16 requests outstanding
@@ -20,24 +20,24 @@ own flush, and what is left of apply is real work — decoding, the
 session table, the store.
 
 --- durable (F_FULLFSYNC)
-  acknowledged 48166 of 48166 attempted in 12.1s -> 3970 ops/s
-  latency ms  p50 128.975  p90 164.626  p99 196.084  p999 206.569  max 205.867
+  acknowledged 49295 of 49295 attempted in 12.1s -> 4089 ops/s
+  latency ms  p50 125.829  p90 157.286  p99 161.481  p999 167.772  max 166.815
   late 0
-  48550 entries applied in 955 rounds = 50.8 per round
+  49679 entries applied in 990 rounds = 50.2 per round
   phase       total s    ms/round    us/entry
-  persist       0.529       0.554        10.9
-  send          0.010       0.011         0.2
-  apply         4.731       4.954        97.5
+  persist       0.541       0.547        10.9
+  send          0.012       0.012         0.2
+  apply         4.641       4.688        93.4
 
 --- none (writes neither ordered nor durable; NOT PUBLISHABLE)
-  acknowledged 49113 of 49113 attempted in 12.1s -> 4059 ops/s
-  latency ms  p50 117.965  p90 161.481  p99 200.278  p999 223.347  max 223.299
+  acknowledged 50367 of 50367 attempted in 12.1s -> 4162 ops/s
+  latency ms  p50 123.208  p90 154.141  p99 177.209  p999 211.812  max 211.079
   late 0
-  49497 entries applied in 974 rounds = 50.8 per round
+  50751 entries applied in 1000 rounds = 50.8 per round
   phase       total s    ms/round    us/entry
-  persist       0.402       0.413         8.1
+  persist       0.416       0.416         8.2
   send          0.011       0.011         0.2
-  apply         4.682       4.807        94.6
+  apply         4.612       4.612        90.9
 
 send is loopback. On a real network that column is where the round trip
 would appear, and it does not appear here — the same gap as "no

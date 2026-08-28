@@ -1,0 +1,46 @@
+host:   AMD EPYC 7313 16-Core Processor, 32 cores, 2014 GiB, Red Hat Enterprise Linux 9.8 (Plow), kernel 5.14.0-687.39.1.el9_8.x86_64, x86_64
+commit: 9bd85e3
+date:   2026-08-28T15:24:29Z
+data:   /scratch0/bthapar/keel-v31-samehost-7371407/data/keel-ablation-0yQqDL on xfs
+tier:   Reference
+sync:   durable (F_FULLFSYNC or fdatasync, per platform)
+runs:   3
+
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="440" viewBox="0 0 720 440" font-family="monospace" font-size="11">
+<rect width="720" height="440" fill="#ffffff"/>
+<text x="78" y="18" font-size="13" fill="#111111">Throughput versus p99 latency</text>
+<line x1="78" y1="384.00" x2="696" y2="384.00" stroke="#e4e4e4"/>
+<text x="70" y="387.50" text-anchor="end" fill="#555555">0.00</text>
+<line x1="78" y1="312.80" x2="696" y2="312.80" stroke="#e4e4e4"/>
+<text x="70" y="316.30" text-anchor="end" fill="#555555">40.00</text>
+<line x1="78" y1="241.60" x2="696" y2="241.60" stroke="#e4e4e4"/>
+<text x="70" y="245.10" text-anchor="end" fill="#555555">80.00</text>
+<line x1="78" y1="170.40" x2="696" y2="170.40" stroke="#e4e4e4"/>
+<text x="70" y="173.90" text-anchor="end" fill="#555555">120.00</text>
+<line x1="78" y1="99.20" x2="696" y2="99.20" stroke="#e4e4e4"/>
+<text x="70" y="102.70" text-anchor="end" fill="#555555">160.00</text>
+<line x1="78" y1="28.00" x2="696" y2="28.00" stroke="#e4e4e4"/>
+<text x="70" y="31.50" text-anchor="end" fill="#555555">200.00</text>
+<line x1="78.00" y1="28" x2="78.00" y2="384" stroke="#e4e4e4"/>
+<text x="78.00" y="400" text-anchor="middle" fill="#555555">0</text>
+<line x1="201.60" y1="28" x2="201.60" y2="384" stroke="#e4e4e4"/>
+<text x="201.60" y="400" text-anchor="middle" fill="#555555">4 000</text>
+<line x1="325.20" y1="28" x2="325.20" y2="384" stroke="#e4e4e4"/>
+<text x="325.20" y="400" text-anchor="middle" fill="#555555">8 000</text>
+<line x1="448.80" y1="28" x2="448.80" y2="384" stroke="#e4e4e4"/>
+<text x="448.80" y="400" text-anchor="middle" fill="#555555">12 000</text>
+<line x1="572.40" y1="28" x2="572.40" y2="384" stroke="#e4e4e4"/>
+<text x="572.40" y="400" text-anchor="middle" fill="#555555">16 000</text>
+<line x1="696.00" y1="28" x2="696.00" y2="384" stroke="#e4e4e4"/>
+<text x="696.00" y="400" text-anchor="middle" fill="#555555">20 000</text>
+<line x1="78" y1="384" x2="696" y2="384" stroke="#111111"/>
+<line x1="78" y1="28" x2="78" y2="384" stroke="#111111"/>
+<text x="387" y="418" text-anchor="middle" fill="#111111">throughput (ops/s)</text>
+<text x="14" y="206" text-anchor="middle" transform="rotate(-90 14 206)" fill="#111111">latency (ms)</text>
+<polyline fill="none" stroke="#1b6ca8" stroke-width="2" points="177.00,169.36 275.85,169.36 473.52,223.48"/>
+<circle cx="177.00" cy="169.36" r="3" fill="#1b6ca8"/>
+<circle cx="275.85" cy="169.36" r="3" fill="#1b6ca8"/>
+<circle cx="473.52" cy="223.48" r="3" fill="#1b6ca8"/>
+<text x="556" y="42" fill="#1b6ca8">3 nodes, C (100% read)</text>
+<text x="78" y="430" fill="#777777">Reference tier — AMD EPYC 7313 16-Core Processor, xfs — not a claim about how fast Keel is in general</text>
+</svg>

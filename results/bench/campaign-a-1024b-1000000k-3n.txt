@@ -1,0 +1,38 @@
+host:   AMD EPYC 7313 16-Core Processor, 32 cores, 2014 GiB, Red Hat Enterprise Linux 9.8 (Plow), kernel 5.14.0-687.39.1.el9_8.x86_64, x86_64
+commit: 9bd85e3
+date:   2026-08-28T14:31:43Z
+data:   /scratch0/bthapar/keel-v31-samehost-7371407/data/keel-campaign-lvK5Be on xfs
+tier:   Reference
+sync:   durable (F_FULLFSYNC or fdatasync, per platform)
+runs:   3
+
+mix          A (50/50 read/update)
+consistency   ReadIndex
+value        1024 B
+key space    1000000
+clients      64
+nodes        3
+tick         100 ms
+seconds      10 per run
+repetitions  3 per rate, median reported
+
+offered   achieved      acked       p50       p99      p999       max   late
+  ops/s      ops/s  /attempt        ms        ms        ms        ms
+    800        769    100.0%   250.610   417.333   417.333   416.872    915
+   1600       1590    100.0%   200.278   360.710   360.710   440.159    551
+   3200       3177    100.0%   180.355   320.864   360.710   440.123   1240
+   6400       6321    100.0%   261.095   400.556   480.248   550.184   3602
+  12800       5777     99.9%  2071.986  7214.203  9730.785  10349.155  384087  *
+  25600       5490     99.7%  3774.874  8925.479  10334.765  10656.811  768165  *
+
+*  the senders could not keep to this rate's schedule. The offered
+             *  column is a request rather than a fact on those rows, and the
+             *  achieved throughput says as much about the load generator as about
+             *  the cluster. They are printed rather than dropped because where a
+             *  harness stops keeping up is itself worth knowing.
+
+Percentiles are the upper edge of the histogram bucket a sample fell in,
+         so they are never optimistic — and so a p99 can read slightly above the
+         max, which is the one raw value in the table.
+
+curve: results/bench/campaign-a-1024b-1000000k-3n.svg

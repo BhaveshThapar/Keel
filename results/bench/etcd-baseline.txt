@@ -1,22 +1,20 @@
 === etcd baseline, and Keel measured the same way ===
-host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
-commit: c6d7208
-date:   2026-08-25T06:11:28Z
+host:   AMD EPYC 7313 16-Core Processor, 32 cores, 2014 GiB, Linux 5.14.0-687.39.1.el9_8.x86_64, x86_64
+commit: 1cf445b
+date:   2026-08-28T15:52:20Z
 
 etcd version:  v3.5.17, single node, in a container
-runtime:         docker Docker version 28.3.2, build 578ccf6
+runtime:         apptainer apptainer version 1.5.3-1.el9
+                 (this path has never been run on the machine that wrote it;
+                  see scripts/lib/container.sh)
 value bytes:   128
 clients:       8
 total ops:     20000
-tier:          Exploratory — both sides. Neither is a headline number.
+tier:          reference for both durable sides
 
-What this comparison is measuring, and what it is not:
-
-  etcd runs in a Linux container on a macOS host, so its writes cross a
-  virtual machine boundary that Keel's do not. A ratio measured across
-  that boundary is partly a measurement of the boundary. This harness
-  exists so that the same comparison on Linux hardware is one command;
-  the number below is not that comparison.
+Measurement scope:
+  Both systems ran on this Linux host. The container runtime and
+  filesystem facts above are part of the comparison provenance.
 
   The mechanism behind any difference is not a mystery: etcd stores in
   bbolt, a B+tree with a per-transaction fsync, and speaks gRPC over
@@ -26,57 +24,52 @@ What this comparison is measuring, and what it is not:
 
 --- etcd, by its own benchmark tool
 
- 0 / 20000    0.00%2026/08/25 02:11:28 INFO: [core] [Channel #1 SubChannel #2] Subchannel Connectivity change to CONNECTING
-2026/08/25 02:11:28 INFO: [core] [Channel #1 SubChannel #2] Subchannel picks a new address "127.0.0.1:2379" to connect
-2026/08/25 02:11:28 INFO: [core] [Channel #1 SubChannel #2] Subchannel Connectivity change to READY
-2026/08/25 02:11:28 INFO: [roundrobin] roundrobinPicker: Build called with info: {map[SubConn(id:2):{{Addr: "127.0.0.1:2379", ServerName: "127.0.0.1:2379", }}]}
-2026/08/25 02:11:28 INFO: [core] [Channel #1] Channel Connectivity change to READY
- 1518 / 20000    7.59% 00m02s 3096 / 20000   15.48% 00m02s 4631 / 20000   23.16% 00m01s 6210 / 20000   31.05% 00m01s 7858 / 20000   39.29% 00m01s 9500 / 20000   47.50% 00m01s 10795 / 20000   53.98% 00m01s 12397 / 20000   61.98% 14086 / 20000   70.43% 15689 / 20000   78.44% 17312 / 20000   86.56% 18889 / 20000   94.44% 20000 / 20000  100.00% 2s
+ 0 / 20000    0.00%2026/08/28 11:52:20 INFO: [core] [Channel #1 SubChannel #2] Subchannel Connectivity change to CONNECTING
+2026/08/28 11:52:20 INFO: [core] [Channel #1 SubChannel #2] Subchannel picks a new address "127.0.0.1:2379" to connect
+2026/08/28 11:52:20 INFO: [core] [Channel #1 SubChannel #2] Subchannel Connectivity change to READY
+2026/08/28 11:52:20 INFO: [roundrobin] roundrobinPicker: Build called with info: {map[SubConn(id:2):{{Addr: "127.0.0.1:2379", ServerName: "127.0.0.1:2379", }}]}
+2026/08/28 11:52:20 INFO: [core] [Channel #1] Channel Connectivity change to READY
+ 1939 / 20000    9.70% 00m01s 4018 / 20000   20.09% 00m01s 6113 / 20000   30.57% 00m01s 8193 / 20000   40.97% 00m01s 10360 / 20000   51.80% 12570 / 20000   62.85% 14813 / 20000   74.06% 17012 / 20000   85.06% 19184 / 20000   95.92% 20000 / 20000  100.00% 1s
 Summary:
-  Total:	2.5453 secs.
-  Slowest:	0.0068 secs.
+  Total:	1.8795 secs.
+  Slowest:	0.0052 secs.
   Fastest:	0.0004 secs.
-  Average:	0.0010 secs.
-  Stddev:	0.0004 secs.
-  Requests/sec:	7857.6219
+  Average:	0.0007 secs.
+  Stddev:	0.0003 secs.
+  Requests/sec:	10640.8628
 Response time histogram:
   0.0004 [1]	|
-  0.0010 [11753]	|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎
-  0.0017 [7161]	|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎
-  0.0023 [833]	|∎∎
-  0.0029 [184]	|
-  0.0036 [31]	|
-  0.0042 [22]	|
-  0.0049 [7]	|
-  0.0055 [1]	|
-  0.0061 [0]	|
-  0.0068 [7]	|
+  0.0008 [15391]	|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎
+  0.0013 [3841]	|∎∎∎∎∎∎∎∎∎
+  0.0018 [476]	|∎
+  0.0023 [177]	|
+  0.0028 [67]	|
+  0.0032 [22]	|
+  0.0037 [19]	|
+  0.0042 [4]	|
+  0.0047 [0]	|
+  0.0052 [2]	|
 Latency distribution:
-  10% in 0.0007 secs.
-  25% in 0.0008 secs.
-  50% in 0.0009 secs.
-  75% in 0.0012 secs.
-  90% in 0.0014 secs.
-  95% in 0.0017 secs.
-  99% in 0.0025 secs.
-  99.9% in 0.0041 secs.
+  10% in 0.0005 secs.
+  25% in 0.0006 secs.
+  50% in 0.0007 secs.
+  75% in 0.0008 secs.
+  90% in 0.0010 secs.
+  95% in 0.0012 secs.
+  99% in 0.0020 secs.
+  99.9% in 0.0034 secs.
 
---- the asymmetry that dominates this comparison
+--- durability and runtime caveat
 
-etcd here is fsyncing inside a Linux virtual machine on a macOS host.
-Keel is fsyncing natively with F_FULLFSYNC, which is the only primitive
-on this platform that actually forces a drive cache flush — fdatasync on
-Linux, and every fsync inside a Docker Desktop VM, may return once the
-write reaches the host's page cache.
-
-So the two sides are not making the same promise, and the gap below is
-mostly that. A durability number compared against a number that may not
-be durable is not a comparison of two systems; it is a comparison of two
-definitions. The same script on Linux hardware, where both sides use the
-same primitive against the same device, is the run that would settle it.
+Keel uses fdatasync for durable batches; etcd runs through the recorded
+container runtime. This is a same-host comparison, not proof that their
+storage engines have identical durability paths.
 
 The honest internal control is Keel's own fsync-off arm:
 results/bench/ablation-fsync-off.txt, where the same cluster with writes
-neither ordered nor durable does four times the throughput at a quarter
-of the latency. That is the cost of the promise, measured on one machine
-with one variable changed.
+neither ordered nor durable meets the same offered rates within two
+percent, at about half the tail latency, and keeps holding its schedule
+past the rate at which the durable arm bends. That is the cost of the
+promise, measured on one machine with one variable changed — and it is
+latency and headroom rather than throughput, because one flush now
+retires a batch of tens rather than a single entry.

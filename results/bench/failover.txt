@@ -1,9 +1,9 @@
 host:   AMD EPYC 7313 16-Core Processor, 32 cores, 2014 GiB, Red Hat Enterprise Linux 9.8 (Plow), kernel 5.14.0-687.39.1.el9_8.x86_64, x86_64
-commit: a53a181
-date:   2026-08-28T00:07:39Z
-data:   /scratch0/bthapar/keel-v3-samehost-7364485/keel-reference/tmp/keel-failover-IPCKnS on xfs
+commit: 9bd85e3
+date:   2026-08-28T15:29:01Z
+data:   /scratch0/bthapar/keel-v31-samehost-7371407/data/keel-failover-YAd6X7 on xfs
 tier:   Reference
-sync:   durable (F_FULLSYNC or fdatasync, per platform)
+sync:   durable (F_FULLFSYNC or fdatasync, per platform)
 runs:   3
 
 nodes        3
@@ -18,17 +18,17 @@ timed out    0
 time to the first acknowledged write after the leader was killed
 p10     530.6 ms
 p50     935.3 ms
-p90     939.5 ms
-p99     1543.5 ms
-max     1740.5 ms
+p90     1140.9 ms
+p99     1744.8 ms
+max     1742.9 ms
 
 The spread is the measurement, not noise around one. Failover here is
 bimodal — which node campaigns first decides which mode a trial lands
 in — so p10 and p90 say more about what a client sees than p50 does,
 and p50 is the one statistic that sits between the modes.
 
-the median is stable: 932.2 ms over the first half of the trials and
-931.6 ms over the second. That check is here because the count alone was
+the median is stable: 931.9 ms over the first half of the trials and
+931.7 ms over the second. That check is here because the count alone was
 not enough — this distribution is bimodal and a hundred trials put the
 median on either side of the fence.
 

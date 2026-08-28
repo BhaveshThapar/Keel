@@ -1,0 +1,29 @@
+host:   AMD EPYC 7313 16-Core Processor, 32 cores, 2014 GiB, Red Hat Enterprise Linux 9.8 (Plow), kernel 5.14.0-687.39.1.el9_8.x86_64, x86_64
+commit: 9bd85e3
+date:   2026-08-28T15:24:29Z
+data:   /scratch0/bthapar/keel-v31-samehost-7371407/data/keel-ablation-0yQqDL on xfs
+tier:   Reference
+sync:   durable (F_FULLFSYNC or fdatasync, per platform)
+runs:   3
+
+mix          C (100% read)
+consistency   stale
+value        128 B
+key space    1000000
+clients      64
+nodes        3
+tick         100 ms
+seconds      10 per run
+repetitions  3 per rate, median reported
+
+offered   achieved      acked       p50       p99      p999       max   late
+  ops/s      ops/s  /attempt        ms        ms        ms        ms
+   3200       3204    100.0%    80.216   120.586   122.683   157.572   4141
+   6400       6403    100.0%    60.293   120.586   127.402   157.501   1932
+  12800      12800    100.0%    60.293    90.178   114.295   144.506   4376
+
+Percentiles are the upper edge of the histogram bucket a sample fell in,
+         so they are never optimistic — and so a p99 can read slightly above the
+         max, which is the one raw value in the table.
+
+curve: results/bench/ablation-stale.svg
