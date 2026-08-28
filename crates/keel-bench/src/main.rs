@@ -1493,13 +1493,21 @@ fn published_checkpoint(root: &std::path::Path) -> Option<PathBuf> {
         .ok()?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .find(|path| {
-            path.is_dir()
-                && path.file_name().is_some_and(|name| {
-                    name.to_string_lossy()
-                        .starts_with(|c: char| c.is_ascii_digit())
-                })
-        })
+        // A creator builds `<index>-<term>.pending` and atomically renames it
+        // only after the materialized state is complete.  Counting that staging
+        // directory would measure a partially written checkpoint as published.
+        .find(|path| path.is_dir() && path.file_name().is_some_and(is_published_checkpoint_name))
+}
+
+fn is_published_checkpoint_name(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy();
+    let Some((index, term)) = name.split_once('-') else {
+        return false;
+    };
+    !index.is_empty()
+        && !term.is_empty()
+        && index.bytes().all(|byte| byte.is_ascii_digit())
+        && term.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn directory_size(path: &std::path::Path) -> u64 {

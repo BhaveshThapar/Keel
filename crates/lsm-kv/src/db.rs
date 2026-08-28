@@ -1505,6 +1505,30 @@ mod tests {
     }
 
     #[test]
+    fn materialized_snapshot_is_complete_and_excludes_later_writes() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let checkpoint_dir = tempfile::tempdir().unwrap();
+        let db = Db::open_with(source_dir.path(), fast_opts()).unwrap();
+        for index in 0..1_100u32 {
+            db.put(format!("key-{index:04}").as_bytes(), &index.to_le_bytes())
+                .unwrap();
+        }
+
+        let snapshot = db.snapshot();
+        db.put(b"later", b"not-in-checkpoint").unwrap();
+        snapshot.materialize_to(checkpoint_dir.path()).unwrap();
+
+        let restored = Db::open_with(checkpoint_dir.path(), fast_opts()).unwrap();
+        for index in 0..1_100u32 {
+            assert_eq!(
+                restored.get(format!("key-{index:04}").as_bytes()).unwrap(),
+                Some(index.to_le_bytes().to_vec())
+            );
+        }
+        assert_eq!(restored.get(b"later").unwrap(), None);
+    }
+
+    #[test]
     fn snapshot_survives_compaction() {
         let dir = tempfile::tempdir().unwrap();
         let opts = Options {
