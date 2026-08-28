@@ -10,18 +10,10 @@
 #
 # What this can and cannot say, stated before the numbers rather than after:
 #
-#   It CAN say what each system did on this laptop, with fsync on, at these
-#   parameters. Both sides are Exploratory tier and neither is a headline.
-#
-#   It CANNOT say which is faster in general. etcd runs in a Linux container on
-#   this host and Keel runs natively; the container's filesystem is a different
-#   path to the same disk, and Docker Desktop on macOS puts a virtual machine in
-#   between. A ratio measured across that boundary is a measurement of the
-#   boundary as much as of either system.
-#
-# That last paragraph is why P26 is the phase that wants Linux hardware. The
-# harness is here and it runs; the number it produces is honest about what it
-# is.
+#   It CAN compare the two systems on the measured Linux host, with the exact
+#   runtime and storage path recorded in the result. On macOS, Docker Desktop
+#   introduces a VM boundary, so that run remains Exploratory rather than a
+#   cross-system headline.
 #
 # The mechanism behind whatever difference appears is the part worth writing
 # down, and it is not a mystery: etcd stores in bbolt, a B+tree with a per-
@@ -152,13 +144,14 @@ fi
     echo "total ops:     $TOTAL"
     echo "tier:          $TIER for both durable sides"
     echo
-    echo "What this comparison is measuring, and what it is not:"
-    echo
-    echo "  etcd runs in a Linux container on a macOS host, so its writes cross a"
-    echo "  virtual machine boundary that Keel's do not. A ratio measured across"
-    echo "  that boundary is partly a measurement of the boundary. This harness"
-    echo "  exists so that the same comparison on Linux hardware is one command;"
-    echo "  the number below is not that comparison."
+    echo "Measurement scope:"
+    if [ "$(uname -s)" = Linux ]; then
+        echo "  Both systems ran on this Linux host. The container runtime and"
+        echo "  filesystem facts above are part of the comparison provenance."
+    else
+        echo "  This non-Linux host inserts a container/VM storage boundary; the"
+        echo "  number is Exploratory and is not a cross-system headline."
+    fi
     echo
     echo "  The mechanism behind any difference is not a mystery: etcd stores in"
     echo "  bbolt, a B+tree with a per-transaction fsync, and speaks gRPC over"
@@ -172,19 +165,16 @@ fi
         put --key-size=16 --sequential-keys --total="$TOTAL" --val-size="$VALUE_BYTES" 2>&1 |
         grep -vE '^\s*$'
     echo
-    echo "--- the asymmetry that dominates this comparison"
+    echo "--- durability and runtime caveat"
     echo
-    echo "etcd here is fsyncing inside a Linux virtual machine on a macOS host."
-    echo "Keel is fsyncing natively with F_FULLFSYNC, which is the only primitive"
-    echo "on this platform that actually forces a drive cache flush — fdatasync on"
-    echo "Linux, and every fsync inside a Docker Desktop VM, may return once the"
-    echo "write reaches the host's page cache."
-    echo
-    echo "So the two sides are not making the same promise, and the gap below is"
-    echo "mostly that. A durability number compared against a number that may not"
-    echo "be durable is not a comparison of two systems; it is a comparison of two"
-    echo "definitions. The same script on Linux hardware, where both sides use the"
-    echo "same primitive against the same device, is the run that would settle it."
+    if [ "$(uname -s)" = Linux ]; then
+        echo "Keel uses fdatasync for durable batches; etcd runs through the recorded"
+        echo "container runtime. This is a same-host comparison, not proof that their"
+        echo "storage engines have identical durability paths."
+    else
+        echo "The container/VM boundary changes storage semantics on this platform,"
+        echo "so this result is not suitable for a cross-system performance ratio."
+    fi
     echo
     echo "The honest internal control is Keel's own fsync-off arm:"
     echo "results/bench/ablation-fsync-off.txt, where the same cluster with writes"
