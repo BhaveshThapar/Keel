@@ -1,12 +1,12 @@
 === where the time in a write goes ===
-host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, arm64
-commit: 34bb3f2
-date:   2026-08-25T08:06:15Z
+host:   AMD EPYC 7313 16-Core Processor, 32 cores, 2014 GiB, Linux 5.14.0-687.39.1.el9_8.x86_64, x86_64
+commit: a53a181
+date:   2026-08-28T00:07:13Z
 
 nodes:       3 on one host over loopback
 senders:     24, each with 16 requests outstanding
 seconds:     12 per arm
-tier:        Exploratory, and the fsync-off arm is not publishable at all
+tier:        reference for the durable arm; the fsync-off arm is not publishable
 
 The three phases are the ones the Ready contract names, timed per
 round rather than per operation: persist covers the truncate, the
@@ -20,24 +20,24 @@ own flush, and what is left of apply is real work — decoding, the
 session table, the store.
 
 --- durable (F_FULLFSYNC)
-  acknowledged 45114 of 45114 attempted in 12.2s -> 3697 ops/s
-  latency ms  p50 98.042  p90 218.104  p99 239.075  p999 240.124  max 273.569
+  acknowledged 48166 of 48166 attempted in 12.1s -> 3970 ops/s
+  latency ms  p50 128.975  p90 164.626  p99 196.084  p999 206.569  max 205.867
   late 0
-  45498 entries applied in 974 rounds = 46.7 per round
+  48550 entries applied in 955 rounds = 50.8 per round
   phase       total s    ms/round    us/entry
-  persist       3.072       3.154        67.5
-  send          0.012       0.012         0.3
-  apply         5.876       6.033       129.2
+  persist       0.529       0.554        10.9
+  send          0.010       0.011         0.2
+  apply         4.731       4.954        97.5
 
 --- none (writes neither ordered nor durable; NOT PUBLISHABLE)
-  acknowledged 53100 of 53100 attempted in 12.1s -> 4392 ops/s
-  latency ms  p50 89.129  p90 200.278  p99 230.687  p999 316.670  max 316.746
+  acknowledged 49113 of 49113 attempted in 12.1s -> 4059 ops/s
+  latency ms  p50 117.965  p90 161.481  p99 200.278  p999 223.347  max 223.299
   late 0
-  53484 entries applied in 1945 rounds = 27.5 per round
+  49497 entries applied in 974 rounds = 50.8 per round
   phase       total s    ms/round    us/entry
-  persist       0.014       0.007         0.3
-  send          0.009       0.005         0.2
-  apply         6.150       3.162       115.0
+  persist       0.402       0.413         8.1
+  send          0.011       0.011         0.2
+  apply         4.682       4.807        94.6
 
 send is loopback. On a real network that column is where the round trip
 would appear, and it does not appear here — the same gap as "no

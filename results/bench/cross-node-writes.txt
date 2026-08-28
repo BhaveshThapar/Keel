@@ -1,7 +1,7 @@
 host:   cbcb06.umiacs.umd.edu (load generator); cbcb07-cbcb09.umiacs.umd.edu (servers)
-commit: deca0940479923d93aa733fdfea355d3d2d2b14b
-date:   2026-08-26T18:26:02Z
-data:   node-local /scratch0 on XFS; results persisted by Slurm job 7352800
+commit: a53a1815a43dea3b18e743760cef11297fca01cb
+date:   2026-08-28T01:20:29Z
+data:   node-local /scratch0 on XFS; results persisted by Slurm job 7364486
 tier:   Reference — exclusive dedicated Linux nodes; see BENCH.md
 sync:   durable (fdatasync on Linux)
 runs:   3
@@ -26,12 +26,12 @@ repetitions     3 per rate, median reported
 
 offered   achieved      acked       p50       p99      p999       max    late
   ops/s      ops/s  /attempt        ms        ms        ms        ms
-    800        769    100.0%    83.886    83.886    83.886    84.436       0
-   1600       1601    100.0%    80.216    80.740    80.740    81.211      56
-   3200       3200    100.0%   100.139   100.663   100.663   100.686     132
-   6400       6399    100.0%   100.139   100.663   100.663   100.861     369
-  12800      12772    100.0%   155.189   156.238   165.675   184.208    1120
-  25600      20373    100.0%  3388.998  6106.907  6174.015  6266.517  750182  *
+    800        769    100.0%   167.772   167.772   167.772   167.192      30
+   1600       1601    100.0%   120.586   120.586   120.586   121.925     105
+   3200       3200    100.0%   100.663   120.586   120.586   120.484     242
+   6400       6399    100.0%   120.586   130.548   130.548   142.651     669
+  12800      12773    100.0%   155.189   253.755   293.601   329.646   61810
+  25600      13798    100.0%  6106.907 13824.426 13958.644 14069.018  764881  *
 
 * The senders could not keep to this rate's schedule. The offered column is a
   request rather than a fact on this row, and achieved throughput says as much

@@ -1,0 +1,23 @@
+host:   AMD EPYC 7313 16-Core Processor, 32 cores, 2014 GiB, Red Hat Enterprise Linux 9.8 (Plow), kernel 5.14.0-687.39.1.el9_8.x86_64, x86_64
+commit: a53a181
+date:   2026-08-28T02:37:03Z
+data:   /scratch0/bthapar/keel-snapshot-diagnose-7365261/data on xfs
+tier:   Reference
+sync:   durable (F_FULLSYNC or fdatasync, per platform)
+runs:   3
+
+requested state  1073741824 bytes
+value            1048576 bytes
+values           1024
+nodes            3
+sync             durable
+runs             3, median reported
+
+checkpoint       1995 ms
+checkpoint bytes 1078036171
+transfer         42265 ms
+transfer rate    24.32 MiB/s
+
+The transfer clock starts immediately before the compacted follower is
+restarted and stops only after that real process publishes the received
+checkpoint. The receiver uses the same resumable TCP path as production.

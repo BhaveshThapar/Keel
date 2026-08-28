@@ -1,0 +1,9 @@
+=== UMIACS Reference allocation ===
+tag:        v3.0.8
+commit:     a53a1815a43dea3b18e743760cef11297fca01cb
+host:       cbcb06.umiacs.umd.edu
+job:        7364485
+nodes:      1
+cpus/node:  32
+data root:  /scratch0/bthapar/keel-v3-samehost-7364485/keel-reference
+date:       2026-08-28T00:01:30Z

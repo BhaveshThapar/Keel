@@ -1,14 +1,10 @@
-host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, kernel 25.2.0, aarch64
-commit: 34bb3f2
-date:   2026-08-25T08:02:36Z
-data:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-campaign-hlD3pF on apfs
-tier:   Exploratory — not a headline number; see BENCH.md for what that means
+host:   AMD EPYC 7313 16-Core Processor, 32 cores, 2014 GiB, Red Hat Enterprise Linux 9.8 (Plow), kernel 5.14.0-687.39.1.el9_8.x86_64, x86_64
+commit: a53a181
+date:   2026-08-28T00:01:33Z
+data:   /scratch0/bthapar/keel-v3-samehost-7364485/keel-reference/tmp/keel-campaign-XSwmFB on xfs
+tier:   Reference
 sync:   durable (F_FULLSYNC or fdatasync, per platform)
 runs:   3
-
-** Every number below is from this host and this configuration.
-** It is reproducible, and it is not a claim about how fast Keel
-** is in general.
 
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="440" viewBox="0 0 720 440" font-family="monospace" font-size="11">
 <rect width="720" height="440" fill="#ffffff"/>
@@ -41,13 +37,13 @@ runs:   3
 <line x1="78" y1="28" x2="78" y2="384" stroke="#111111"/>
 <text x="387" y="418" text-anchor="middle" fill="#111111">throughput (ops/s)</text>
 <text x="14" y="206" text-anchor="middle" transform="rotate(-90 14 206)" fill="#111111">latency (ms)</text>
-<polyline fill="none" stroke="#1b6ca8" stroke-width="2" points="101.89,365.41 127.25,368.99 176.20,366.68 274.22,365.19 468.51,369.81 548.76,206.01"/>
-<circle cx="101.89" cy="365.41" r="3" fill="#1b6ca8"/>
-<circle cx="127.25" cy="368.99" r="3" fill="#1b6ca8"/>
-<circle cx="176.20" cy="366.68" r="3" fill="#1b6ca8"/>
-<circle cx="274.22" cy="365.19" r="3" fill="#1b6ca8"/>
-<circle cx="468.51" cy="369.81" r="3" fill="#1b6ca8"/>
-<circle cx="548.76" cy="206.01" r="3" fill="#1b6ca8"/>
+<polyline fill="none" stroke="#1b6ca8" stroke-width="2" points="102.01,366.16 127.66,366.83 177.00,371.16 275.61,364.74 465.83,327.86 494.04,176.15"/>
+<circle cx="102.01" cy="366.16" r="3" fill="#1b6ca8"/>
+<circle cx="127.66" cy="366.83" r="3" fill="#1b6ca8"/>
+<circle cx="177.00" cy="371.16" r="3" fill="#1b6ca8"/>
+<circle cx="275.61" cy="364.74" r="3" fill="#1b6ca8"/>
+<circle cx="465.83" cy="327.86" r="3" fill="#1b6ca8"/>
+<circle cx="494.04" cy="176.15" r="3" fill="#1b6ca8"/>
 <text x="556" y="42" fill="#1b6ca8">3 nodes, writes (100% update)</text>
-<text x="78" y="430" fill="#777777">Exploratory tier — Apple M2 Pro, apfs — not a claim about how fast Keel is in general</text>
+<text x="78" y="430" fill="#777777">Reference tier — AMD EPYC 7313 16-Core Processor, xfs — not a claim about how fast Keel is in general</text>
 </svg>

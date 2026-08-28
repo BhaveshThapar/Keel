@@ -1,12 +1,12 @@
 host:   AMD EPYC 7313 16-Core Processor, 32 cores, 2014 GiB, Red Hat Enterprise Linux 9.8 (Plow), kernel 5.14.0-687.39.1.el9_8.x86_64, x86_64
 commit: a53a181
-date:   2026-08-28T00:01:33Z
-data:   /scratch0/bthapar/keel-v3-samehost-7364485/keel-reference/tmp/keel-campaign-XSwmFB on xfs
+date:   2026-08-28T00:03:23Z
+data:   /scratch0/bthapar/keel-v3-samehost-7364485/keel-reference/tmp/keel-campaign-G8xW8z on xfs
 tier:   Reference
 sync:   durable (F_FULLSYNC or fdatasync, per platform)
 runs:   3
 
-mix          writes (100% update)
+mix          A (50/50 read/update)
 value        128 B
 key space    10000
 clients      64
@@ -17,12 +17,12 @@ repetitions  3 per rate, median reported
 
 offered   achieved      acked       p50       p99      p999       max   late
   ops/s      ops/s  /attempt        ms        ms        ms        ms
-    800        777    100.0%   167.772   250.610   250.610   250.235    938  *
-   1600       1607    100.0%   200.278   241.172   241.172   240.299    724
-   3200       3204    100.0%   160.432   180.355   180.355   185.359   1162
-   6400       6395    100.0%   250.610   270.533   274.727   299.876   3722
-  12800      12551    100.0%   329.253   788.529   868.221   915.955  181989  *
-  25600      13464    100.0%  1719.665  2919.236  2969.567  2983.765  460976  *
+    800        774    100.0%   250.610   417.333   417.333   416.869    933  *
+   1600       1590    100.0%   241.172   400.556   480.248   520.106    678
+   3200       3171    100.0%   160.432   301.990   341.836   380.146   1177
+   6400       6321    100.0%   170.918   320.864   371.196   430.106   3009
+  12800       6634     96.8%   375.390  1946.157  2566.914  5096.353  198810  *
+  25600       6539     96.5%  1459.618  3808.428  5200.937  5262.415  460988  *
 
 *  the senders could not keep to this rate's schedule. The offered
              *  column is a request rather than a fact on those rows, and the
@@ -34,4 +34,4 @@ Percentiles are the upper edge of the histogram bucket a sample fell in,
          so they are never optimistic — and so a p99 can read slightly above the
          max, which is the one raw value in the table.
 
-curve: results/bench/campaign-writes.svg
+curve: results/bench/campaign-a.svg

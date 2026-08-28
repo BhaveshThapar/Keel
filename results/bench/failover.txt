@@ -1,40 +1,36 @@
-host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, kernel 25.2.0, aarch64
-commit: 54caa25
-date:   2026-08-25T07:51:45Z
-data:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-failover-vzNg8y on apfs
-tier:   Exploratory — not a headline number; see BENCH.md for what that means
+host:   AMD EPYC 7313 16-Core Processor, 32 cores, 2014 GiB, Red Hat Enterprise Linux 9.8 (Plow), kernel 5.14.0-687.39.1.el9_8.x86_64, x86_64
+commit: a53a181
+date:   2026-08-28T00:07:39Z
+data:   /scratch0/bthapar/keel-v3-samehost-7364485/keel-reference/tmp/keel-failover-IPCKnS on xfs
+tier:   Reference
 sync:   durable (F_FULLSYNC or fdatasync, per platform)
 runs:   3
-
-** Every number below is from this host and this configuration.
-** It is reproducible, and it is not a claim about how fast Keel
-** is in general.
 
 nodes        3
 tick         30 ms
 sync         durable
 
-trials       600
-recovered    599
-not healthy  1 (discarded: the cluster was not serving writes when the trial began)
+trials       400
+recovered    398
+not healthy  2 (discarded: the cluster was not serving writes when the trial began)
 timed out    0
 
 time to the first acknowledged write after the leader was killed
-p10     411.0 ms
-p50     805.3 ms
-p90     1224.7 ms
-p99     1258.3 ms
-max     1642.2 ms
+p10     530.6 ms
+p50     935.3 ms
+p90     939.5 ms
+p99     1543.5 ms
+max     1740.5 ms
 
 The spread is the measurement, not noise around one. Failover here is
 bimodal — which node campaigns first decides which mode a trial lands
 in — so p10 and p90 say more about what a client sees than p50 does,
 and p50 is the one statistic that sits between the modes.
 
-** the median is not stable at this trial count: the first half of
-** the trials says 622.3 ms and the second says 809.3 ms. Failover time
-** here is bimodal, so a median between the modes moves with the draw.
-** Run more trials; the number above is not one to quote.
+the median is stable: 932.2 ms over the first half of the trials and
+931.6 ms over the second. That check is here because the count alone was
+not enough — this distribution is bimodal and a hundred trials put the
+median on either side of the fence.
 
 The clock starts when the kill signal is sent and stops when a client's
 write is acknowledged — not when a new leader is elected. Election is an

@@ -1,7 +1,7 @@
-host:   Apple M2 Pro, 10 cores, 16 GiB, macOS 26.2, kernel 25.2.0, aarch64
-commit: 34bb3f2
-date:   2026-08-25T08:04:26Z
-data:   /var/folders/0x/n25fl02x0sbbf3hmh6dp27dr0000gp/T//keel-ablation-qVe77p on apfs
+host:   AMD EPYC 7313 16-Core Processor, 32 cores, 2014 GiB, Red Hat Enterprise Linux 9.8 (Plow), kernel 5.14.0-687.39.1.el9_8.x86_64, x86_64
+commit: a53a181
+date:   2026-08-28T00:05:24Z
+data:   /scratch0/bthapar/keel-v3-samehost-7364485/keel-reference/tmp/keel-ablation-7nAx3S on xfs
 tier:   NOT PUBLISHABLE
 why:    sync mode is none, not durable: writes are neither ordered nor durable. A configuration that does not survive power loss may be measured and may not be published as a durability number
 recorded because: the fsync-off arm of the durability ablation: the same cluster with writes neither ordered nor made durable
@@ -15,18 +15,18 @@ value        128 B
 key space    10000
 clients      64
 nodes        3
-tick         10 ms
+tick         100 ms
 seconds      6 per run
 repetitions  3 per rate, median reported
 
 offered   achieved      acked       p50       p99      p999       max   late
   ops/s      ops/s  /attempt        ms        ms        ms        ms
-    800        776    100.0%    91.750    99.615   107.479   107.069      4
-   1600       1606    100.0%    89.653   130.548   130.548   130.644    220
-   3200       3202    100.0%   100.663   109.052   116.392   119.556    518
-   6400       6399    100.0%    93.323   123.732   124.781   124.926   1199
-  12800      12792    100.0%   115.343   117.441   119.538   120.956   2209
-  25600      25541    100.0%    78.643   122.683   145.752   168.926  32703  *
+    800        777    100.0%   167.772   250.610   250.610   250.253    909  *
+   1600       1608    100.0%   160.432   160.432   160.432   160.661    507
+   3200       3206    100.0%   180.355   180.355   180.355   186.554   1167
+   6400       6400    100.0%   200.278   220.201   221.250   240.996   2957
+  12800      12569    100.0%   155.189   312.476   341.836   355.656  80010  *
+  25600      14680    100.0%  1409.286  2617.246  2667.577  2692.689  460982  *
 
 *  the senders could not keep to this rate's schedule. The offered
              *  column is a request rather than a fact on those rows, and the
