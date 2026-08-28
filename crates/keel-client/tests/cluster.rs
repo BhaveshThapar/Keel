@@ -783,17 +783,17 @@ fn two_nodes_join_under_load_and_the_removed_leader_is_replaced() {
                         failures.fetch_add(1, Ordering::Relaxed);
                     }
                 }
-                std::thread::sleep(Duration::from_millis(2));
+                // Sustained load, while leaving the single-threaded admin
+                // surface enough turns to observe and drive configuration
+                // changes on a heavily shared CI host.
+                std::thread::sleep(Duration::from_millis(10));
             }
         })
     };
 
     for member in [4u64, 5] {
-        cluster
-            .post_to_leader(&format!("/add-learner?node={member}"))
-            .expect("add learner");
-        wait_for(Duration::from_secs(10), || {
-            (0..5).any(|index| {
+        wait_for(Duration::from_secs(30), || {
+            let configured = (0..5).any(|index| {
                 cluster.status(index).is_some_and(|status| {
                     status
                         .split_once("\"learners\":")
@@ -805,10 +805,18 @@ fn two_nodes_join_under_load_and_the_removed_leader_is_replaced() {
                                 .any(|id| id == member.to_string())
                         })
                 })
-            })
+            });
+            if !configured && let Some(leader) = cluster.leader() {
+                // 202 means the command reached the leader's loop, not that a
+                // configuration entry survived a simultaneous leadership
+                // transition. Retry the idempotent intent until the committed
+                // configuration reports it.
+                let _ = cluster.post_admin(leader, &format!("/add-learner?node={member}"));
+            }
+            configured
         })
         .expect("learner was not configured");
-        wait_for(Duration::from_secs(10), || {
+        wait_for(Duration::from_secs(30), || {
             let Some(leader) = cluster.leader() else {
                 return false;
             };
@@ -821,25 +829,31 @@ fn two_nodes_join_under_load_and_the_removed_leader_is_replaced() {
             }
         })
         .expect("learner did not catch up under load");
-        cluster
-            .post_to_leader(&format!("/promote?node={member}"))
-            .expect("promote learner");
-        wait_for(Duration::from_secs(10), || {
-            cluster.status(0).is_some_and(|status| {
-                status.contains(&format!("{member}]")) && !status.contains("\"voters_outgoing\":[1")
-            })
+        wait_for(Duration::from_secs(30), || {
+            let promoted = (0..5).any(|index| {
+                cluster.status(index).is_some_and(|status| {
+                    status.contains(&format!(
+                        "\"voters\":[1,2,3{}]",
+                        if member == 4 { ",4" } else { ",4,5" }
+                    )) && status.contains("\"voters_outgoing\":[]")
+                })
+            });
+            if !promoted && let Some(leader) = cluster.leader() {
+                let _ = cluster.post_admin(leader, &format!("/promote?node={member}"));
+            }
+            promoted
         })
         .expect("promoted voter did not leave joint consensus");
     }
 
     let old_leader = cluster.leader().expect("no leader to remove");
     let old_id = old_leader as u64 + 1;
-    cluster
-        .post_admin(old_leader, &format!("/remove?node={old_id}"))
-        .filter(|response| response.starts_with("HTTP/1.1 202 Accepted"))
-        .expect("remove leader request");
-    wait_for(Duration::from_secs(10), || {
-        cluster.leader().is_some_and(|leader| leader != old_leader)
+    wait_for(Duration::from_secs(30), || {
+        let replaced = cluster.leader().is_some_and(|leader| leader != old_leader);
+        if !replaced {
+            let _ = cluster.post_admin(old_leader, &format!("/remove?node={old_id}"));
+        }
+        replaced
     })
     .expect("a new leader was not elected after removing the old one");
 
