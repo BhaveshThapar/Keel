@@ -1,7 +1,7 @@
-host:   AMD EPYC 7313 16-Core Processor, 32 cores, 2014 GiB, Red Hat Enterprise Linux 9.8 (Plow), kernel 5.14.0-687.39.1.el9_8.x86_64, x86_64
-commit: 9bd85e3
-date:   2026-08-28T15:35:28Z
-data:   /scratch0/bthapar/keel-v31-samehost-7371407/data/keel-snapshot-bench-AsItLO on xfs
+host:   AMD EPYC 7302P 16-Core Processor, 16 cores, 125 GiB, Red Hat Enterprise Linux 9.8 (Plow), kernel 5.14.0-687.39.1.el9_8.x86_64, x86_64
+commit: 2bc9d86
+date:   2026-08-29T03:13:54Z
+data:   /scratch0/bthapar/keel-snapshot-v316-7375567/data/keel-snapshot-bench-bEgrD0 on xfs
 tier:   Reference
 sync:   durable (F_FULLFSYNC or fdatasync, per platform)
 runs:   3
@@ -13,10 +13,11 @@ nodes            3
 sync             durable
 runs             3, median reported
 
-checkpoint       553 ms
-checkpoint bytes 1078034823
-transfer         49491 ms
-transfer rate    20.77 MiB/s
+checkpoint       18006 ms
+write stall      17 ms
+checkpoint bytes 1078030509
+transfer         81546 ms
+transfer rate    12.61 MiB/s
 
 The transfer clock starts immediately before the compacted follower is
 restarted and stops only after that real process publishes the received
