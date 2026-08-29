@@ -281,14 +281,11 @@ hardware and no commit behind it. Both run in CI.
 
 ## Not claimed
 
-- **No headline performance number, and none from a reference platform.** Every
-  figure in [`results/bench/`](results/bench/) is Exploratory tier: an Apple M2
-  Pro laptop, macOS, `F_FULLFSYNC`, with a browser open. Reproducible, honest,
-  and never quoted without that qualifier — which is stated in each file's
-  header, repeated above its numbers, and rendered into every plot's caption,
-  because a picture travels further than the file it came from. The harness for
-  the reference tier is built and runs; what is missing is Linux hardware, and
-  that is the whole of what is missing. See [BENCH.md](BENCH.md).
+- **Reference measurements are hardware-specific, not universal claims.** The
+  committed Linux/XFS artifacts include three- and five-node curves, a fair
+  etcd baseline, failover, cross-node traffic, a write-path profile, and a 1 GiB
+  snapshot transfer. They are reproducible on their stated hardware; they are
+  not promises about another machine. See [BENCH.md](BENCH.md).
 - **Not Jepsen-tested.** Jepsen's *Maelstrom* drives a three-node cluster on the
   `lin-kv` workload, with and without a partition nemesis, and Knossos finds both
   histories linearizable ([`results/maelstrom/`](results/maelstrom/)). A real
@@ -313,10 +310,9 @@ hardware and no commit behind it. Both run in CI.
   linearization and stops; to refute, it must exhaust the space. On the full
   depth-8 history the control ran the machine out of memory. It records a run of
   its own instead, and the arm's claim is correspondingly narrower.
-- **No committed 1 GB snapshot number yet.** The daemon path and benchmark are
-  implemented, including receiver-process restart; `scripts/snapshot-bench.sh`
-  is the Reference-tier run. The number waits on the same dedicated Linux
-  allocation as the cross-node throughput and etcd comparison.
+- **Snapshot figures are limited to the recorded allocation.** The committed
+  three-run 1 GiB Reference result reports a 17 ms median write stall and
+  12.61 MiB/s transfer rate; other disks and network topologies will differ.
 - **The Apptainer path in the container scripts has never been run.** The clock
   nemesis and the etcd baseline detect Docker, Podman or Apptainer, because a
   shared cluster gives users the third and not the first two. Docker is what the

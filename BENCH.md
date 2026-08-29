@@ -21,10 +21,10 @@ The current reference artifacts were taken on an exclusive 32-core AMD EPYC
 7313 Linux/XFS allocation; each records its host, commit, filesystem, tier, and
 shape. Historical laptop artifacts remain Exploratory and are not headline data.
 
-The harness for the Reference tier is built and works. What is missing is the
-hardware, and that is the whole of what is missing: `scripts/campaign.sh`,
-`scripts/etcd-baseline.sh`, `scripts/snapshot-bench.sh` and
-`scripts/breakdown.sh` run unchanged on a Linux box.
+The Reference suite has run on dedicated Linux/XFS allocations. Its committed
+artifacts include the same-host matrix, etcd baseline, failover distribution,
+write-path profile, and the 1 GiB snapshot transfer. Cross-node artifacts are
+recorded separately because network topology is a different experiment.
 
 `scripts/umiacs-reference.sh` runs the complete same-host set with Reference
 headers. Its allocation and transfer contract is in [`UMIACS.md`](UMIACS.md).
@@ -334,12 +334,10 @@ only thing P26 is still missing, and it is not engineering.
 | PR-2 throughput-vs-p99 curves, three runs, median | `scripts/campaign.sh`, `results/bench/` |
 | PR-4 etcd baseline on identical hardware | `scripts/etcd-baseline.sh` |
 | PR-5 failover across ≥ 100 trials | `scripts/failover.sh` |
-| PR-6 checkpoint stall and lagging-follower snapshot transfer | `scripts/snapshot-bench.sh` (harness smoke-tested; Reference result pending) |
+| PR-6 checkpoint stall and lagging-follower snapshot transfer | `scripts/snapshot-bench.sh`, [`results/bench/snapshot.txt`](results/bench/snapshot.txt) |
 
 ## What is not measured, and is not claimed
 
-- **No Reference-tier number exists.** See the first section; this is a hardware
-  gap and nothing else.
 - **The etcd comparison crosses a virtual machine boundary.** etcd runs in a
   Linux container on a macOS host and Keel runs natively, so a ratio measured
   across that boundary is partly a measurement of the boundary. The mechanism
@@ -351,14 +349,6 @@ only thing P26 is still missing, and it is not engineering.
 - **No flame graphs.** The phase breakdown PR-7 asked for *is* measured now —
   see "Where the time goes" above — but it says where the time went between
   three named boundaries, not which function spent it.
-- **No committed 1 GiB snapshot result yet** (PR-6). This is now only a
-  measurement waiting to be taken: `keel-bench snapshot` creates incompressible
-  logical state, forces a real leader checkpoint, restarts a follower below the
-  compacted floor, and times publication of the received checkpoint. A 1 MiB
-  admitted smoke run completes locally; `scripts/snapshot-bench.sh` is the
-  three-run Reference-tier command for UMIACS.
-- **No cross-node numbers.** Everything is localhost. Cross-node measurement is
-  a different question and needs the same hardware the Reference tier does.
 - **Saturation is not established on the laptop.** The pipelined generator held
   every offered rate until it shared ten cores with 64 sender threads; the
   cluster kept up each time the generator grew. Dedicated hardware is needed to
