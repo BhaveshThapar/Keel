@@ -1,21 +1,82 @@
 # Keel
 
+[![Version](https://img.shields.io/badge/version-3.1.6-informational.svg)](#compatibility)
+[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](rust-toolchain.toml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 A Raft-replicated key-value store in Rust, built on an LSM storage engine, and
 verified by a deterministic simulator that replays any failure from a seed.
+
+## At a glance
+
+- **Correctness, adversarially checked.** A deterministic simulator replays
+  partitions, crashes, disk tearing, clock skew, and membership churn — 500
+  seeds × 60,000 steps per profile, 0 failures — and a control arm proves the
+  checker actually catches a violation when a safety rule is removed. See
+  [Correctness](#correctness).
+- **Real processes, not just simulated ones.** A three-node cluster has been
+  killed 1,000 times and paused mid-flight under partitions and clock jumps —
+  11,605 acknowledged writes, none lost. See [`keel-chaos`](crates/keel-chaos/).
+- **Checked by someone else's checker.** Real-run histories are verified
+  linearizable by Porcupine and Knossos, plus a Jepsen-style Maelstrom run on
+  the `lin-kv` workload. See [Not claimed](#not-claimed) for exactly what that
+  does and doesn't cover.
+- **Benchmarked on real hardware, against etcd.** Every published number
+  passes a gate built before any of them existed — a run on a memory
+  filesystem or with fsync off is refused unless it's explicitly logged as the
+  ablation it is. See [Measured](#measured).
+- **20 real defects found and root-caused** by the harness itself — fuzzing,
+  simulation, and chaos, not code review — each with its own post-mortem in
+  [BUGS.md](BUGS.md).
+- **A sans-I/O consensus core.** `keel-raft` does no I/O, owns no threads,
+  reads no clock — enforced at build time — so the identical code runs in
+  production, under Maelstrom, and inside the simulator.
+
+## See it run
+
+```sh
+git clone https://github.com/BhaveshThapar/Keel.git && cd Keel
+docker compose -f deploy/docker-compose.yml up --build
+```
+
+Then open `localhost:3000` for a live Grafana view of a real three-node
+cluster electing a leader, replicating, and recovering (anonymous login, the
+dashboard is pre-built). Talk to it directly:
+
+```sh
+cargo run -p keel-client --bin kv -- --node 127.0.0.1:7101 put foo bar
+cargo run -p keel-client --bin kv -- --node 127.0.0.1:7101 get foo
+```
+
+No Docker? Build with `cargo build --release` and start three `keel-server`
+processes by hand — see [OPERATIONS.md](OPERATIONS.md).
 
 > **Status: v3.1.6.** A three-node cluster of real processes serves traffic and
 > survives being partitioned, paused, killed a thousand times and clock-jumped —
 > with the histories it produced checked by Porcupine and by Knossos, and by
 > control arms that prove those checkers reject a corrupted one. Performance
-> numbers exist and are **Exploratory tier**: measured on a laptop, reproducible,
-> and never headlined. What is *not* claimed is listed below and is worth reading
-> first. The full Reference suite has run on dedicated Linux hardware; its raw
-> 3/5-node curves, ablations, failover, snapshot, etcd, and profile artifacts
-> are committed under `results/`.
+> numbers exist at two tiers, reproducible and never headlined: **Reference**, on
+> dedicated 32-core EPYC/XFS hardware and now the source of record, and
+> **Exploratory**, from a laptop, kept below as context. What is *not* claimed is
+> listed below and is worth reading first. Raw 3/5-node curves, ablations,
+> failover, snapshot, etcd, and profile artifacts for both are committed under
+> `results/`.
 
 ## What is here today
 
 Fourteen crates.
+
+```mermaid
+flowchart LR
+    Client(["kv / client apps<br/>(keel-client)"]) -->|request| Server["keel-server<br/>(daemon: CLI, metrics, /status)"]
+    Server --> Node["keel-node<br/>(the Ready → I/O loop)"]
+    Node <-->|events / Ready| Raft["keel-raft<br/>(consensus core —<br/>no I/O, no threads, no clock)"]
+    Node -->|persist| Log["keel-log<br/>(durable log)"]
+    Node -->|send| Net["keel-net<br/>(transport)"]
+    Node -->|apply| SM["keel-sm<br/>(state machine)"]
+    SM --> LSM[("lsm-kv<br/>storage engine")]
+    Net <-->|peer messages| Peers[("other keel-server nodes")]
+```
 
 **[`keel-raft`](crates/keel-raft/)** — a Raft consensus core that does no I/O,
 owns no threads, and reads no clock. You feed it events and it hands back a
@@ -118,6 +179,8 @@ Reference-tier results now exist on an exclusive 32-core AMD EPYC 7313 Linux/XFS
 allocation. Historical exploratory laptop results below remain context only;
 the current raw reference matrix is the source of record. Full methodology and the caveats that matter are in
 [BENCH.md](BENCH.md); the raw files are in [`results/bench/`](results/bench/).
+
+![Write throughput, 3-node reference campaign](results/bench/campaign-writes.svg)
 
 | | |
 |---|---:|
